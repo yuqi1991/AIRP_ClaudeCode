@@ -22,6 +22,9 @@ import base64
 from datetime import date, datetime
 from pathlib import Path
 
+# worldbook catalog builder extracted to engine.worldbook (deep module)
+from engine.worldbook import build_worldbook_index
+
 
 def _json_dumps(obj, **kwargs):
     """JSON serializer that handles date/datetime objects."""
@@ -667,58 +670,6 @@ def extract_initvar_from_worldbook_structured(entries: list[dict]) -> dict:
     return result
 
 
-def build_worldbook_index(entries: list[dict], memory_dir: str) -> dict:
-    """从世界书条目生成 .worldbook_index.json —— 供 AI 按需检索。
-
-    索引中的每条记录包含：
-    - keyword: 主触发词（取自 keys[0]）
-    - title: 条目标题（comment）
-    - one_liner: Description 第一句话的摘要（30-80 字）
-    - section: reference.md 中 Grep 定位用的 Markdown 标题
-    """
-    import re
-
-    index = []
-    for e in entries:
-        content = e.get("content", "")
-        if not content.strip():
-            continue
-
-        comment = e.get("comment", "")
-        keys = e.get("keys", [])
-        keyword = keys[0] if keys else comment
-
-        # 提取 Description 段的第一句话作为一句话摘要
-        one_liner = ""
-        desc_match = re.search(r"Description:\s*(.*?)(?:\.|。|\n|Effect:|Dynamic:|Application:)",
-                               content, re.DOTALL)
-        if desc_match:
-            desc_text = desc_match.group(1).strip()
-            # 截断到 80 字以内
-            if len(desc_text) > 80:
-                desc_text = desc_text[:80] + "…"
-            one_liner = desc_text
-        else:
-            # 无 Description 段：取正文前 60 个非标签字符
-            clean = re.sub(r"<[^>]*>", "", content).strip()
-            first_line = clean.split("\n")[0] if clean else ""
-            one_liner = first_line[:60] if len(first_line) > 60 else first_line
-
-        index.append({
-            "keyword": keyword,
-            "title": comment,
-            "one_liner": one_liner,
-            "section": f"## {comment}"
-        })
-
-    if index:
-        index_path = os.path.join(memory_dir, ".worldbook_index.json")
-        with open(index_path, "w", encoding="utf-8") as f:
-            json.dump(index, f, ensure_ascii=False, indent=2)
-
-    return {"index_entries": len(index)}
-
-
 def analyze_card_structure(memory_dir: str) -> dict:
     """扫描 reference.md 的 ## 标题，检测卡片的叙事结构。
 
@@ -973,8 +924,21 @@ def _merge_json_worldbooks(card_data, json_files, card_dir, skip_file=None):
     """合并所有 JSON 文件中的 character_book.entries 到 card_data。
     支持完整卡片格式 (data.character_book.entries) 和纯世界书格式 (entries)。
     按 entry.id 去重。返回 (合并的额外文件数, 合并的额外条目数)。"""
-    card_data.setdefault("data", {}).setdefault("character_book", {}).setdefault("entries", [])
-    existing = card_data["data"]["character_book"]["entries"]
+    # 确保 card_data["data"] 存在且为字典
+    if "data" not in card_data or not isinstance(card_data.get("data"), dict):
+        card_data["data"] = {}
+    data_obj = card_data["data"]
+
+    # 确保 character_book 存在且为字典
+    if "character_book" not in data_obj or not isinstance(data_obj.get("character_book"), dict):
+        data_obj["character_book"] = {}
+    char_book = data_obj["character_book"]
+
+    # 确保 entries 存在且为列表
+    if "entries" not in char_book or not isinstance(char_book.get("entries"), list):
+        char_book["entries"] = []
+
+    existing = char_book["entries"]
     existing_ids = {e.get("id") for e in existing if isinstance(e, dict) and e.get("id")}
 
     file_count = 0
@@ -1043,7 +1007,13 @@ def run_import(card_dir, root_dir):
     files = os.listdir(card_dir) if os.path.isdir(card_dir) else []
     files = [f for f in files if not f.startswith(".")]
     png_files = [f for f in files if f.lower().endswith(".png")]
-    json_files = [f for f in files if f.lower().endswith(".json")]
+
+    # 过滤掉已知的非卡片 JSON 文件
+    skip_json_patterns = ["chat_log.json", "content.js", "state.js", ".var_diff.json", ".initvar.json", ".beautify.json"]
+    json_files = [
+        f for f in files
+        if f.lower().endswith(".json") and not any(p in f for p in skip_json_patterns)
+    ]
     txt_files = [f for f in files if f.lower().endswith(".txt")]
 
     card_data = None

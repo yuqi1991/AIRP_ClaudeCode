@@ -12,7 +12,12 @@ import sys
 import urllib.request
 from pathlib import Path
 
-from mvu_engine import extract_commands, execute_commands, compute_current_variables, audit_variables, validate_command, generate_schema, SchemaNode
+from engine.mvu import extract_commands, execute_commands, compute_current_variables, audit_variables, validate_command, generate_schema, SchemaNode
+from engine.card import (read_chat_log, write_chat_log, read_state, write_state,
+                         _get_latest_variables, _get_latest_delta, _get_turn_variables, update_state)
+from engine.render import (resolve_macros, _stat_color, _stat_max_guess, _render_stat_bar,
+                           _html_escape, _build_beautify_panel, _escape_attr, _strip_tags,
+                           _strip_mvu_commands, _text_to_p, _extract_options)
 
 STYLES = Path(__file__).parent / "styles"
 BRIDGE = "http://localhost:8765"
@@ -60,429 +65,6 @@ def _parse_tokens(raw):
     return tokens
 
 
-# ═══ File I/O ═══
-
-def read_chat_log(card_folder):
-    path = Path(card_folder) / "chat_log.json"
-    if path.exists():
-        with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
-    return []
-
-
-def write_chat_log(card_folder, log):
-    path = Path(card_folder) / "chat_log.json"
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(log, f, ensure_ascii=False, indent=2)
-
-
-def read_state():
-    path = STYLES / "state.js"
-    if not path.exists():
-        return (
-            'window.STATE = {\n'
-            '  world: "", stage: "开局", time: "", location: "", env: "",\n'
-            '  quest: "", generatedCount: 0, totalTokens: 0, actions: [],\n'
-            '  player: "", hp: 0, hpMax: 0, mp: 0, mpMax: 0, exp: 0, expMax: 0, ed: false,\n'
-            '  npcs: []\n'
-            '};\n'
-        )
-    with open(path, "r", encoding="utf-8") as f:
-        return f.read()
-
-
-def write_state(js, card_folder=None):
-    path = STYLES / "state.js"
-    with open(path, "w", encoding="utf-8") as f:
-        f.write(js)
-    if card_folder:
-        card_js_path = Path(card_folder) / "state.js"
-        with open(card_js_path, "w", encoding="utf-8") as f:
-            f.write(js)
-
-
-def _get_latest_variables(log):
-    """Extract current stat_data from the most recent turn that has variables."""
-    for turn in reversed(log):
-        variables = turn.get("variables")
-        if variables and "stat_data" in variables:
-            return variables["stat_data"]
-    return {}
-
-
-def _get_latest_delta(log):
-    """Extract delta from the most recent turn."""
-    if log:
-        variables = log[-1].get("variables")
-        if variables and "delta" in variables:
-            return variables["delta"]
-    return {}
-
-
-def _get_turn_variables(log):
-    """Return per-turn variable snapshots for inline card rendering.
-    Returns [{index, stat_data, delta}, ...] for every turn.
-    """
-    result = []
-    for turn in log:
-        entry = {"index": turn.get("index", 0)}
-        variables = turn.get("variables")
-        if variables:
-            entry["stat_data"] = variables.get("stat_data", {})
-            entry["delta"] = variables.get("delta", {})
-        else:
-            entry["stat_data"] = {}
-            entry["delta"] = {}
-        result.append(entry)
-    return result
-
-
-def resolve_macros(text, stat_data):
-    """Replace {{getvar::path}} and {{formatvar::path}} macros with variable values.
-
-    {{getvar::玩家.姓名}}   → renders the scalar value directly
-    {{formatvar::互动对象}}  → renders nested dict as indented YAML/JSON block
-    """
-    import re as _re
-
-    def _resolve(path_str):
-        keys = path_str.split(".")
-        current = stat_data
-        for k in keys:
-            if not isinstance(current, dict):
-                return None
-            current = current.get(k)
-        return current
-
-    def _format_val(v):
-        if v is None:
-            return "(未定义)"
-        if isinstance(v, (int, float, bool, str)):
-            return str(v)
-        if isinstance(v, (dict, list)):
-            try:
-                import yaml
-                return yaml.dump(v, allow_unicode=True, default_flow_style=False).strip()
-            except ImportError:
-                return json.dumps(v, ensure_ascii=False, indent=2)
-        return str(v)
-
-    # {{getvar::path}}
-    text = _re.sub(
-        r"\{\{getvar::([^}]+)\}\}",
-        lambda m: _format_val(_resolve(m.group(1).strip())),
-        text,
-    )
-
-    # {{formatvar::path}}
-    text = _re.sub(
-        r"\{\{formatvar::([^}]+)\}\}",
-        lambda m: _format_val(_resolve(m.group(1).strip())),
-        text,
-    )
-
-    # {{format_message_variable::stat_data.XXX}} — SillyTavern macro for beautify panel
-    text = _re.sub(
-        r"\{\{format_message_variable::stat_data\.([^}]+)\}\}",
-        lambda m: _format_val(_resolve(m.group(1).strip())),
-        text,
-    )
-
-    # {{format_message_variable::XXX}} without stat_data prefix (resolve from root)
-    text = _re.sub(
-        r"\{\{format_message_variable::([^}]+)\}\}",
-        lambda m: _format_val(_resolve(m.group(1).strip())),
-        text,
-    )
-
-    return text
-
-
-def _stat_color(name):
-    """Map stat names to bar colors."""
-    n = name.lower()
-    if '悔恨' in n: return '#b0624a'
-    if '情欲' in n or '情慾' in n: return '#d4948a'
-    if '屈从' in n or '屈從' in n: return '#c49a56'
-    if '献身' in n or '獻身' in n: return '#9a7aaa'
-    if 'hp' in n or '血' in n: return '#b0624a'
-    if 'mp' in n or '魔' in n or '蓝' in n: return '#5a8a9a'
-    if 'exp' in n or '经验' in n: return '#cc9a56'
-    return '#5a7a5a'
-
-
-def _stat_max_guess(val):
-    """Guess a sensible max for a stat value to normalize bar width."""
-    if val <= 10: return 10
-    if val <= 50: return 50
-    if val <= 100: return 100
-    mag = 10 ** (len(str(int(val))) - 1)
-    import math
-    return int(math.ceil(val / mag) * mag)
-
-
-def _render_stat_bar(label, val, max_val=None):
-    """Render a single stat bar as inline HTML."""
-    if max_val is None:
-        max_val = _stat_max_guess(val)
-    pct = min(100, round(val / max_val * 100))
-    color = _stat_color(label)
-    return (
-        '<div class="tv-stat-row">'
-        '<span class="tv-stat-label">' + label + '</span>'
-        '<div class="tv-stat-bar-bg"><div class="tv-stat-bar-fill" style="width:'
-        + str(pct) + '%;background:' + color + '"></div></div>'
-        '<span class="tv-stat-value">' + str(val) + '</span>'
-        '</div>'
-    )
-
-
-def _html_escape(text):
-    """Minimal HTML escaping."""
-    if not isinstance(text, str):
-        text = str(text)
-    return text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('"', '&quot;')
-
-
-def _build_beautify_panel(stat_data, delta, beautify_data):
-    """Build the full inline beautify panel HTML from latest variables.
-
-    Returns a complete HTML string to be appended after all turn-wrap divs.
-    Supports phone_data from tavern_helper for rich theme rendering
-    (avatars, backgrounds, fonts, user profile).
-    """
-    if not stat_data:
-        return ''
-
-    bd = beautify_data or {}
-    phone = bd.get('phone_data', {})
-    panel_title = bd.get('panel_title', '') or phone.get('user', {}).get('name', '') or ''
-    user_name = bd.get('user_name', '') or phone.get('user', {}).get('name', '')
-    user_avatar = bd.get('user_avatar', '') or phone.get('user', {}).get('avatar', '')
-    panel_bg = bd.get('panel_bg', '') or phone.get('user', {}).get('phoneBg', '')
-    panel_font = bd.get('panel_font', '') or phone.get('user', {}).get('font', '')
-    fonts = bd.get('fonts', []) or phone.get('fonts', [])
-    random_avatars = bd.get('randomAvatars', []) or phone.get('randomAvatars', [])
-
-    # Separate world metadata from characters
-    world_data = stat_data.get('世界', {})
-    # Character keys — main cast (with sub-objects) come first, NPCs last
-    char_keys = []
-    npc_keys = []
-    for k in stat_data:
-        if k == '世界':
-            continue
-        v = stat_data[k]
-        if isinstance(v, dict):
-            has_subs = any(isinstance(sv, dict) for sv in v.values())
-            if has_subs:
-                char_keys.append(k)
-            else:
-                npc_keys.append(k)
-    ordered_keys = char_keys + npc_keys
-
-    # ---- Font CSS (load from phone_data fonts list) ----
-    font_css = ''
-    if fonts:
-        for f in fonts:
-            fname = f.get('name', '')
-            furl = f.get('url', '')
-            if furl:
-                font_css += '@import url(' + _html_escape(furl) + ');\n'
-
-    # ---- Panel background style ----
-    bg_style = ''
-    if panel_bg:
-        bg_style = 'background-image:url(' + _html_escape(panel_bg) + ');background-size:cover;background-position:center;'
-
-    # ---- Tabs ----
-    tabs_html = ''
-    all_tabs = []
-    if world_data:
-        all_tabs.append(('世界', '世界'))
-
-    for i, ck in enumerate(ordered_keys):
-        # Assign avatar round-robin from randomAvatars if available
-        all_tabs.append((ck, ck))
-
-    for i, (tab_id, tab_label) in enumerate(all_tabs):
-        active = ' active' if i == 0 else ''
-        # Avatar icon for character tabs
-        avatar_html = ''
-        if tab_id != '世界' and random_avatars:
-            av_idx = (i - (1 if world_data else 0)) % len(random_avatars)
-            avatar_html = '<span class="beautify-tab-avatar" style="background-image:url(' + _html_escape(random_avatars[av_idx]) + ')"></span>'
-        tabs_html += '<button class="beautify-tab-btn' + active + '" data-tab="' + _html_escape(tab_id) + '">' + avatar_html + '<span>' + _html_escape(tab_label) + '</span></button>'
-
-    # ---- Tab body ----
-    body_html = ''
-
-    # World tab
-    if world_data:
-        body_html += '<div class="beautify-tab-panel" data-tab="世界">'
-        body_html += '<div class="beautify-info-grid">'
-        for key in world_data:
-            val = world_data[key]
-            body_html += '<div class="beautify-info-card"><div class="beautify-info-label">' + _html_escape(key) + '</div><div class="beautify-info-value">' + _html_escape(str(val)) + '</div></div>'
-        body_html += '</div></div>'
-
-    # Character tabs
-    for ci, ck in enumerate(ordered_keys):
-        cd = stat_data[ck]
-        is_npc = ck in npc_keys
-        body_html += '<div class="beautify-tab-panel" data-tab="' + _html_escape(ck) + '">'
-
-        # ---- Character card header with avatar ----
-        av_idx = ci % len(random_avatars) if random_avatars else -1
-        char_avatar = random_avatars[av_idx] if av_idx >= 0 else ''
-
-        body_html += '<div class="beautify-char-card">'
-
-        # Avatar
-        if char_avatar:
-            body_html += '<div class="beautify-char-avatar-wrap"><div class="beautify-char-avatar" style="background-image:url(' + _html_escape(char_avatar) + ')" onclick="zoomPortrait(this)" title="点击放大"></div></div>'
-
-        # Info column
-        body_html += '<div class="beautify-char-info">'
-        body_html += '<div class="beautify-char-name">' + _html_escape(ck) + '</div>'
-
-        # Current condition
-        if cd.get('当前状况'):
-            body_html += '<div class="beautify-char-condition">' + _html_escape(str(cd['当前状况'])) + '</div>'
-
-        # Stat bars
-        stat_items = [(k, v) for k, v in cd.items() if isinstance(v, (int, float))]
-        if stat_items:
-            body_html += '<div class="beautify-stat-bars">'
-            for skey, sval in stat_items:
-                body_html += _render_stat_bar(skey, sval)
-            body_html += '</div>'
-
-        # Pregnancy / stage badges
-        badges_html = ''
-        if cd.get('是否受孕'):
-            badges_html += '<span class="beautify-badge badge-pregnant">孕</span>'
-        if cd.get('当前阶段'):
-            badges_html += '<span class="beautify-badge badge-stage">阶段 ' + _html_escape(str(cd['当前阶段'])) + '</span>'
-        if badges_html:
-            body_html += '<div class="beautify-badges">' + badges_html + '</div>'
-
-        body_html += '</div>'  # end char-info
-        body_html += '</div>'  # end char-card
-
-        # ---- Sub-objects: 着装 + 身体状况 side by side ----
-        outfit = cd.get('着装', {})
-        body_stats = cd.get('身体状况', {})
-        if outfit or body_stats:
-            body_html += '<div class="beautify-sub-grid">'
-            if outfit:
-                body_html += '<div class="beautify-sub-card"><div class="beautify-sub-title">着装</div>'
-                for sk, sv in outfit.items():
-                    body_html += '<div class="beautify-sub-row"><span class="beautify-sub-key">' + _html_escape(sk) + '</span><span class="beautify-sub-val">' + _html_escape(str(sv)) + '</span></div>'
-                body_html += '</div>'
-            if body_stats:
-                body_html += '<div class="beautify-sub-card"><div class="beautify-sub-title">身体</div>'
-                for sk, sv in body_stats.items():
-                    body_html += '<div class="beautify-sub-row"><span class="beautify-sub-key">' + _html_escape(sk) + '</span><span class="beautify-sub-val">' + _html_escape(str(sv)) + '</span></div>'
-                body_html += '</div>'
-            body_html += '</div>'
-
-        # Other dict sub-objects (not 着装/身体状况)
-        for key, val in cd.items():
-            if isinstance(val, dict) and key not in ('着装', '身体状况'):
-                body_html += '<details class="beautify-sub"><summary>' + _html_escape(key) + '</summary>'
-                for sk, sv in val.items():
-                    body_html += '<div class="beautify-sub-row"><span class="beautify-sub-key">' + _html_escape(sk) + '</span><span class="beautify-sub-val">' + _html_escape(str(sv)) + '</span></div>'
-                body_html += '</details>'
-
-        # Delta changes
-        char_delta = {}
-        for dk, dv in (delta or {}).items():
-            if dk.startswith(ck + '.'):
-                short_key = dk[len(ck) + 1:]
-                char_delta[short_key] = dv
-
-        if char_delta:
-            body_html += '<div class="beautify-delta">'
-            for dk, dv in char_delta.items():
-                old_v = dv.get('old', '?') if isinstance(dv, dict) else '?'
-                new_v = dv.get('new', '?') if isinstance(dv, dict) else str(dv)
-                body_html += '<div class="beautify-delta-item"><span class="beautify-delta-key">' + _html_escape(dk) + '</span> <span class="beautify-delta-old">' + _html_escape(str(old_v)) + '</span> → <span class="beautify-delta-new">' + _html_escape(str(new_v)) + '</span></div>'
-            body_html += '</div>'
-
-        body_html += '</div>'  # end tab-panel
-
-    # ---- Assemble full panel ----
-    panel_html = ''
-
-    # Font loading
-    if font_css:
-        panel_html += '<style>' + font_css + '</style>'
-
-    panel_html += '<div class="beautify-panel-inline" style="' + bg_style + '">'
-
-    # Overlay for readability when bg is set
-    if panel_bg:
-        panel_html += '<div class="beautify-panel-overlay">'
-
-    panel_html += '<div class="beautify-dashboard">'
-
-    # Header with user avatar
-    panel_html += '<div class="beautify-header">'
-    if user_avatar:
-        panel_html += '<div class="beautify-user-avatar" style="background-image:url(' + _html_escape(user_avatar) + ')"></div>'
-    panel_html += '<div class="beautify-header-text">'
-    panel_html += '<span class="beautify-header-title">' + _html_escape(panel_title or '状态面板') + '</span>'
-    if user_name:
-        panel_html += '<span class="beautify-header-sub">' + _html_escape(user_name) + '</span>'
-    panel_html += '</div></div>'
-
-    # Tabs
-    panel_html += '<div class="beautify-tabs">' + tabs_html + '</div>'
-
-    # Tab body
-    panel_html += '<div class="beautify-tab-content">' + body_html + '</div>'
-
-    panel_html += '</div>'  # end dashboard
-
-    if panel_bg:
-        panel_html += '</div>'  # end overlay
-
-    panel_html += '</div>'  # end panel-inline
-
-    # Font family
-    if panel_font:
-        panel_html += '<style>.beautify-panel-inline .beautify-dashboard{font-family:"' + _html_escape(panel_font) + '",sans-serif;}</style>'
-
-    # Tab switching script
-    panel_html += '''<script>
-(function(){
-  var panel = document.querySelector('.beautify-panel-inline');
-  if (!panel || panel.getAttribute('data-tab-wired')) return;
-  panel.setAttribute('data-tab-wired', '1');
-  var tabs = panel.querySelectorAll('.beautify-tab-btn');
-  var panels = panel.querySelectorAll('.beautify-tab-panel');
-  for (var i = 0; i < panels.length; i++) {
-    panels[i].style.display = (i === 0) ? '' : 'none';
-  }
-  for (var j = 0; j < tabs.length; j++) {
-    tabs[j].addEventListener('click', function(e) {
-      var tabId = this.getAttribute('data-tab');
-      for (var k = 0; k < tabs.length; k++) {
-        tabs[k].classList.remove('active');
-      }
-      this.classList.add('active');
-      for (var m = 0; m < panels.length; m++) {
-        panels[m].style.display = (panels[m].getAttribute('data-tab') === tabId) ? '' : 'none';
-      }
-    });
-  }
-})();
-</script>'''
-
-    return panel_html
-
-
 def write_content_js(card_folder):
     """Rebuild content.js from chat_log.json. Exposes TURN_TOKENS for per-turn token display."""
     log = read_chat_log(card_folder)
@@ -516,6 +98,14 @@ def write_content_js(card_folder):
         if tokens:
             turn_tokens[str(turn_idx)] = tokens
 
+        # Build display wrap for this turn (one per turn)
+        wrap = '<div class="turn-wrap">'
+        if user_raw:
+            wrap += '<div class="turn-user"><div class="turn-role">你</div><div class="turn-text">' + user_raw + '</div></div>'
+        wrap += '<div class="turn-ai"><div class="turn-role">叙事</div><div class="turn-text">' + ai_display + '</div></div>'
+        wrap += '</div>'
+        html_parts.append(wrap)
+
     # Extract startup cost from turn 0 token data (persistent across rounds)
     startup_cost = {}
     if log and log[0].get("tokens"):
@@ -530,13 +120,6 @@ def write_content_js(card_folder):
                 "total": st_total,
                 "cache_hit": t0.get("cache_hit", 0),
             }
-
-        wrap = '<div class="turn-wrap">'
-        if user_raw:
-            wrap += '<div class="turn-user"><div class="turn-role">你</div><div class="turn-text">' + user_raw + '</div></div>'
-        wrap += '<div class="turn-ai"><div class="turn-role">叙事</div><div class="turn-text">' + ai_display + '</div></div>'
-        wrap += '</div>'
-        html_parts.append(wrap)
 
     content_html = "".join(html_parts)
 
@@ -643,58 +226,6 @@ def write_content_js(card_folder):
         f.write(js)
 
 
-def _escape_attr(s):
-    return s.replace("&", "&amp;").replace('"', "&quot;").replace("<", "&lt;").replace(">", "&gt;")
-
-
-def update_state(**kwargs):
-    """Update fields in state.js. Keys: stage, time, location, env, quest, generatedCount, npcs, etc."""
-    raw = read_state()
-    for key, value in kwargs.items():
-        if isinstance(value, str):
-            raw = re.sub(rf'(\s+{key}:\s*")[^"]*(")', rf'\g<1>{value}\g<2>', raw)
-        elif isinstance(value, (int, float)):
-            raw = re.sub(rf'(\s+{key}:\s*)\d+', rf'\g<1>{value}', raw)
-        elif isinstance(value, list):
-            raw = re.sub(rf'(\s+{key}:\s*)\[.*?\]', lambda m: m.group(1) + json.dumps(value, ensure_ascii=False), raw, flags=re.DOTALL)
-    write_state(raw)
-
-
-def _strip_tags(text, tag):
-    return re.sub(rf"<{tag}>.*?</{tag}>", "", text, flags=re.DOTALL).strip()
-
-
-def _strip_mvu_commands(text):
-    """Strip MVU _.set/add/insert etc. commands and UpdateVariable/json_patch blocks.
-
-    These are the MVU engine's responsibility — the card author's regex
-    scripts handle <UpdateVariable> blocks for ST compatibility, but bare
-    _.set() lines must be removed by us before the content reaches the user.
-    """
-    # Bare lodash-style commands: _.set('path', value);
-    text = re.sub(
-        r"^\s*_\.(?:set|insert|assign|remove|unset|delete|add|move)\s*\(.*?\)\s*;?\s*$",
-        "",
-        text,
-        flags=re.MULTILINE,
-    )
-    # <json_patch> blocks
-    text = re.sub(
-        r"<json_patch>[\s\S]*?</json_patch>",
-        "",
-        text,
-    )
-    # <UpdateVariable> blocks
-    text = re.sub(
-        r"<UpdateVariable>[\s\S]*?</UpdateVariable>",
-        "",
-        text,
-    )
-    # Collapse consecutive blank lines
-    text = re.sub(r"\n\s*\n\s*\n+", "\n\n", text)
-    return text.strip()
-
-
 # ═══ Turn Operations ═══
 
 MVU_SERVER = "http://127.0.0.1:8766"
@@ -739,15 +270,6 @@ def _validate_commands_via_server(commands):
                 "error": r.get("error", "unknown"),
             })
     return valid, errors
-
-
-def _get_injections_via_server(stat_data):
-    """Get injection keywords from mvu_server. Returns list of dicts."""
-    result = _mvu_post("inject", {"stat_data": stat_data})
-    if result is None:
-        return []
-    keywords = result.get("keywords", [])
-    return [{"keyword": kw, "section": f"## {kw}"} for kw in keywords]
 
 
 def _load_var_schema(card_folder, fallback_data=None):
@@ -992,132 +514,6 @@ def delete_turns(card_folder, from_index):
     write_state(state_raw, card_folder)
 
 
-# ═══ Injection Rules ═══
-
-def apply_injections(card_folder):
-    """Get injection keywords from mvu_server (real script execution).
-
-    Falls back to file-based .injection_rules.json parsing.
-
-    Returns a list of dicts: [{keyword, source_path, one_liner, section}, ...]
-    Prints JSON to stdout for consumption by Cron prompt.
-    """
-    import re as _re
-
-    # Get current variables from chat_log
-    log = read_chat_log(card_folder)
-    stat_data = {}
-    for turn in reversed(log):
-        v = turn.get("variables")
-        if v and "stat_data" in v:
-            stat_data = v["stat_data"]
-            break
-
-    # Try mvu_server first (real keyword script execution)
-    server_keywords = _get_injections_via_server(stat_data)
-    if server_keywords:
-        # Load worldbook index for one_liner enrichment
-        index_path = Path(card_folder) / "memory" / ".worldbook_index.json"
-        worldbook_index = {}
-        if index_path.exists():
-            try:
-                with open(index_path, "r", encoding="utf-8") as f:
-                    for entry in json.load(f):
-                        worldbook_index[entry.get("keyword", "")] = entry
-            except Exception:
-                pass
-        for kw in server_keywords:
-            entry = worldbook_index.get(kw["keyword"], {})
-            kw["one_liner"] = entry.get("one_liner", "")
-            kw["section"] = entry.get("section", kw["section"])
-        print(json.dumps(server_keywords, ensure_ascii=False))
-        return server_keywords
-
-    # Fallback: file-based rules
-    rules_path = Path(card_folder) / ".injection_rules.json"
-    if not rules_path.exists():
-        print(json.dumps([]))
-        return []
-
-    try:
-        with open(rules_path, "r", encoding="utf-8") as f:
-            rules = json.load(f)
-    except Exception:
-        print(json.dumps([]))
-        return []
-
-    if not rules:
-        print(json.dumps([]))
-        return []
-
-    # Load worldbook index
-    index_path = Path(card_folder) / "memory" / ".worldbook_index.json"
-    worldbook_index = {}
-    if index_path.exists():
-        try:
-            with open(index_path, "r", encoding="utf-8") as f:
-                for entry in json.load(f):
-                    worldbook_index[entry.get("keyword", "")] = entry
-        except Exception:
-            pass
-
-    results = []
-    seen = set()
-
-    for rule in rules:
-        source_path = rule.get("source_path", "")
-        split_pattern = rule.get("split_pattern", "[、,，\\n]")
-        prefix = rule.get("prefix", "")
-
-        value = _lodash_get(stat_data, source_path)
-        if not value or not isinstance(value, str) or not value.strip():
-            continue
-
-        split_re = split_pattern
-        if split_re.startswith("/") and split_re.rfind("/") > 0:
-            last_slash = split_re.rfind("/")
-            split_re = split_re[1:last_slash]
-        try:
-            keywords = _re.split(split_re, value)
-        except _re.error:
-            keywords = value.replace("、", ",").replace("，", ",").split(",")
-
-        for kw in keywords:
-            kw = kw.strip()
-            if not kw:
-                continue
-            if prefix and not kw.startswith(prefix):
-                kw = prefix + kw
-            if kw in seen:
-                continue
-            seen.add(kw)
-            entry = worldbook_index.get(kw, {})
-            results.append({
-                "keyword": kw,
-                "source_path": source_path,
-                "one_liner": entry.get("one_liner", ""),
-                "section": entry.get("section", f"## {kw}"),
-            })
-
-    print(json.dumps(results, ensure_ascii=False))
-    return results
-
-
-def _lodash_get(obj, path_str):
-    """Resolve dot-separated path like '世界设定.性癖' from nested dict."""
-    if not obj or not path_str:
-        return None
-    keys = path_str.split(".")
-    current = obj
-    for k in keys:
-        if not isinstance(current, dict):
-            return None
-        current = current.get(k)
-        if current is None:
-            return None
-    return current
-
-
 # ═══ Bridge Calls ═══
 
 def bridge_done():
@@ -1130,12 +526,6 @@ def bridge_done():
 # ═══ Openings Management ═══
 
 OPENINGS_FILE = STYLES / "openings.json"
-
-
-def save_openings(openings):
-    """Save openings list to openings.json."""
-    with open(OPENINGS_FILE, "w", encoding="utf-8") as f:
-        json.dump(openings, f, ensure_ascii=False, indent=2)
 
 
 def list_openings():
@@ -1194,35 +584,14 @@ def switch_opening(card_folder, opening_id):
     return True
 
 
-def _text_to_p(text):
-    """Convert plain text with \\r\\n\\r\\n paragraph breaks to <p>-wrapped HTML."""
-    # Normalize line endings
-    text = text.replace("\r\n", "\n").replace("\r", "\n")
-    # Split on double newlines (blank lines between paragraphs)
-    paras = [p.strip() for p in text.split("\n\n") if p.strip()]
-    return "\n".join(f"<p>{p}</p>" for p in paras)
-
-
-def _extract_options(ai_text):
-    """Extract options block from AI text, preserving original."""
-    m = re.search(r"<options>(.*?)</options>", ai_text, re.DOTALL)
-    return m.group(1).strip() if m else ""
-
-
 # ═══ CLI ═══
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print("Usage: python handler.py <card_folder> [--opening|--injections]")
+        print("Usage: python handler.py <card_folder> [--opening]")
         sys.exit(1)
 
     card_folder = sys.argv[1]
-
-    if "--injections" in sys.argv:
-        result = apply_injections(card_folder)
-        if result:
-            print(json.dumps(result, ensure_ascii=False))
-        sys.exit(0)
 
     is_opening = "--opening" in sys.argv
 
@@ -1244,7 +613,7 @@ if __name__ == "__main__":
     # ── Opening: compute startup cost BEFORE append_turn so turn 0 has token stats ──
     if is_opening and not tokens:
         try:
-            from token_stats import save_checkpoint, load_checkpoint
+            from engine.tokens import save_checkpoint, load_checkpoint
             save_checkpoint(card_folder, label="startup_end")
             cp = load_checkpoint(card_folder)
             startup_cost = cp.get("startup_cost", {})

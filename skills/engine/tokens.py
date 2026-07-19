@@ -24,21 +24,16 @@ from pathlib import Path
 
 def _project_slug():
     """Derive project slug from current working directory.
-    Mirrors Claude Code's convention: D:\\ds4\\test → D--ds4-test."""
+    Example: /Users/me/project → -Users-me-project."""
     cwd = os.getcwd()
-    # Drive letter prefix: D:\ → D--
     slug = cwd.replace(':\\', '--', 1).replace(':/', '--', 1)
-    # Remaining path separators → -
     slug = slug.replace('\\', '-').replace('/', '-')
     return slug
 
 
 def _sessions_dir():
     """Return the ~/.claude/projects/<slug>/ directory."""
-    home = os.environ.get("USERPROFILE", os.environ.get("HOME", ""))
-    if not home:
-        return None
-    return Path(home) / ".claude" / "projects" / _project_slug()
+    return Path.home() / ".claude" / "projects" / _project_slug()
 
 
 def locate_transcript():

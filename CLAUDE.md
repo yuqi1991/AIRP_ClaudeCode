@@ -15,7 +15,7 @@
 - 当前卡片文件夹下的 `memory/` 目录及其所有 `.md`、`.json` 文件 — 跨会话记忆与世界书索引
 - `{ROOT}/skills/styles/round_context.txt` — 回合预处理汇总上下文
 - `{ROOT}/skills/styles/import_context.txt` — 导入预处理汇总上下文
-- `{ROOT}/skills/handler.py`, `{ROOT}/skills/server.py`, `{ROOT}/skills/mvu_engine.py`, `{ROOT}/skills/mvu_check.py`, `{ROOT}/skills/match_worldbook.py`, `{ROOT}/skills/write_memory.py`, `{ROOT}/skills/round_prepare.py`, `{ROOT}/skills/round_deliver.py`, `{ROOT}/skills/import_prepare.py`, `{ROOT}/skills/start_server.py`
+- `{ROOT}/skills/handler.py`, `{ROOT}/skills/server.py`, `{ROOT}/skills/mvu_engine.py`, `{ROOT}/skills/mvu_check.py`, `{ROOT}/skills/write_memory.py`, `{ROOT}/skills/round_prepare.py`, `{ROOT}/skills/round_deliver.py`, `{ROOT}/skills/import_prepare.py`, `{ROOT}/skills/start_server.py`
 - `{ROOT}/STORY.md` — 叙事理论框架，剧情规划时读取
 - `{ROOT}/CLAUDE.md`
 
@@ -29,16 +29,17 @@
 - 当前卡片文件夹下的 `memory/` 目录及 `MEMORY.md`、`project.md`、`reference.md`、`feedback.md`、`user.md`、`.worldbook_index.json`、`.card_structure.json` — 跨会话记忆读写
 
 ### Bash 命令
-- `powershell -Command "Get-Process python | Where-Object { $_.CommandLine -like '*skills*' } | Stop-Process -Force"` — 清理残留进程
-- `taskkill` / `Stop-Process` — 清理残留进程
+- `pgrep -f 'skills/server.py'` / `pkill -f 'skills/server.py'` — 检查/清理桥接服务器进程
+- `pgrep -f 'mvu_server.js'` / `pkill -f 'mvu_server.js'` — 检查/清理 MVU 进程
+- `lsof -nP -iTCP:8765 -sTCP:LISTEN` / `lsof -nP -iTCP:8766 -sTCP:LISTEN` — 检查端口占用
+- `open http://localhost:8765` — 在 macOS 默认浏览器打开前端
 - `curl -s http://localhost:8765/api/pending` — 检查待处理输入
 - `curl -s http://localhost:8765/api/openings` — 获取开场白
 - `curl -s -X POST http://localhost:8765/api/switch_opening -H "Content-Type: application/json" -d ...` — 切换开场白
 - `curl -s --max-time 310 http://localhost:8765/api/wait_pending` — 长轮询等待用户输入
 - `python "{ROOT}/skills/server.py" &` — 后台启动桥接服务器（start_server.py 内部调用，此权限为兜底）
-- `python "{ROOT}/skills/handler.py" "<卡片文件夹>" [--opening|--injections]` — 处理回合 / 开局 / 注入规则查询
+- `python "{ROOT}/skills/handler.py" "<卡片文件夹>" [--opening]` — 处理回合 / 开局
 - `python "{ROOT}/skills/import_card.py" "<卡片文件夹>" "{ROOT}"` — 单独导入角色卡（兜底）
-- `python "{ROOT}/skills/match_worldbook.py" "<卡片文件夹>"` — 匹配变量变更与世界书索引
 - `python "{ROOT}/skills/write_memory.py" "<卡片文件夹>"` — 追加本轮摘要到 project.md
 - `python "{ROOT}/skills/round_prepare.py" "<卡片文件夹>" "{ROOT}"` — 回合预处理管线
 - `python "{ROOT}/skills/round_deliver.py" "<卡片文件夹>" "{ROOT}"` — 回合后处理管线
@@ -52,7 +53,7 @@
 - 单独导入（如需）：`python "{ROOT}/skills/import_card.py" "<卡片文件夹>" "{ROOT}"`
 - 读取卡片文件夹下的 `.card_data.json`、`.initvar.json`、`.beautify.json`、`.regex_scripts.json`
 - 读取 `{ROOT}/skills/styles/import_context.txt` — 启动汇总上下文
-- 如果端口被多进程占用，直接 kill 全部后重启
+- 如果端口被多进程占用，使用 `pkill -f 'skills/server.py'` 和 `pkill -f 'mvu_server.js'` 清理后重启
 
 > **{ROOT}** = 本文件所在目录。下文所有路径均相对于此。
 
@@ -70,7 +71,7 @@ python "{ROOT}/skills/import_prepare.py" "<卡片文件夹>" "{ROOT}"
 - **Phase 0 — 清理**：杀掉残留 Python 进程（保留自身）、删除残留 .pending
 - **Phase 1 — 导入**：代理 `import_card.run_import()` 完成角色卡解析（PNG/JSON/TXT → card_data, openings, memory, worldbook index, card structure, initvar, beautify, regex_scripts, phone_data）
 - **Phase 2 — 会话初始化**：写入 `.card_path`、`state.js`（预填 world name）、`content.js`（占位模板）、`chat_log.json`（仅当不存在时创建）、`.session_init`
-- **Phase 3 — 上下文**：写入 `import_context.txt`（启动阶段汇总上下文，详见下方文件结构）
+- **Phase 3 — 上下文**：写入 `import_context.txt`（启动阶段汇总上下文，详见下方文件结构）。若 `.worldbook_index.json` 有缺 `usage` 的条目，文件内会带 `USAGE_TASK` 段——须在开局前读一次 `reference.md`，为这些条目各生成一句 `usage` 并写回 `.worldbook_index.json`（一次性，之后常驻）
 - **Phase 4 — 输出**：打印 JSON 摘要到 stdout
 
 ### 2. 启动桥接服务器
@@ -93,20 +94,20 @@ Read: {ROOT}/skills/styles/import_context.txt
 |---------|------|
 | `CARD_INFO` | 角色名、世界名、来源类型、合并的世界书数量 |
 | `MEMORY_FILES` | 记忆文件列表及描述（含 .worldbook_index.json / .card_structure.json） |
-| `WORLDBOOK_INDEX` | 全部世界书条目索引（关键词+摘要，限前 30 条） |
+| `WORLDBOOK_CATALOG` | 全部世界书条目清单（标题+usage，每条一行，skill 模式） |
+| `USAGE_TASK` | 仅当有条目缺 usage 时出现：列出待生成条目+规范，读 reference.md 生成并写回索引 |
 | `CARD_STRUCTURE` | 阶段/事件/角色检测结果 |
 | `INITIAL_VARIABLES` | 初始变量路径树及当前值 |
-| `INJECTION_RULES` | 注入规则（如存在） |
 | `OPENINGS` | 开场白列表及预览，标注当前活跃开场 |
 | `SESSION_STATE` | 已初始化的文件清单 |
 | `NEXT_STEPS` | 后续操作指引 |
 
-**世界书检索规则**：
-- `.worldbook_index.json` 在上下文中常驻。
-- `round_context.txt` 的 `WORLD_MATCHES`（变量驱动）和 `INPUT_MATCHES`（用户输入关键词驱动）已自动检索了相关条目的**完整正文**——AI 优先使用这些已就绪的内容。
-- 当叙事涉及索引中已有、但未自动匹配的话题时，用 Grep 按需检索：`grep -n -A 200 "^## {条目标题}$" "{卡片文件夹}/memory/reference.md"`
+**世界书检索规则（skill 模式）**：
+- 世界书条目 = skill。`.worldbook_index.json` 每条目含一行 `usage`（"讲什么+何时读"，导入时由主 agent 生成），是条目的 description。
+- `round_context.txt` 的 `WORLDBOOK_CATALOG` 段是**条目清单**（像 available skills，每条一行 `标题 — usage`），常驻静态前缀。
+- 每轮读 catalog + `USER_INPUT`，**自主判断**本轮该深读哪 2-3 条，用 Grep 取全文（像加载 skill）：`grep -n -A 200 "^## {完整标题}$" "{卡片文件夹}/memory/reference.md"`（标题须用 catalog 中的完整原文，如「黑暗帝国 - 敌人势力」不可简写）
 - 读取到的条目正文 **严格指导** 该话题的叙事描写。
-- 每轮额外 Grep 不超过 2-3 个条目。
+- 每轮 Grep 不超过 2-3 个条目。usage 未生成的条目（首次导入）按 title 判断。
 
 ### 4. 启动输入监听
 ```
@@ -147,7 +148,7 @@ ScheduleWakeup 自循环 + `/api/wait_pending` 长轮询驱动（server.py 内�
 ```
 python "{ROOT}/skills/round_prepare.py" "<卡片文件夹>" "{ROOT}"
 ```
-此脚本自动完成：读 input.txt → 读 settings.json → 读近期记忆 → 世界书索引加载 → 卡结构检查 → match_worldbook 匹配+检索 → 注入规则处理+检索 → mvu_check 变量清单+路径树 → 近期对话摘要 → 写入 `{ROOT}/skills/styles/round_context.txt`
+此脚本自动完成：读 input.txt → 读 settings.json → 读近期记忆 → 世界书 catalog 加载（每条 title+usage）→ 卡结构检查 → mvu_check 变量清单+路径树 → 近期对话摘要 → 写入 `{ROOT}/skills/styles/round_context.txt`（世界书正文不再预塞，改由主 agent 按 catalog 按需 Grep）
 
 ### 创作步骤（AI 核心工作）
 
@@ -157,19 +158,17 @@ python "{ROOT}/skills/round_prepare.py" "<卡片文件夹>" "{ROOT}"
 
 | Section | 位置 | 说明 |
 |---------|------|------|
-| `WORLD_INDEX` | 静态前缀 | 全部世界书条目索引（关键词+摘要），按需 Grep 使用 |
+| `WORLDBOOK_CATALOG` | 静态前缀 | 世界书条目清单（标题+usage，每条一行），按需 Grep 加载全文 |
 | `CARD_STRUCTURE` | 静态前缀 | 角色阶段/事件系统检查结果 |
 | `SETTINGS` | 静态前缀 | 风格/NSFW/字数目标 |
 | `INITVAR_PATHS` | 静态前缀 | 变量基线路径树（JSON Pointer 格式） |
 | `USER_INPUT` | 动态后缀 | 用户原始输入 |
-| `WORLD_MATCHES` | 动态后缀 | 变量驱动匹配的世界书条目**完整正文** |
-| `INPUT_MATCHES` | 动态后缀 | 用户输入关键词匹配的世界书条目**完整正文** |
-| `INJECTIONS` | 动态后缀 | 注入规则驱动的世界书条目**完整正文** |
 | `VARIABLE_PATHS` | 动态后缀 | 当前变量路径清单+值+上轮触及状态 |
 | `RECENT_MEMORY` | 动态后缀 | 最近剧情摘要 |
 | `RECENT_CHAT` | 动态后缀 | 最近 3 轮对话摘要 |
 
-**步骤 3** — 走「生成前思考流程」五步 → 输入润色 → 生成正文 + MVU 命令：
+**步骤 3** — 走「生成前思考流程」五步 → 按需 Grep 加载世界书条目 → 输入润色 → 生成正文 + MVU 命令：
+- **按需 Grep 检索**：读 `WORLDBOOK_CATALOG`（标题+usage）+ `USER_INPUT`，挑出本轮真正需要的 2-3 个条目，用 Grep 取全文。不预塞、不自动匹配——检索完全由你判断。
 - **JSONPatch 路径必须严格匹配 VARIABLE_PATHS 中的路径结构**（尤其注意嵌套层级）
 - 每轮 4-12 个命令（视叙事复杂度）
 

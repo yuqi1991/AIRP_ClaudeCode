@@ -105,9 +105,9 @@
 
 ## 🚀 快速开始
 
-> ⚠️ **重要：请使用 PowerShell 运行本项目，不要使用 cmd（命令提示符）。**
-> 
-> 本项目大量使用 PowerShell 命令进行进程管理、端口清理等操作。cmd 无法执行这些命令，会导致启动失败或端口占用。在文件夹地址栏输入 `powershell` 回车即可打开 PowerShell。
+> ⚠️ **重要：请使用 macOS 终端运行本项目。**
+>
+> 推荐使用 Terminal 或 iTerm2，默认 zsh 即可。项目的进程管理、端口排查和启动脚本均按 macOS 环境配置。
 
 ### 5 分钟从零开始
 
@@ -117,13 +117,20 @@
 
 | 你需要 | 怎么获取 |
 |--------|---------|
-| **Python 3.x** | [python.org](https://www.python.org/) 下载安装（安装时勾选"Add Python to PATH"） |
+| **Python 3.x** | macOS 自带或通过 Homebrew 安装：`brew install python` |
 | **DeepSeek API Key** | [platform.deepseek.com](https://platform.deepseek.com/) 注册，在 API Keys 页面创建 |
 | **一张角色卡** | `.png` 格式的 SillyTavern 角色卡（可以从社区下载，也可以自己用酒馆导出） |
 
 **② 跑配置脚本（就这一次）**
 
-双击项目根目录的 `setup-deepseek-claude.bat`，按提示输入你的 DeepSeek API Key。脚本会自动安装 Claude Code、写入环境变量。
+在项目根目录执行：
+
+```bash
+chmod +x ./setup-deepseek-claude.sh
+./setup-deepseek-claude.sh
+```
+
+按提示输入你的 DeepSeek API Key。脚本会检查 Node.js / Git / Claude Code，并把环境变量写入你的 shell profile。
 
 **③ 放卡片**
 
@@ -139,7 +146,7 @@
 
 **④ 启动**
 
-在 `我的角色` 文件夹内打开 **PowerShell** 终端（地址栏输入 `powershell` 回车），输入 `claude` 启动后，在对话中输入：
+在 `我的角色` 文件夹内打开终端，输入 `claude` 启动后，在对话中输入：
 
 ```
 /rp
@@ -149,7 +156,7 @@ Claude Code 会自动完成：清理残留进程 → 启动服务器 → 解析�
 
 **⑤ 打开浏览器**
 
-访问 **http://localhost:8765**，在输入框打字，点提交。AI 会在几秒到几十秒内生成回复。
+执行 `open http://localhost:8765` 或手动访问 **http://localhost:8765**，在输入框打字，点提交。AI 会在几秒到几十秒内生成回复。
 
 **之后怎么继续玩？** 关闭 Claude Code 后，下次在同一个文件夹重新 `claude`，输入 `/rp` 即可——系统会自动读取之前的聊天记录和记忆，接着剧情继续。换卡片就新建一个文件夹，重复步骤 ③-④。
 
@@ -157,14 +164,29 @@ Claude Code 会自动完成：清理残留进程 → 启动服务器 → 解析�
 
 ### 环境配置（一键脚本）
 
-项目根目录提供了两个配置脚本，自动完成 Node.js / Git 检查、Claude Code 安装、DeepSeek API 环境变量写入（注册表持久化）、PowerShell Profile 备份：
+项目根目录提供 macOS 配置脚本，自动完成 Node.js / Git 检查、Claude Code 安装、DeepSeek API 环境变量写入：
 
 | 文件 | 说明 |
 |------|------|
-| `setup-deepseek-claude.bat` | 双击运行，自动提权启动 PowerShell 执行配置 |
-| `setup-deepseek-claude.ps1` | 核心脚本，右键「使用 PowerShell 运行」也可直接启动 |
+| `setup-deepseek-claude.sh` | macOS 配置脚本，在终端中运行 |
+
+```bash
+chmod +x ./setup-deepseek-claude.sh
+./setup-deepseek-claude.sh
+```
 
 运行后按提示输入 DeepSeek API Key 即可。
+
+### 更新项目
+
+在项目根目录执行：
+
+```bash
+chmod +x ./update.sh
+./update.sh
+```
+
+脚本会使用 `git pull --rebase --autostash` 拉取更新；如果出现冲突，会提示你用 `git status`、`git rebase --continue` 或 `git rebase --abort` 手动处理。
 
 <details>
 <summary>📋 脚本写入的环境变量（仅供参考）</summary>
@@ -219,13 +241,13 @@ AI 自动分析遣词/句式/段落/节奏等六个维度，写入 `skills/style
 
 ### 关闭
 
-直接退出 Claude Code（`/quit` 或关闭终端窗口），系统会自动释放端口。无需手动 `taskkill`。
+直接退出 Claude Code（`/quit` 或关闭终端窗口），系统会自动释放端口。必要时可手动执行 `pkill -f 'skills/server.py'` 和 `pkill -f 'mvu_server.js'`。
 
 <details>
 <summary>🔧 手动启动桥接服务器（通常不需要，start_server.py 已自动处理）</summary>
 
-```powershell
-python skills/start_server.py .
+```bash
+python3 skills/start_server.py .
 ```
 
 服务默认监听 `127.0.0.1:8765`，MVU 服务监听 `127.0.0.1:8766`。
@@ -238,8 +260,8 @@ python skills/start_server.py .
 
 ```
 {ROOT}/
-├── setup-deepseek-claude.bat     # ⚙️ 环境一键配置（双击运行）
-├── setup-deepseek-claude.ps1     # ⚙️ 环境配置核心脚本
+├── setup-deepseek-claude.sh      # ⚙️ macOS 环境一键配置
+├── update.sh                     # 🔄 macOS 项目更新脚本
 ├── CLAUDE.md                     # 🧠 系统编排核心（规则/权限/流程）
 ├── README.md                     # 📄 本文件
 ├── extract-png-card.md           # 📘 PNG chunk 角色卡解析参考
@@ -258,7 +280,6 @@ python skills/start_server.py .
     ├── mvu_engine.py             # ⚙️ MVU 变量引擎（JSONPatch 解析/执行）
     ├── mvu_check.py              # ✅ MVU 变量交叉检查
     ├── mvu_server.js             # 🔗 MVU 变量服务（Zod schema 校验）
-    ├── match_worldbook.py        # 🔍 世界书关键词匹配
     ├── write_memory.py           # 📝 剧情记忆更新
     ├── round_prepare.py          # 📥 回合预处理管线（收集上下文→写入 round_context.txt）
     ├── round_deliver.py          # 📤 回合后处理管线（质检→交付→记忆→剧情规划触发）

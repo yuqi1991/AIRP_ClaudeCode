@@ -18,65 +18,87 @@ import_prepare.py — 导入/启动预处理管线。
 
 import json
 import os
+import signal
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 # Both files live in skills/, so direct import works (same as server.py imports handler).
 # import_card.run_import() has no stdout side effects after refactoring.
 from import_card import run_import
 
-
-def read_json(path):
-    """Safe JSON file read, returns None on failure."""
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception:
-        return None
+# build_import_context (+ read_json / _walk_vars helpers) extracted to engine.context
+from engine.context import build_import_context
 
 
 # ─── Phase 0: Cleanup ────────────────────────────────────────
 
-def cleanup_residual(styles_dir: Path) -> dict:
-    """Kill stale Python processes running skills/ scripts.
-
-    Uses PowerShell to identify and kill processes whose command-line
-    contains '*skills*', excluding the current process (self).
-
-    Also removes any stale .pending file from a previous session so
-    the bridge server doesn't see a phantom pending event.
-    """
-    current_pid = os.getpid()
-    killed = 0
-
-    cmd = (
-        f"Get-Process python -ErrorAction SilentlyContinue | "
-        f'Where-Object {{ $_.Id -ne {current_pid} -and '
-        f'$_.CommandLine -like "*skills*" }} | '
-        f"Select-Object -ExpandProperty Id"
-    )
+def _pgrep(pattern: str) -> set[int]:
     try:
         result = subprocess.run(
-            ["powershell", "-NoProfile", "-Command", cmd],
-            capture_output=True, text=True, timeout=10
+            ["pgrep", "-f", pattern],
+            capture_output=True, text=True, timeout=5
         )
-        if result.stdout.strip():
-            pids = result.stdout.strip().split()
-            for pid_str in pids:
-                try:
-                    pid = int(pid_str)
-                    subprocess.run(
-                        ["taskkill", "/F", "/PID", str(pid)],
-                        capture_output=True, timeout=5
-                    )
-                    killed += 1
-                except (ValueError, subprocess.TimeoutExpired):
-                    pass
-    except subprocess.TimeoutExpired:
-        pass
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return set()
 
-    # Drop stale .pending
+    pids = set()
+    for line in result.stdout.splitlines():
+        try:
+            pids.add(int(line.strip()))
+        except ValueError:
+            pass
+    return pids
+
+
+def _terminate_pids(pids: set[int], exclude: set[int]) -> int:
+    targets = [pid for pid in sorted(pids) if pid not in exclude]
+    killed = 0
+
+    for pid in targets:
+        try:
+            os.kill(pid, signal.SIGTERM)
+            killed += 1
+        except ProcessLookupError:
+            pass
+        except PermissionError:
+            pass
+
+    if targets:
+        time.sleep(0.3)
+
+    for pid in targets:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            continue
+        except PermissionError:
+            continue
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+
+    return killed
+
+
+def cleanup_residual(styles_dir: Path) -> dict:
+    """Kill stale Python processes running this repo's skills scripts."""
+    skills_dir = styles_dir.parent.resolve()
+    current_pid = os.getpid()
+    patterns = {
+        str(skills_dir / "server.py"),
+        str(skills_dir / "handler.py"),
+        str(skills_dir / "round_prepare.py"),
+        str(skills_dir / "round_deliver.py"),
+    }
+    pids = set()
+    for pattern in patterns:
+        pids.update(_pgrep(pattern))
+
+    killed = _terminate_pids(pids, {current_pid, os.getppid()})
+
     pending = styles_dir / ".pending"
     pending_existed = pending.exists()
     if pending_existed:
@@ -165,172 +187,6 @@ def init_chat_log(card_folder: str) -> bool:
     return False
 
 
-# ─── Phase 3: Import Context File ────────────────────────────
-
-def _walk_vars(obj, prefix=""):
-    """Recursively list all leaf paths with values for context display."""
-    lines = []
-    if isinstance(obj, dict):
-        for k, v in obj.items():
-            lines.extend(_walk_vars(v, f"{prefix}/{k}"))
-    elif isinstance(obj, list):
-        for i, v in enumerate(obj):
-            lines.extend(_walk_vars(v, f"{prefix}/{i}"))
-    else:
-        val_str = json.dumps(obj, ensure_ascii=False)
-        if len(val_str) > 80:
-            val_str = val_str[:80] + "..."
-        lines.append(f"  {prefix} = {val_str}")
-    return lines
-
-
-def build_import_context(card_folder: str, styles_dir: Path,
-                         import_result: dict) -> tuple:
-    """Write import_context.txt — consolidated startup context for the AI.
-
-    Analogous to round_context.txt in the per-round pipeline.  Groups all
-    the information the AI currently reads from 8+ separate files into
-    one structured document.
-
-    Returns (Path, size_in_bytes).
-    """
-    card_path = Path(card_folder)
-    parts = []
-
-    # ── CARD_INFO ──
-    card_name = import_result.get("card_name", "") or "(unknown)"
-    world_name = import_result.get("world_name", "") or "(unknown)"
-    source_type = import_result.get("source_type", "?")
-    source_file = import_result.get("source_file", "")
-
-    parts.append("=== CARD_INFO ===")
-    parts.append(f"  Name: {card_name}")
-    parts.append(f"  World: {world_name}")
-    parts.append(f"  Source: {source_type}")
-    if source_file:
-        parts.append(f"  File: {source_file}")
-    if import_result.get("merged_worldbooks"):
-        mw = import_result["merged_worldbooks"]
-        parts.append(f"  Merged worldbooks: {mw['files']} files, {mw['entries']} extra entries")
-    parts.append("")
-
-    # ── MEMORY_FILES ──
-    memory_dir = card_path / "memory"
-    parts.append("=== MEMORY_FILES ===")
-    if memory_dir.exists():
-        for fname in sorted(memory_dir.iterdir()):
-            if fname.suffix == ".md" and fname.name != "MEMORY.md":
-                desc = ""
-                try:
-                    content = fname.read_text(encoding="utf-8")
-                    for line in content.split("\n"):
-                        if line.startswith("description:"):
-                            desc = " — " + line.split(":", 1)[1].strip()
-                            break
-                except Exception:
-                    pass
-                parts.append(f"  {fname.name}{desc}")
-            elif fname.suffix == ".json" and fname.name.startswith("."):
-                size = fname.stat().st_size
-                parts.append(f"  {fname.name} ({size} bytes)")
-    else:
-        parts.append("  (no memory directory)")
-    parts.append("")
-
-    # ── WORLDBOOK_INDEX ──
-    wb_index = read_json(card_path / "memory" / ".worldbook_index.json")
-    if wb_index:
-        parts.append(f"=== WORLDBOOK_INDEX ({len(wb_index)} entries) ===")
-        for entry in wb_index[:30]:
-            kw = entry.get("keyword", "?")
-            ol = entry.get("one_liner", "")[:80]
-            parts.append(f"  [{kw}] {ol}")
-        if len(wb_index) > 30:
-            parts.append(f"  ... ({len(wb_index) - 30} more — Grep reference.md for details)")
-    else:
-        parts.append("=== WORLDBOOK_INDEX ===\n  (none)")
-    parts.append("")
-
-    # ── CARD_STRUCTURE ──
-    structure = import_result.get("card_structure", {})
-    if structure:
-        parts.append("=== CARD_STRUCTURE ===")
-        parts.append(f"  has_stages: {structure.get('has_stages', False)}")
-        parts.append(f"  has_events: {structure.get('has_events', False)}")
-        chars = structure.get("characters", {})
-        if chars:
-            parts.append(f"  characters ({len(chars)}): {', '.join(chars.keys())}")
-    else:
-        parts.append("=== CARD_STRUCTURE ===\n  (none)")
-    parts.append("")
-
-    # ── INITIAL_VARIABLES ──
-    initvar = read_json(card_path / ".initvar.json")
-    if initvar:
-        parts.append("=== INITIAL_VARIABLES ===")
-        var_lines = _walk_vars(initvar)
-        if var_lines:
-            for line in var_lines:
-                parts.append(line)
-        else:
-            parts.append("  (empty)")
-    else:
-        parts.append("=== INITIAL_VARIABLES ===\n  (none)")
-    parts.append("")
-
-    # ── INJECTION_RULES ── (if present)
-    injections = read_json(card_path / ".injection_rules.json")
-    if injections:
-        parts.append(f"=== INJECTION_RULES ({len(injections)} rules) ===")
-        for inj in injections[:10]:
-            src = inj.get("source_path", "?")
-            pattern = inj.get("split_pattern", "")
-            parts.append(f"  {src} -> split={pattern[:40]}")
-    parts.append("")
-
-    # ── OPENINGS ──
-    openings_count = import_result.get("openings_count", 0)
-    parts.append(f"=== OPENINGS ({openings_count} available) ===")
-    if openings_count > 0:
-        openings = read_json(styles_dir / "openings.json")
-        if openings:
-            for i, o in enumerate(openings):
-                label = o.get("label", "")[:60]
-                content_preview = o.get("content", "")[:150]
-                parts.append(f"  [{o.get('id', i)}] {label}")
-                if i == 0:
-                    parts.append(f"       Preview: {content_preview}...")
-                    parts.append(f"       (this is the active opening — pre-filled in response.txt)")
-    parts.append("")
-
-    # ── SESSION_STATE ──
-    parts.append("=== SESSION_STATE ===")
-    parts.append(f"  .card_path: written")
-    parts.append(f"  state.js: world=\"{world_name}\"")
-    parts.append(f"  content.js: placeholder")
-    parts.append(f"  chat_log.json: {'created (new)' if import_result.get('chat_log_created') else 'already exists (preserved)'}")
-    parts.append(f"  response.txt: {'pre-filled from first_mes' if import_result.get('response_txt_written') else '(empty — AI must generate opening)'}")
-    parts.append(f"  .session_init: created")
-    parts.append(f"  .initvar.json: {'present' if import_result.get('initvar_keys') else '(none)'}")
-    parts.append(f"  .beautify.json: {'present' if import_result.get('beautify_keys') else '(none)'}")
-    parts.append(f"  .regex_scripts.json: {'present' if import_result.get('regex_scripts') else '(none)'}")
-    parts.append(f"  .injection_rules.json: {'present' if import_result.get('injection_rules') else '(none)'}")
-    parts.append("")
-
-    parts.append("=== NEXT_STEPS ===")
-    parts.append("  1. Read this file for full startup context")
-    parts.append("  2. (Optional) Edit state.js: set time/location/env/quest/npcs")
-    parts.append("  3. If response.txt is empty: generate opening narrative → write response.txt")
-    parts.append("  4. Deliver opening: python handler.py <card_folder> --opening")
-    parts.append("  5. ScheduleWakeup to start input monitoring loop")
-
-    # Write
-    output_path = styles_dir / "import_context.txt"
-    output_text = "\n".join(parts)
-    output_path.write_text(output_text, encoding="utf-8")
-    return output_path, len(output_text.encode("utf-8"))
-
-
 # ─── Main Pipeline ──────────────────────────────────────────
 
 def main():
@@ -373,7 +229,7 @@ def main():
     # Write initial checkpoint so round_deliver can compute deltas.
     # load_checkpoint handles cross-session transcript switching automatically.
     try:
-        import token_stats
+        from engine import tokens as token_stats
         token_stats.save_checkpoint(card_folder)  # no delta — just record baseline offset
     except Exception:
         pass

@@ -73,7 +73,7 @@ def main():
     chinese_count = count_chinese(content_text)
 
     # ── 2. Token Collection (checkpoint-based delta) ──
-    import token_stats
+    from engine import tokens as token_stats
 
     transcript_path = token_stats.locate_transcript()
     cp = token_stats.load_checkpoint(card_folder) if transcript_path else {}

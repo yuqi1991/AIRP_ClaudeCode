@@ -18,9 +18,10 @@ import sys
 from pathlib import Path
 
 # In-process imports replace subprocess calls (was: subprocess.run to these scripts).
-import match_worldbook
-import mvu_check
-from handler import apply_injections
+from engine import mvu as mvu_check
+
+# list_initvar_paths extracted to engine.context (deep module)
+from engine.context import list_initvar_paths
 
 
 def read_file(path):
@@ -41,95 +42,8 @@ def read_json(path):
         return None
 
 
-def list_initvar_paths(initvar):
-    """Recursively list all paths in initvar with current values."""
-    lines = []
-
-    def walk(obj, prefix=""):
-        if isinstance(obj, dict):
-            for k, v in obj.items():
-                walk(v, f"{prefix}/{k}")
-        elif isinstance(obj, list):
-            for i, v in enumerate(obj):
-                walk(v, f"{prefix}/{i}")
-        else:
-            lines.append(f"  {prefix} = {json.dumps(obj, ensure_ascii=False)}")
-
-    walk(initvar)
-    return "\n".join(lines)
-
-
-def grep_reference_md(card_folder, section_title):
-    """Read reference.md and return lines under ## section_title (up to 200 lines).
-    Pure Python — no shell grep dependency (Windows compatible)."""
-    ref_path = Path(card_folder) / "memory" / "reference.md"
-    if not ref_path.exists():
-        return ""
-    try:
-        text = ref_path.read_text(encoding="utf-8")
-    except Exception:
-        return ""
-    marker = f"## {section_title}"
-    lines = text.split("\n")
-    output = []
-    found = False
-    for line in lines:
-        if found and line.startswith("## ") and not line.startswith(marker):
-            break
-        if found:
-            output.append(line)
-            if len(output) >= 200:
-                break
-        if line.strip() == marker.strip():
-            found = True
-    return "\n".join(output)
-
-
-def _keyword_score(keyword, text):
-    """Score a keyword against text — mirrors match_worldbook.py logic.
-
-    Returns integer score, 0 if no meaningful match.
-    """
-    if not keyword or not text:
-        return 0
-    if keyword in text:
-        return 10
-    if text in keyword:
-        return 6
-    # CJK character overlap (2+ shared chars)
-    kw_chars = set(keyword)
-    txt_chars = set(text)
-    overlap = len(kw_chars & txt_chars)
-    if overlap >= 2:
-        return 3 + min(overlap, 5)
-    return 0
-
-
-def _input_matches(wb_index, user_text, card_folder):
-    """Scan user input against worldbook index keywords, return top-3 with full entry text."""
-    scored = []
-    for entry in wb_index:
-        keyword = entry.get("keyword", "")
-        score = _keyword_score(keyword, user_text)
-        if score > 0:
-            scored.append({**entry, "score": score})
-    scored.sort(key=lambda x: x["score"], reverse=True)
-
-    lines = []
-    if not scored:
-        lines.append("  (no matches)")
-        return lines
-
-    for i, m in enumerate(scored[:3]):
-        lines.append(f"\n  --- Input Match {i+1}: {m['keyword']} (score={m['score']}) ---")
-        lines.append(f"  Title: {m['title']}")
-        lines.append(f"  One-liner: {m['one_liner'][:100]}")
-        full = grep_reference_md(card_folder, m["section"].lstrip("#").strip())
-        if full:
-            lines.append("  Full entry:")
-            for fl in full.split("\n")[:100]:
-                lines.append(f"    {fl}")
-    return lines
+# (grep_reference_md / _keyword_score / _input_matches removed — skill-mode:
+#  the AI reads WORLDBOOK_CATALOG and Greps reference.md on demand via shell.)
 
 
 def main():
@@ -144,7 +58,7 @@ def main():
     # ── Token delta capture (retroactively fixes previous turn) ──
     pending_tokens = {}
     try:
-        import token_stats
+        from engine import tokens as token_stats
         ts_path = token_stats.locate_transcript()
         cp = token_stats.load_checkpoint(card_folder) if ts_path else {}
         t_offset = cp.get("last_byte_offset", 0)
@@ -215,23 +129,8 @@ def main():
     card_structure_path = Path(card_folder) / "memory" / ".card_structure.json"
     card_structure = read_json(card_structure_path)
 
-    # Worldbook variable matching
-    match_result = None
-    try:
-        match_result = match_worldbook.match_worldbook(card_folder)
-    except Exception:
-        pass
-
-    # Injections (apply_injections prints to stdout for CLI use; suppress here)
-    injections = []
-    try:
-        import io as _io, contextlib as _ctxlib
-        with _ctxlib.redirect_stdout(_io.StringIO()):
-            injections = apply_injections(card_folder)
-        if injections is None:
-            injections = []
-    except Exception:
-        pass
+    # (Worldbook matching + injections removed — skill-mode: AI reads WORLDBOOK_CATALOG
+    #  in the static prefix and Greps reference.md on demand. No automatic matching.)
 
     # Variable paths
     mvu_data = None
@@ -256,12 +155,14 @@ def main():
 
     # ── STATIC PREFIX (rarely changes, good for prompt cache) ──
 
-    static_parts.append(f"=== WORLD_INDEX ({len(wb_index)} entries) ===")
+    static_parts.append(f"=== WORLDBOOK_CATALOG ({len(wb_index)} entries, skill-mode) ===")
+    static_parts.append("  (每条 = 可按需加载的世界书条目。读 USER_INPUT 后挑本轮需要的,用 Grep 取全文:")
+    static_parts.append(f"   grep -n -A 200 \"^## {{完整标题}}$\" {card_folder}/memory/reference.md)")
     if wb_index:
         for entry in wb_index:
-            static_parts.append(
-                f"  [{entry.get('keyword','?')}] {entry.get('one_liner','')[:80]}"
-            )
+            title = entry.get("title", "?")
+            usage = (entry.get("usage", "") or "").strip()
+            static_parts.append(f"  {title}" if not usage else f"  {title} — {usage}")
 
     if card_structure:
         static_parts.append(f"\n=== CARD_STRUCTURE ===")
@@ -294,50 +195,29 @@ def main():
         for k, v in pending_tokens.items():
             dynamic_parts.append(f"  {k}: {v}")
 
-    # Worldbook variable matches
-    dynamic_parts.append("\n=== WORLD_MATCHES ===")
-    if match_result:
-        for i, m in enumerate(match_result[:3]):
-            dynamic_parts.append(f"\n  --- Match {i+1}: {m['keyword']} (score={m['score']}, {m['reason']}) ---")
-            dynamic_parts.append(f"  Title: {m['title']}")
-            dynamic_parts.append(f"  One-liner: {m['one_liner'][:100]}")
-            full = grep_reference_md(card_folder, m["section"].lstrip("#").strip())
-            if full:
-                dynamic_parts.append("  Full entry:")
-                for line in full.split("\n")[:100]:
-                    dynamic_parts.append(f"    {line}")
-    else:
-        dynamic_parts.append("  (no matches)")
+    # (WORLD_MATCHES / INPUT_MATCHES / INJECTIONS sections removed — skill-mode.
+    #  The AI now reads WORLDBOOK_CATALOG (static prefix) and Greps reference.md
+    #  on demand for the 2-3 entries this round actually needs.)
 
-    # NEW: User input keyword scan (bridges ST-like input-driven worldbook triggering)
-    dynamic_parts.append("\n=== INPUT_MATCHES ===")
-    dynamic_parts.extend(_input_matches(wb_index, user_text, card_folder))
-
-    # Injections
-    dynamic_parts.append("\n=== INJECTIONS ===")
-    if injections:
-        for inj in injections:
-            dynamic_parts.append(f"\n  Keyword: {inj}")
-            section_title = inj if inj.startswith("## ") else f"## {inj}"
-            full = grep_reference_md(card_folder, section_title.lstrip("#").strip())
-            if full:
-                for line in full.split("\n")[:80]:
-                    dynamic_parts.append(f"    {line}")
-    else:
-        dynamic_parts.append("  (no injections)")
-
-    # Variable paths
+    # Variable paths — only emit details for sections touched last turn.
+    # Full path tree is already in INITVAR_PATHS (static prefix); repeating all
+    # 149 paths here was ~5kB of redundant non-cache content per round.
     dynamic_parts.append("\n=== VARIABLE_PATHS ===")
     if mvu_data:
         dynamic_parts.append(f"  Sections: {', '.join(mvu_data.get('sections', []))}")
-        dynamic_parts.append(f"  Total paths: {mvu_data.get('total_paths', '?')}")
-        dynamic_parts.append(f"  Touched last turn: {', '.join(mvu_data.get('touched_last_turn', []))}")
-        dynamic_parts.append(f"  Untouched last turn: {', '.join(mvu_data.get('untouched_last_turn', []))}")
+        dynamic_parts.append(f"  Total paths: {mvu_data.get('total_paths', '?')} (full tree in INITVAR_PATHS above)")
+        touched = mvu_data.get("touched_last_turn", [])
+        dynamic_parts.append(f"  Touched last turn: {', '.join(touched) if touched else '(none — details omitted, see INITVAR_PATHS)'}")
         checklist = mvu_data.get("checklist", "")
-        if checklist:
-            dynamic_parts.append("\n  Path details:")
+        if checklist and touched:
+            touched_set = set(touched)
+            emitted_any = False
             for line in checklist.split("\n"):
-                dynamic_parts.append(f"  {line}")
+                if any(sec in line for sec in touched_set):
+                    dynamic_parts.append(f"  {line}")
+                    emitted_any = True
+            if not emitted_any:
+                dynamic_parts.append("  (touched sections had no checklist rows)")
         dynamic_parts.append(f"\n  Reminder: {mvu_data.get('reminder', '')}")
     else:
         dynamic_parts.append("  (mvu_check unavailable)")
@@ -373,8 +253,8 @@ def main():
         "ok": True,
         "output": str(output_path),
         "size": len(output_text),
-        "matches": len(match_result or []),
-        "injections": len(injections),
+        "catalog_entries": len(wb_index),
+        "usage_filled": sum(1 for e in wb_index if (e.get("usage", "") or "").strip()),
         "is_first_turn": len(chat_log) <= 1
     }, ensure_ascii=False))
 
