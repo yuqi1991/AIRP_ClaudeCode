@@ -65,8 +65,8 @@ def _parse_tokens(raw):
     return tokens
 
 
-def write_content_js(card_folder):
-    """Rebuild content.js from chat_log.json. Exposes TURN_TOKENS for per-turn token display."""
+def write_content_js(card_folder, projection_root=None):
+    """Rebuild frontend content.js from chat_log.json."""
     log = read_chat_log(card_folder)
 
     html_parts = []
@@ -216,14 +216,17 @@ def write_content_js(card_folder):
         "window.REGEX_SCRIPTS = " + json.dumps(regex_scripts, ensure_ascii=False) + ";\n"
     )
 
-    path = STYLES / "content.js"
+    target_root = Path(projection_root) if projection_root else STYLES
+    target_root.mkdir(parents=True, exist_ok=True)
+    path = target_root / "content.js"
     with open(path, "w", encoding="utf-8") as f:
         f.write(js)
 
     # Dual write to card folder for per-card frontend
     card_path = Path(card_folder) / "content.js"
-    with open(card_path, "w", encoding="utf-8") as f:
-        f.write(js)
+    if card_path != path:
+        with open(card_path, "w", encoding="utf-8") as f:
+            f.write(js)
 
 
 # ═══ Turn Operations ═══
@@ -366,7 +369,7 @@ def _dict_to_schema_node(d):
     return schema
 
 
-def append_turn(card_folder, polished_input=None, content="", summary="", options="", is_opening=False, tokens=None, full_text=""):
+def append_turn(card_folder, polished_input=None, content="", summary="", options="", is_opening=False, tokens=None, full_text="", projection_root=None):
     """Append a new turn to chat_log and rebuild content.js."""
     log = read_chat_log(card_folder)
     next_index = len(log)
@@ -443,7 +446,7 @@ def append_turn(card_folder, polished_input=None, content="", summary="", option
 
     log.append(entry)
     write_chat_log(card_folder, log)
-    write_content_js(card_folder)
+    write_content_js(card_folder, projection_root=projection_root)
 
     # ── Variable audit: write diff to .var_diff.json for next-turn awareness ──
     try:
@@ -455,7 +458,7 @@ def append_turn(card_folder, polished_input=None, content="", summary="", option
         pass  # never block turn delivery for audit failure
 
     # Update state: increment generatedCount and accumulate totalTokens
-    state_raw = read_state()
+    state_raw = read_state(projection_root=projection_root)
     new_count = (next_index + 1)
     state_raw = re.sub(r'(\s+generatedCount:\s*)\d+', rf'\g<1>{new_count}', state_raw)
     if tokens:
@@ -466,7 +469,7 @@ def append_turn(card_folder, polished_input=None, content="", summary="", option
             prev_total = int(m.group(1)) if m else 0
             new_total = prev_total + turn_total
             state_raw = re.sub(r'(\s+totalTokens:\s*)\d+', rf'\g<1>{new_total}', state_raw)
-    write_state(state_raw, card_folder)
+    write_state(state_raw, card_folder, projection_root=projection_root)
 
     return next_index
 

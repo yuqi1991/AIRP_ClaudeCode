@@ -29,8 +29,8 @@ def write_chat_log(card_folder, log):
         json.dump(log, f, ensure_ascii=False, indent=2)
 
 
-def read_state():
-    path = STYLES / "state.js"
+def read_state(projection_root=None):
+    path = Path(projection_root) / "state.js" if projection_root else STYLES / "state.js"
     if not path.exists():
         return (
             'window.STATE = {\n'
@@ -44,14 +44,16 @@ def read_state():
         return f.read()
 
 
-def write_state(js, card_folder=None):
-    path = STYLES / "state.js"
+def write_state(js, card_folder=None, projection_root=None):
+    path = Path(projection_root) / "state.js" if projection_root else STYLES / "state.js"
+    path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         f.write(js)
     if card_folder:
         card_js_path = Path(card_folder) / "state.js"
-        with open(card_js_path, "w", encoding="utf-8") as f:
-            f.write(js)
+        if card_js_path != path:
+            with open(card_js_path, "w", encoding="utf-8") as f:
+                f.write(js)
 
 
 def _get_latest_variables(log):

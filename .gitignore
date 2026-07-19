@@ -44,3 +44,8 @@ skills/styles/openings.json
 !skills/
 !skills/engine/
 !skills/engine/*.py
+!skills/tests/
+!skills/tests/*.py
+!docs/
+!docs/**/
+!docs/**/*.md

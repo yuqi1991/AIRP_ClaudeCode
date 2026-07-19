@@ -30,6 +30,14 @@
 - [技术债与已知限制](status/technical-debt.md)
 - [路线图](status/roadmap.md)
 
+### 规格
+
+- [Pi Agent Core 独立回合 Runtime 规格](specs/pi-agent-core-runtime.md) — 本地规格，尚未发布到 issue tracker
+
+### 研究
+
+- [Pi Agent Execution Layer 可行性研究](research/pi-runtime-evaluation.md) — 技术选型前研究，尚非 Accepted 决策
+
 ### 开发
 
 - [Agent 协作指南](development/agent-guide.md)

@@ -11,6 +11,7 @@
 | 前端回合体验 | Proven | 浏览器输入、开场切换、重roll、回退、token 展示和内容渲染 | `skills/server.py`、`skills/styles/index.html` | 单卡全局运行时，无法多实例 |
 | 世界书 skill 模式 | Proven | catalog + usage + 按需加载条目，显著降低动态上下文体积 | `engine/worldbook.py`、`round_prepare.py`、ADR-0002 | 长会话中 Grep 结果仍进入追加式 transcript |
 | engine 深模块 | Proven | token、MVU、卡片存储、渲染、世界书和 context 已拆为独立模块 | `skills/engine/`、ADR-0003 | 数据目录仍未重组 |
+| Pi Runtime Spine | Experimental | 单 Session 的命令、任务、revision、唯一提交和兼容投影可通过确定性 executor 端到端验证 | `engine/runtime.py`、Session Turn Runtime Contract、ADR-0004 | 尚未接入 Pi、真实 provider、SSE、恢复或 revision branch |
 
 ## Working
 
