@@ -1,0 +1,43 @@
+# 路线图
+
+> 这是方向与依赖关系，不是承诺日期。实现前应转成规格和可验证 ticket。
+
+## Phase 0 — 稳定当前原型
+
+- 维护 engine 深模块边界；
+- 为现有导入、MVU、context、render 和 server API 建最小自动化测试；
+- 建卡片兼容测试集和导入诊断报告；
+- 记录当前人工 E2E 路径。
+
+**完成标志**：现有 Claude Code 原型可被可靠回归验证，不再只靠手工经验。
+
+## Phase 1 — 独立 harness/runtime（最高优先级）
+
+- 用独立 runtime 替换 Claude Code 的 `wait_pending`/session loop；
+- 建显式 session、事件、任务和 context builder；
+- 抽象模型 provider/tool adapter；
+- 独立 token、日志和可观测性；
+- 消除对追加式 Claude transcript 的功能依赖。
+
+**依赖**：先定义 runtime 选型与 agent 通信协议 ADR。
+
+## Phase 2 — 多 agent 世界与叙事
+
+- 叙事导演、世界模拟、角色演化/文风润色形成明确消息协议；
+- 世界模拟以状态提案而非隐式 prompt 推进；
+- 建长期角色、NPC 和伏笔回归场景；
+- 支持外部资料自主检索、来源记录和玩家采纳。
+
+## Phase 3 — 玩家实时编辑与卡片诊断
+
+- 玩家可在游玩中轻量修改角色、故事、世界书和变量；
+- 修改进入可追溯的设定层，并立即影响后续回合；
+- 提供结构化卡片/世界书调试器；
+- 导入兼容报告、错误定位和修复建议。
+
+## Phase 4 — 数据与多会话重构
+
+- 以 session/card 为单位隔离运行态；
+- 消除 styles 与卡片目录中的双写；
+- 支持多卡并行、多会话和安全的存档迁移；
+- 重新设计前端状态协议。
