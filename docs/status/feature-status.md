@@ -12,6 +12,7 @@
 | 世界书 skill 模式 | Proven | catalog + usage + 按需加载条目，显著降低动态上下文体积 | `engine/worldbook.py`、`round_prepare.py`、ADR-0002 | 长会话中 Grep 结果仍进入追加式 transcript |
 | engine 深模块 | Proven | token、MVU、卡片存储、渲染、世界书和 context 已拆为独立模块 | `skills/engine/`、ADR-0003 | 数据目录仍未重组 |
 | Pi Runtime Spine | Experimental | 单 Session 的命令、任务、revision、唯一提交和兼容投影可通过确定性 executor 端到端验证 | `engine/runtime.py`、Session Turn Runtime Contract、ADR-0004 | 尚未接入 Pi、真实 provider、SSE、恢复或 revision branch |
+| Context Manifest | Experimental | 编译器在执行前冻结 revision-scoped snapshot，持久化可重放 payload、section source/hash、预算决策和 worldbook provenance | `engine/context_compiler.py`、`engine.runtime`、Ticket 02 contract | 当前仅支持线性 revision；旧非零 revision 需先重建 state snapshot；未接 Pi/tool loop、SSE 或 branch lineage |
 
 ## Working
 

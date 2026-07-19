@@ -34,8 +34,9 @@ server.py ── input.txt/.pending ──► runtime loop (Claude Code 当前�
 | `engine.render` | 将回合/变量渲染为前端载荷 | 宏替换、beautify panel、状态条、content.js |
 | `engine.mvu` | 解析、验证、执行变量命令 | JSONPatch、路径解析、schema、变量审计、checklist |
 | `engine.tokens` | checkpoint 与 token delta | Claude transcript 定位、usage 解析、累计记账 |
-| `engine.worldbook` | 构建世界书 catalog | usage 保留、条目索引 |
+| `engine.worldbook` | 构建 catalog 与按标题读取条目 | usage 保留、条目索引、reference/user Markdown 定位 |
 | `engine.context` | 构建启动/回合上下文 | import_context、变量路径列表、catalog 展示 |
+| `engine.context_compiler` | 将 revision-scoped snapshot 编译为 Manifest/payload | section 选择、稳定顺序、预算、hash、重放 |
 
 这些模块的原则是：调用方只需知道少量 interface，文件格式、HTML、MVU 路径与 transcript 细节留在模块内部。
 

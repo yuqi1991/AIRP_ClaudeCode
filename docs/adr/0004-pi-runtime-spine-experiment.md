@@ -26,5 +26,7 @@ Pi 提供候选的 Agent loop、工具生命周期和 provider abstraction；它
 
 - 首个可验证 vertical slice 将不再以 `.pending` 或 `input.txt` 作为事实源；
 - 后续 Context Manifest、Pi execution、SSE、revision reroll/rollback 和恢复能力可在同一 Session Turn Runtime Contract 上递进；
+- Context Compiler 已以显式 source snapshot 编译并持久化 Manifest；当前只支持线性 revision，branch lineage 留待 reroll/rollback ticket；
+- 世界书继续以 catalog + exact-title 按需读取，且每次调用的加载量受 policy 上限约束；
 - 现有 `styles/` 全局单例仍是兼容投影，尚未在本切片消除；
 - 只有真实 DeepSeek 和浏览器 E2E 满足规格验收门槛后，才新增 Accepted/Rejected 的最终选型 ADR。

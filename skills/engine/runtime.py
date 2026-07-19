@@ -6,6 +6,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import handler
+from engine.context_compiler import CompiledContext, ContextCompileRequest, ContextPolicy, compile_context, replay_payload
+from engine.mvu import execute_commands, extract_commands
+from engine.worldbook import load_worldbook_entry_from_texts
 
 
 @dataclass(frozen=True)
@@ -15,7 +18,7 @@ class TurnDraft:
     options: str = ""
 
     def to_json(self):
-        return json.dumps(self.__dict__, ensure_ascii=False)
+        return json.dumps(self.__dict__, ensure_ascii=False, sort_keys=True)
 
     @classmethod
     def from_json(cls, raw):
@@ -48,7 +51,7 @@ class FakeNarrativeExecutor:
     def __init__(self, content, summary="", options=""):
         self._draft = TurnDraft(content=content, summary=summary, options=options)
 
-    def run(self, text):
+    def run(self, text, compiled_context=None):
         return self._draft
 
 
@@ -98,11 +101,22 @@ class LegacyProjectionAdapter:
 
 
 class SessionTurnRuntime:
-    def __init__(self, database_path, card_folder, projection_root, executor, session_id="local"):
+    def __init__(
+        self,
+        database_path,
+        card_folder,
+        projection_root,
+        executor,
+        session_id="local",
+        manifest_policy=None,
+        session_settings=None,
+    ):
         self.database_path = Path(database_path)
         self.card_folder = Path(card_folder)
         self.executor = executor
         self.session_id = session_id
+        self.manifest_policy = manifest_policy or ContextPolicy(version="runtime-v1", token_budget=8000)
+        self.session_settings = json.loads(self._canonical(session_settings or {}))
         self.projection = LegacyProjectionAdapter(card_folder, projection_root)
         self._lock = threading.RLock()
         self._initialize()
@@ -111,45 +125,16 @@ class SessionTurnRuntime:
         if not text.strip():
             raise ValueError("empty input")
         with self._lock:
-            with self._connect() as connection:
-                connection.execute("BEGIN IMMEDIATE")
-                task = self._task_for_key(connection, idempotency_key)
-                if task:
-                    result = self._result(task)
-                else:
-                    task_id = self._id()
-                    connection.execute(
-                        "INSERT INTO tasks (id, session_id, idempotency_key, text, status, revision) VALUES (?, ?, ?, ?, ?, ?)",
-                        (task_id, self.session_id, idempotency_key, text, "queued", 0),
-                    )
-                    self._event(connection, "player_message.submitted", {"task_id": task_id, "text": text})
-                    self._event(connection, "task.queued", {"task_id": task_id})
-                    connection.execute("UPDATE tasks SET status = ? WHERE id = ?", ("running", task_id))
-                    self._event(connection, "task.running", {"task_id": task_id})
-                    draft = self.executor.run(text)
-                    revision = self._next_revision(connection)
-                    commit_id = self._id()
-                    connection.execute(
-                        "INSERT INTO commits (id, session_id, revision, task_id, draft) VALUES (?, ?, ?, ?, ?)",
-                        (commit_id, self.session_id, revision, task_id, draft.to_json()),
-                    )
-                    connection.execute(
-                        "INSERT INTO projection_checkpoints (commit_id, state) VALUES (?, ?)",
-                        (commit_id, "pending"),
-                    )
-                    connection.execute(
-                        "UPDATE sessions SET active_revision = ? WHERE id = ?", (revision, self.session_id)
-                    )
-                    connection.execute(
-                        "UPDATE tasks SET status = ?, commit_id = ?, revision = ? WHERE id = ?",
-                        ("projection_pending", commit_id, revision, task_id),
-                    )
-                    self._event(
-                        connection,
-                        "turn.committed",
-                        {"task_id": task_id, "commit_id": commit_id, "revision": revision},
-                    )
-                    result = RuntimeResult(task_id=task_id, commit_id=commit_id, revision=revision, status="projection_pending")
+            task = self._create_or_get_task(text, idempotency_key)
+            result = self._result(task)
+            if result.status == "succeeded":
+                return result
+            if result.commit_id:
+                return self._project(result)
+
+            compiled = self._compile_and_persist(task)
+            draft = self._execute(text, compiled)
+            result = self._commit_draft(task, draft)
             return self._project(result)
 
     def active_revision(self):
@@ -161,7 +146,8 @@ class SessionTurnRuntime:
     def task(self, task_id):
         with self._connect() as connection:
             row = connection.execute(
-                "SELECT id, commit_id, revision, status FROM tasks WHERE id = ?", (task_id,)
+                "SELECT id, commit_id, revision, status FROM tasks WHERE id = ? AND session_id = ?",
+                (task_id, self.session_id),
             ).fetchone()
         return self._result(row) if row else None
 
@@ -190,17 +176,231 @@ class SessionTurnRuntime:
             ).fetchone()
         return row["state"] if row else None
 
+    def manifest_for_task(self, task_id, call_ordinal):
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT id, manifest_json, payload_json FROM context_manifests "
+                "WHERE session_id = ? AND task_id = ? AND call_ordinal = ?",
+                (self.session_id, task_id, call_ordinal),
+            ).fetchone()
+        return self._manifest_row(row)
+
+    def manifests_for_task(self, task_id):
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT id, manifest_json, payload_json FROM context_manifests "
+                "WHERE session_id = ? AND task_id = ? ORDER BY call_ordinal",
+                (self.session_id, task_id),
+            ).fetchall()
+        return [self._manifest_row(row) for row in rows]
+
+    def replay_manifest(self, manifest_id):
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT payload_json, payload_hash FROM context_manifests WHERE id = ? AND session_id = ?",
+                (manifest_id, self.session_id),
+            ).fetchone()
+        if not row:
+            return None
+        payload = json.loads(row["payload_json"])
+        if self._hash_bytes(self._canonical(payload).encode("utf-8")) != row["payload_hash"]:
+            raise RuntimeError("persisted manifest payload hash mismatch")
+        return payload
+
+    def load_worldbook_for_task(self, task_id, title, reason):
+        with self._lock:
+            with self._connect() as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                task = connection.execute(
+                    "SELECT base_revision, source_snapshot FROM tasks WHERE id = ? AND session_id = ?", (task_id, self.session_id)
+                ).fetchone()
+                if not task:
+                    raise ValueError("unknown task")
+                call_ordinal = connection.execute(
+                    "SELECT COUNT(*) AS count FROM context_manifests WHERE session_id = ? AND task_id = ?",
+                    (self.session_id, task_id),
+                ).fetchone()["count"]
+                load_count = connection.execute(
+                    "SELECT COUNT(*) AS count FROM worldbook_loads WHERE session_id = ? AND task_id = ? AND call_ordinal = ?",
+                    (self.session_id, task_id, call_ordinal),
+                ).fetchone()["count"]
+                if load_count >= self.manifest_policy.max_worldbook_loads:
+                    raise ValueError("worldbook load limit exceeded")
+                snapshot = json.loads(task["source_snapshot"])
+                entry = load_worldbook_entry_from_texts(
+                    self._canonical(snapshot["worldbook_catalog"]),
+                    snapshot.get("worldbook_reference", ""),
+                    snapshot.get("worldbook_user", ""),
+                    title,
+                )
+                connection.execute(
+                    "INSERT INTO worldbook_loads "
+                    "(id, session_id, task_id, base_revision, call_ordinal, title, catalog_hash, reference_hash, content_hash, content, reason) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        self._id(), self.session_id, task_id, task["base_revision"], call_ordinal, entry.title,
+                        entry.catalog_hash, entry.reference_hash, entry.content_hash, entry.content, reason,
+                    ),
+                )
+                self._event(connection, "worldbook.loaded", {"task_id": task_id, "title": entry.title, "content_hash": entry.content_hash})
+        return entry
+
+    def _create_or_get_task(self, text, idempotency_key):
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            task = self._task_for_key(connection, idempotency_key)
+            if task:
+                return task
+            base_revision = self._active_revision(connection)
+            source_snapshot = self._source_snapshot(base_revision)
+            task_id = self._id()
+            connection.execute(
+                "INSERT INTO tasks (id, session_id, idempotency_key, text, status, revision, base_revision, source_snapshot) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (task_id, self.session_id, idempotency_key, text, "queued", 0, base_revision, self._canonical(source_snapshot)),
+            )
+            self._event(connection, "player_message.submitted", {"task_id": task_id, "text": text})
+            self._event(connection, "task.queued", {"task_id": task_id, "base_revision": base_revision})
+            return self._task_for_key(connection, idempotency_key)
+
+    def compile_follow_up_manifest(self, task_id, player_input):
+        with self._lock:
+            with self._connect() as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                task = connection.execute(
+                    "SELECT id, text, base_revision, source_snapshot FROM tasks WHERE id = ? AND session_id = ?",
+                    (task_id, self.session_id),
+                ).fetchone()
+                if not task:
+                    raise ValueError("unknown task")
+                call_ordinal = connection.execute(
+                    "SELECT COUNT(*) AS count FROM context_manifests WHERE session_id = ? AND task_id = ?",
+                    (self.session_id, task_id),
+                ).fetchone()["count"]
+                snapshot = json.loads(task["source_snapshot"])
+                loads = self._worldbook_loads_in_connection(connection, task_id, call_ordinal)
+                compiled = compile_context(ContextCompileRequest(
+                    session_id=self.session_id,
+                    task_id=task_id,
+                    base_revision=task["base_revision"],
+                    player_input=player_input,
+                    snapshot=snapshot,
+                    policy=self.manifest_policy,
+                    call_ordinal=call_ordinal,
+                    worldbook_loads=tuple(loads),
+                ))
+                return self._persist_manifest_in_connection(connection, task, compiled)
+
+    def _worldbook_loads(self, task_id, before_call_ordinal):
+        with self._connect() as connection:
+            return self._worldbook_loads_in_connection(connection, task_id, before_call_ordinal)
+
+    def _worldbook_loads_in_connection(self, connection, task_id, before_call_ordinal):
+        rows = connection.execute(
+            "SELECT title, catalog_hash, reference_hash, content_hash, content, reason FROM worldbook_loads "
+            "WHERE session_id = ? AND task_id = ? AND call_ordinal <= ? ORDER BY call_ordinal, title",
+            (self.session_id, task_id, before_call_ordinal),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def _persist_manifest(self, task, compiled):
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            return self._persist_manifest_in_connection(connection, task, compiled)
+
+    def _persist_manifest_in_connection(self, connection, task, compiled):
+        row = connection.execute(
+            "SELECT id, manifest_json, payload_json FROM context_manifests WHERE session_id = ? AND task_id = ? AND call_ordinal = ?",
+            (self.session_id, task["id"], compiled.manifest["call_ordinal"]),
+        ).fetchone()
+        if row:
+            return self._compiled_from_manifest(self._manifest_row(row))
+        manifest = dict(compiled.manifest)
+        manifest_id = self._id()
+        manifest["id"] = manifest_id
+        connection.execute(
+            "INSERT INTO context_manifests "
+            "(id, session_id, task_id, base_revision, call_ordinal, manifest_json, payload_json, payload_hash, stable_payload_hash, policy_version, token_budget, estimated_tokens) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                manifest_id, self.session_id, task["id"], task["base_revision"], manifest["call_ordinal"],
+                self._canonical(manifest), self._canonical(compiled.payload), compiled.payload_hash,
+                compiled.stable_payload_hash, self.manifest_policy.version, self.manifest_policy.token_budget,
+                manifest["estimated_tokens"],
+            ),
+        )
+        self._event(connection, "context.compiled", {"task_id": task["id"], "manifest_id": manifest_id, "base_revision": task["base_revision"], "payload_hash": compiled.payload_hash})
+        manifest["payload"] = compiled.payload
+        return type(compiled)(compiled.payload, manifest, compiled.payload_hash, compiled.stable_payload_hash)
+
+    def _compile_and_persist(self, task):
+        existing = self.manifest_for_task(task["id"], 0)
+        if existing:
+            return self._compiled_from_manifest(existing)
+        if not task["source_snapshot"]:
+            raise RuntimeError("task has no trustworthy context snapshot")
+        snapshot = json.loads(task["source_snapshot"])
+        if not snapshot:
+            raise RuntimeError("task has no trustworthy context snapshot")
+        loads = self._worldbook_loads(task["id"], 0)
+        request = ContextCompileRequest(
+            session_id=self.session_id,
+            task_id=task["id"],
+            base_revision=task["base_revision"],
+            player_input=task["text"],
+            snapshot=snapshot,
+            policy=self.manifest_policy,
+            worldbook_loads=tuple(loads),
+        )
+        compiled = compile_context(request)
+        compiled = self._persist_manifest(task, compiled)
+        with self._connect() as connection:
+            connection.execute("UPDATE tasks SET status = ? WHERE id = ?", ("running", task["id"]))
+            self._event(connection, "task.running", {"task_id": task["id"]})
+        return compiled
+
+    def _execute(self, text, compiled):
+        return self.executor.run(text, compiled)
+
+    def _commit_draft(self, task, draft):
+        stale = False
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            if self._active_revision(connection) != task["base_revision"]:
+                stale = True
+            else:
+                revision = task["base_revision"] + 1
+                commit_id = self._id()
+                connection.execute(
+                    "INSERT INTO commits (id, session_id, revision, task_id, draft) VALUES (?, ?, ?, ?, ?)",
+                    (commit_id, self.session_id, revision, task["id"], draft.to_json()),
+                )
+                connection.execute("INSERT INTO projection_checkpoints (commit_id, state) VALUES (?, ?)", (commit_id, "pending"))
+                connection.execute(
+                    "INSERT INTO state_snapshots (session_id, revision, state_json) VALUES (?, ?, ?)",
+                    (self.session_id, revision, self._canonical(self._projected_state(task["base_revision"], draft))),
+                )
+                connection.execute("UPDATE sessions SET active_revision = ? WHERE id = ?", (revision, self.session_id))
+                connection.execute(
+                    "UPDATE tasks SET status = ?, commit_id = ?, revision = ? WHERE id = ?",
+                    ("projection_pending", commit_id, revision, task["id"]),
+                )
+                self._event(connection, "turn.committed", {"task_id": task["id"], "commit_id": commit_id, "revision": revision})
+        if stale:
+            with self._connect() as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                connection.execute("UPDATE tasks SET status = ? WHERE id = ?", ("stale_revision", task["id"]))
+                self._event(connection, "task.stale_revision", {"task_id": task["id"]})
+            raise RuntimeError("stale revision")
+        return RuntimeResult(task["id"], commit_id, revision, "projection_pending")
+
     def _project(self, result):
         if result.status == "succeeded":
             return result
         with self._lock:
             with self._connect() as connection:
-                commit = connection.execute(
-                    "SELECT draft FROM commits WHERE id = ?", (result.commit_id,)
-                ).fetchone()
-                checkpoint = connection.execute(
-                    "SELECT state FROM projection_checkpoints WHERE commit_id = ?", (result.commit_id,)
-                ).fetchone()
+                commit = connection.execute("SELECT draft FROM commits WHERE id = ?", (result.commit_id,)).fetchone()
+                checkpoint = connection.execute("SELECT state FROM projection_checkpoints WHERE commit_id = ?", (result.commit_id,)).fetchone()
                 if checkpoint["state"] == "applied":
                     return RuntimeResult(result.task_id, result.commit_id, result.revision, "succeeded")
                 draft = TurnDraft.from_json(commit["draft"])
@@ -208,84 +408,165 @@ class SessionTurnRuntime:
                 self.projection.apply(self._task_text(result.task_id), draft)
             except Exception:
                 with self._connect() as connection:
-                    connection.execute(
-                        "UPDATE tasks SET status = ? WHERE id = ?", ("projection_pending", result.task_id)
-                    )
+                    connection.execute("UPDATE tasks SET status = ? WHERE id = ?", ("projection_pending", result.task_id))
                 raise
             with self._connect() as connection:
                 connection.execute("BEGIN IMMEDIATE")
-                connection.execute(
-                    "UPDATE projection_checkpoints SET state = ? WHERE commit_id = ?", ("applied", result.commit_id)
-                )
+                connection.execute("UPDATE projection_checkpoints SET state = ? WHERE commit_id = ?", ("applied", result.commit_id))
                 connection.execute("UPDATE tasks SET status = ? WHERE id = ?", ("succeeded", result.task_id))
                 self._event(connection, "task.succeeded", {"task_id": result.task_id, "commit_id": result.commit_id})
             return RuntimeResult(result.task_id, result.commit_id, result.revision, "succeeded")
+
+    def _source_snapshot(self, base_revision):
+        memory = self.card_folder / "memory"
+        initvar_path = self.card_folder / ".initvar.json"
+        card_data_path = self.card_folder / ".card_data.json"
+        catalog_path = memory / ".worldbook_index.json"
+        reference_path = memory / "reference.md"
+        user_path = memory / "user.md"
+        structure_path = memory / ".card_structure.json"
+        project_path = memory / "project.md"
+        initvar = self._read_json(initvar_path, {})
+        runtime_turns = self._runtime_turns(base_revision)
+        current_state = self._state_at_revision(base_revision)
+        return {
+            "card_facts": self._read_json(card_data_path, {}),
+            "settings": self.session_settings,
+            "worldbook_catalog": self._read_json(catalog_path, []),
+            "worldbook_reference": self._read_text(reference_path),
+            "worldbook_user": self._read_text(user_path),
+            "card_structure": self._read_json(structure_path, {}),
+            "initvar": initvar,
+            "current_state": current_state,
+            "recent_memory": self._recent_memory(project_path),
+            "recent_turns": runtime_turns,
+            "sources": {
+                "card_facts": self._file_source(card_data_path),
+                "settings": {"id": "session_settings", "version": self._hash_bytes(self._canonical(self.session_settings).encode("utf-8"))},
+                "worldbook_catalog": self._file_source(catalog_path),
+                "card_structure": self._file_source(structure_path),
+                "initvar": self._file_source(initvar_path),
+                "current_state": {"id": "runtime_state", "version": str(base_revision)},
+                "recent_memory": self._file_source(project_path),
+                "recent_turns": {"id": "active_lineage", "version": str(base_revision)},
+            },
+        }
+
+    def _state_at_revision(self, revision):
+        if revision == 0:
+            return self._read_json(self.card_folder / ".initvar.json", {})
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT state_json FROM state_snapshots WHERE session_id = ? AND revision = ?",
+                (self.session_id, revision),
+            ).fetchone()
+        if not row:
+            raise RuntimeError("revision state snapshot is unavailable")
+        return json.loads(row["state_json"])
+
+    def _runtime_turns(self, base_revision):
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT commits.revision, tasks.text, commits.draft FROM commits JOIN tasks ON tasks.id = commits.task_id "
+                "WHERE commits.session_id = ? AND commits.revision <= ? ORDER BY commits.revision DESC LIMIT 3",
+                (self.session_id, base_revision),
+            ).fetchall()
+        return [
+            {"revision": row["revision"], "user": row["text"], "assistant": TurnDraft.from_json(row["draft"]).content}
+            for row in reversed(rows)
+        ]
+
+    def _projected_state(self, base_revision, draft):
+        base_state = self._state_at_revision(base_revision)
+        commands = extract_commands(draft.content)
+        state, _ = execute_commands(base_state, commands) if commands else (base_state, {})
+        return state
+
+    @staticmethod
+    def _file_source(path):
+        try:
+            raw = Path(path).read_bytes()
+        except OSError:
+            raw = b""
+        return {"id": str(Path(path).name), "version": SessionTurnRuntime._hash_bytes(raw)}
+
+    @staticmethod
+    def _hash_bytes(value):
+        import hashlib
+        return hashlib.sha256(value).hexdigest()
 
     def _task_text(self, task_id):
         with self._connect() as connection:
             return connection.execute("SELECT text FROM tasks WHERE id = ?", (task_id,)).fetchone()["text"]
 
-    def _next_revision(self, connection):
-        return connection.execute(
-            "SELECT active_revision FROM sessions WHERE id = ?", (self.session_id,)
-        ).fetchone()["active_revision"] + 1
+    def _active_revision(self, connection):
+        return connection.execute("SELECT active_revision FROM sessions WHERE id = ?", (self.session_id,)).fetchone()["active_revision"]
 
     @staticmethod
     def _result(task):
-        return RuntimeResult(
-            task_id=task["id"],
-            commit_id=task["commit_id"],
-            revision=task["revision"],
-            status=task["status"],
-        )
+        return RuntimeResult(task["id"], task["commit_id"], task["revision"], task["status"])
 
     @staticmethod
     def _task_for_key(connection, idempotency_key):
         return connection.execute(
-            "SELECT id, commit_id, revision, status FROM tasks WHERE idempotency_key = ?", (idempotency_key,)
+            "SELECT id, commit_id, revision, status, text, base_revision, source_snapshot FROM tasks WHERE idempotency_key = ?", (idempotency_key,)
         ).fetchone()
+
+    @staticmethod
+    def _compiled_from_manifest(manifest):
+        return CompiledContext(
+            manifest["payload"],
+            manifest,
+            manifest["payload_hash"],
+            manifest["stable_payload_hash"],
+        )
+
+    @staticmethod
+    def _manifest_row(row):
+        if not row:
+            return None
+        manifest = json.loads(row["manifest_json"])
+        manifest["id"] = row["id"]
+        manifest["payload"] = json.loads(row["payload_json"])
+        return manifest
 
     def _initialize(self):
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as connection:
             connection.executescript(
                 """
-                CREATE TABLE IF NOT EXISTS sessions (
-                    id TEXT PRIMARY KEY,
-                    active_revision INTEGER NOT NULL
-                );
+                CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY);
+                CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, active_revision INTEGER NOT NULL);
                 CREATE TABLE IF NOT EXISTS tasks (
-                    id TEXT PRIMARY KEY,
-                    session_id TEXT NOT NULL,
-                    idempotency_key TEXT NOT NULL UNIQUE,
-                    text TEXT NOT NULL,
-                    status TEXT NOT NULL,
-                    commit_id TEXT,
-                    revision INTEGER NOT NULL
+                    id TEXT PRIMARY KEY, session_id TEXT NOT NULL, idempotency_key TEXT NOT NULL UNIQUE,
+                    text TEXT NOT NULL, status TEXT NOT NULL, commit_id TEXT, revision INTEGER NOT NULL,
+                    base_revision INTEGER, source_snapshot TEXT
                 );
-                CREATE TABLE IF NOT EXISTS commits (
-                    id TEXT PRIMARY KEY,
-                    session_id TEXT NOT NULL,
-                    revision INTEGER NOT NULL,
-                    task_id TEXT NOT NULL UNIQUE,
-                    draft TEXT NOT NULL
+                CREATE TABLE IF NOT EXISTS commits (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, revision INTEGER NOT NULL, task_id TEXT NOT NULL UNIQUE, draft TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS projection_checkpoints (commit_id TEXT PRIMARY KEY, state TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS state_snapshots (session_id TEXT NOT NULL, revision INTEGER NOT NULL, state_json TEXT NOT NULL, PRIMARY KEY (session_id, revision));
+                CREATE TABLE IF NOT EXISTS events (sequence INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, type TEXT NOT NULL, payload TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS context_manifests (
+                    id TEXT PRIMARY KEY, session_id TEXT NOT NULL, task_id TEXT NOT NULL, base_revision INTEGER NOT NULL,
+                    call_ordinal INTEGER NOT NULL, manifest_json TEXT NOT NULL, payload_json TEXT NOT NULL,
+                    payload_hash TEXT NOT NULL, stable_payload_hash TEXT NOT NULL, policy_version TEXT NOT NULL,
+                    token_budget INTEGER NOT NULL, estimated_tokens INTEGER NOT NULL, UNIQUE(task_id, call_ordinal)
                 );
-                CREATE TABLE IF NOT EXISTS projection_checkpoints (
-                    commit_id TEXT PRIMARY KEY,
-                    state TEXT NOT NULL
-                );
-                CREATE TABLE IF NOT EXISTS events (
-                    sequence INTEGER PRIMARY KEY AUTOINCREMENT,
-                    session_id TEXT NOT NULL,
-                    type TEXT NOT NULL,
-                    payload TEXT NOT NULL
+                CREATE TABLE IF NOT EXISTS worldbook_loads (
+                    id TEXT PRIMARY KEY, session_id TEXT NOT NULL, task_id TEXT NOT NULL, base_revision INTEGER NOT NULL,
+                    call_ordinal INTEGER NOT NULL, title TEXT NOT NULL, catalog_hash TEXT NOT NULL, reference_hash TEXT NOT NULL,
+                    content_hash TEXT NOT NULL, content TEXT NOT NULL, reason TEXT NOT NULL, UNIQUE(task_id, call_ordinal, title)
                 );
                 """
             )
-            connection.execute(
-                "INSERT OR IGNORE INTO sessions (id, active_revision) VALUES (?, 0)",
-                (self.session_id,),
-            )
+            columns = {row["name"] for row in connection.execute("PRAGMA table_info(tasks)")}
+            if "base_revision" not in columns:
+                connection.execute("ALTER TABLE tasks ADD COLUMN base_revision INTEGER")
+            if "source_snapshot" not in columns:
+                connection.execute("ALTER TABLE tasks ADD COLUMN source_snapshot TEXT")
+            connection.execute("UPDATE tasks SET base_revision = MAX(revision - 1, 0) WHERE base_revision IS NULL")
+            connection.execute("INSERT OR IGNORE INTO schema_migrations (version) VALUES (2)")
+            connection.execute("INSERT OR IGNORE INTO sessions (id, active_revision) VALUES (?, 0)", (self.session_id,))
 
     def _connect(self):
         connection = sqlite3.connect(self.database_path, timeout=5)
@@ -293,10 +574,32 @@ class SessionTurnRuntime:
         return connection
 
     def _event(self, connection, event_type, payload):
-        connection.execute(
-            "INSERT INTO events (session_id, type, payload) VALUES (?, ?, ?)",
-            (self.session_id, event_type, json.dumps(payload, ensure_ascii=False)),
-        )
+        connection.execute("INSERT INTO events (session_id, type, payload) VALUES (?, ?, ?)", (self.session_id, event_type, self._canonical(payload)))
+
+    @staticmethod
+    def _read_json(path, fallback):
+        try:
+            return json.loads(Path(path).read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return fallback
+
+    @staticmethod
+    def _read_text(path):
+        try:
+            return Path(path).read_text(encoding="utf-8")
+        except OSError:
+            return ""
+
+    @staticmethod
+    def _recent_memory(path):
+        try:
+            return Path(path).read_text(encoding="utf-8")[-3000:]
+        except OSError:
+            return ""
+
+    @staticmethod
+    def _canonical(value):
+        return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
     @staticmethod
     def _id():
