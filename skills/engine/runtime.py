@@ -1,3 +1,4 @@
+import hashlib
 import json
 import sqlite3
 import threading
@@ -7,22 +8,54 @@ from pathlib import Path
 
 import handler
 from engine.context_compiler import CompiledContext, ContextCompileRequest, ContextPolicy, compile_context, replay_payload
+from engine.director import DirectorHandle, NarrativeDirector
 from engine.mvu import execute_commands, extract_commands
+from engine.provider import AbortSignal, ProviderAborted, ProviderError
+from engine.tools import ToolResult, ToolRegistry, validate_draft_dict
 from engine.worldbook import load_worldbook_entry_from_texts
 
 
 @dataclass(frozen=True)
 class TurnDraft:
+    """Structured narrative turn, authored by the director and committed by the runtime.
+
+    ``content`` / ``summary`` / ``options`` mirror the existing projection
+    contract; ``polished_input`` carries the (optional) editor-pass of the
+    player's input and ``mvu_commands`` carries the raw MVU payload
+    (``_.set()`` / ``<JSONPatch>`` / ``<UpdateVariable>``). When
+    ``mvu_commands`` is empty, MVU is extracted from ``content`` for backward
+    compatibility with the deterministic fake executor.
+    """
+
     content: str
     summary: str = ""
     options: str = ""
+    polished_input: str = ""
+    mvu_commands: str = ""
 
     def to_json(self):
-        return json.dumps(self.__dict__, ensure_ascii=False, sort_keys=True)
+        return json.dumps(
+            {
+                "content": self.content,
+                "summary": self.summary,
+                "options": self.options,
+                "polished_input": self.polished_input,
+                "mvu_commands": self.mvu_commands,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
 
     @classmethod
     def from_json(cls, raw):
-        return cls(**json.loads(raw))
+        data = json.loads(raw)
+        return cls(
+            content=data["content"],
+            summary=data.get("summary", ""),
+            options=data.get("options", ""),
+            polished_input=data.get("polished_input", ""),
+            mvu_commands=data.get("mvu_commands", ""),
+        )
 
 
 @dataclass(frozen=True)
@@ -63,13 +96,17 @@ class LegacyProjectionAdapter:
     def apply(self, text, draft):
         backups = self._backup()
         try:
+            full_text = draft.content
+            if draft.mvu_commands:
+                full_text = full_text + "\n" + draft.mvu_commands
+            polished = draft.polished_input or text
             handler.append_turn(
                 self.card_folder,
-                polished_input=text,
+                polished_input=polished,
                 content=draft.content,
                 summary=draft.summary,
                 options=draft.options,
-                full_text=draft.content,
+                full_text=full_text,
                 projection_root=self.projection_root,
             )
         except Exception:
@@ -119,6 +156,7 @@ class SessionTurnRuntime:
         self.session_settings = json.loads(self._canonical(session_settings or {}))
         self.projection = LegacyProjectionAdapter(card_folder, projection_root)
         self._lock = threading.RLock()
+        self._abort_signals: dict[str, AbortSignal] = {}
         self._initialize()
 
     def submit(self, text, idempotency_key):
@@ -132,10 +170,63 @@ class SessionTurnRuntime:
             if result.commit_id:
                 return self._project(result)
 
-            compiled = self._compile_and_persist(task)
-            draft = self._execute(text, compiled)
-            result = self._commit_draft(task, draft)
-            return self._project(result)
+            is_director = isinstance(self.executor, NarrativeDirector)
+            signal = None
+            if is_director:
+                # Register the abort signal BEFORE the task flips to "running".
+                # stop() deliberately does not take self._lock (it must be able to
+                # interrupt a blocked director), so cancellation correctness rests
+                # on the signal being visible for the task's entire live window —
+                # including the I/O-performing context compilation that precedes
+                # the director. Without this, a stop() during compile finds no
+                # signal and a non-"queued" status and is silently lost. Full
+                # lease/recovery semantics land in Tickets 04/07.
+                signal = AbortSignal()
+                self._abort_signals[task["id"]] = signal
+            try:
+                compiled = self._compile_and_persist(task)
+                if is_director:
+                    return self._run_director(task, text, compiled, signal)
+                draft = self._execute(text, compiled)
+                result = self._commit_draft(task, draft)
+                return self._project(result)
+            finally:
+                if signal is not None:
+                    self._abort_signals.pop(task["id"], None)
+
+    def stop(self, task_id):
+        """Cancel a running or queued narrative-director task.
+
+        For a task whose director is currently running, this cancels the shared
+        :class:`AbortSignal`; the director loop and provider stream observe it
+        cooperatively and the runtime then transitions the task to
+        ``cancelled``. For a not-yet-running task, the row is marked
+        ``cancelled`` directly. Never un-commits an already-committed turn.
+        """
+        signal = self._abort_signals.get(task_id)
+        if signal is not None:
+            signal.cancel()
+            return True
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT status FROM tasks WHERE id = ? AND session_id = ?",
+                (task_id, self.session_id),
+            ).fetchone()
+            if row and row["status"] in ("queued",):
+                connection.execute(
+                    "UPDATE tasks SET status = ? WHERE id = ?", ("cancelled", task_id)
+                )
+                self._event(connection, "task.cancelled", {"task_id": task_id})
+                return True
+        return False
+
+    def task_id_for_key(self, idempotency_key):
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT id FROM tasks WHERE idempotency_key = ?", (idempotency_key,)
+            ).fetchone()
+        return row["id"] if row else None
 
     def active_revision(self):
         with self._connect() as connection:
@@ -355,8 +446,14 @@ class SessionTurnRuntime:
         compiled = compile_context(request)
         compiled = self._persist_manifest(task, compiled)
         with self._connect() as connection:
-            connection.execute("UPDATE tasks SET status = ? WHERE id = ?", ("running", task["id"]))
-            self._event(connection, "task.running", {"task_id": task["id"]})
+            # Guard the transition so a concurrent stop() that already marked this
+            # queued task "cancelled" is not silently overwritten to "running".
+            cur = connection.execute(
+                "UPDATE tasks SET status = ? WHERE id = ? AND status = ?",
+                ("running", task["id"], "queued"),
+            )
+            if cur.rowcount:
+                self._event(connection, "task.running", {"task_id": task["id"]})
         return compiled
 
     def _execute(self, text, compiled):
@@ -364,28 +461,14 @@ class SessionTurnRuntime:
 
     def _commit_draft(self, task, draft):
         stale = False
+        commit_id = None
+        revision = None
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             if self._active_revision(connection) != task["base_revision"]:
                 stale = True
             else:
-                revision = task["base_revision"] + 1
-                commit_id = self._id()
-                connection.execute(
-                    "INSERT INTO commits (id, session_id, revision, task_id, draft) VALUES (?, ?, ?, ?, ?)",
-                    (commit_id, self.session_id, revision, task["id"], draft.to_json()),
-                )
-                connection.execute("INSERT INTO projection_checkpoints (commit_id, state) VALUES (?, ?)", (commit_id, "pending"))
-                connection.execute(
-                    "INSERT INTO state_snapshots (session_id, revision, state_json) VALUES (?, ?, ?)",
-                    (self.session_id, revision, self._canonical(self._projected_state(task["base_revision"], draft))),
-                )
-                connection.execute("UPDATE sessions SET active_revision = ? WHERE id = ?", (revision, self.session_id))
-                connection.execute(
-                    "UPDATE tasks SET status = ?, commit_id = ?, revision = ? WHERE id = ?",
-                    ("projection_pending", commit_id, revision, task["id"]),
-                )
-                self._event(connection, "turn.committed", {"task_id": task["id"], "commit_id": commit_id, "revision": revision})
+                commit_id, revision = self._perform_commit_in_connection(connection, task, draft)
         if stale:
             with self._connect() as connection:
                 connection.execute("BEGIN IMMEDIATE")
@@ -393,6 +476,391 @@ class SessionTurnRuntime:
                 self._event(connection, "task.stale_revision", {"task_id": task["id"]})
             raise RuntimeError("stale revision")
         return RuntimeResult(task["id"], commit_id, revision, "projection_pending")
+
+    def _perform_commit_in_connection(self, connection, task, draft):
+        """Insert commit + state snapshot + advance revision + emit turn.committed.
+
+        Caller holds ``BEGIN IMMEDIATE`` and has verified revision freshness.
+        Returns ``(commit_id, revision)``.
+        """
+        revision = self._active_revision(connection) + 1
+        commit_id = self._id()
+        connection.execute(
+            "INSERT INTO commits (id, session_id, revision, task_id, draft) VALUES (?, ?, ?, ?, ?)",
+            (commit_id, self.session_id, revision, task["id"], draft.to_json()),
+        )
+        connection.execute(
+            "INSERT INTO projection_checkpoints (commit_id, state) VALUES (?, ?)",
+            (commit_id, "pending"),
+        )
+        connection.execute(
+            "INSERT INTO state_snapshots (session_id, revision, state_json) VALUES (?, ?, ?)",
+            (self.session_id, revision, self._canonical(self._projected_state(task["base_revision"], draft))),
+        )
+        connection.execute(
+            "UPDATE sessions SET active_revision = ? WHERE id = ?",
+            (revision, self.session_id),
+        )
+        connection.execute(
+            "UPDATE tasks SET status = ?, commit_id = ?, revision = ? WHERE id = ?",
+            ("projection_pending", commit_id, revision, task["id"]),
+        )
+        self._event(
+            connection,
+            "turn.committed",
+            {"task_id": task["id"], "commit_id": commit_id, "revision": revision},
+        )
+        return commit_id, revision
+
+    def _commit_via_tool(self, task, draft_dict, expected_revision):
+        """Commit path exercised by the ``commit_turn_draft`` tool.
+
+        Idempotent: a second call for an already-committed task returns the
+        existing commit. Validates ``expected_revision`` against the current
+        active revision (optimistic) before any write. Performs NO projection
+        — projection is applied by the submit loop once the director returns.
+        Any unexpected failure (e.g. an MVU payload the engine cannot apply)
+        surfaces as a stable ``commit_failed`` ToolResult so the director can
+        react instead of crashing the run.
+        """
+        draft = TurnDraft(
+            content=draft_dict["content"],
+            summary=draft_dict.get("summary", "") or "",
+            options=draft_dict.get("options", "") or "",
+            polished_input=draft_dict.get("polished_input", "") or "",
+            mvu_commands=draft_dict.get("mvu_commands", "") or "",
+        )
+        try:
+            with self._connect() as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                existing = connection.execute(
+                    "SELECT id, revision FROM commits WHERE task_id = ?", (task["id"],)
+                ).fetchone()
+                if existing:
+                    return ToolResult(
+                        ok=True,
+                        value={
+                            "commit_id": existing["id"],
+                            "revision": existing["revision"],
+                            "reused": True,
+                        },
+                    )
+                active = self._active_revision(connection)
+                if expected_revision != active:
+                    connection.execute(
+                        "UPDATE tasks SET status = ? WHERE id = ?",
+                        ("stale_revision", task["id"]),
+                    )
+                    self._event(
+                        connection,
+                        "task.stale_revision",
+                        {
+                            "task_id": task["id"],
+                            "expected": expected_revision,
+                            "actual": active,
+                        },
+                    )
+                    return ToolResult(
+                        ok=False,
+                        error="stale_revision",
+                        value={"expected": expected_revision, "actual": active},
+                    )
+                commit_id, revision = self._perform_commit_in_connection(connection, task, draft)
+        except Exception as exc:
+            return ToolResult(ok=False, error="commit_failed", value={"detail": str(exc)})
+        return ToolResult(
+            ok=True,
+            value={"commit_id": commit_id, "revision": revision, "reused": False},
+        )
+
+    def _task_status(self, task_id):
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT status FROM tasks WHERE id = ?", (task_id,)
+            ).fetchone()
+        return row["status"] if row else None
+
+    def _finalize_cancelled(self, task_id):
+        """Idempotently mark a non-committed task cancelled and return its result.
+
+        Never overwrites a task that already committed (abort after commit must
+        leave the turn standing — spec Decisions 20–21).
+        """
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT status, commit_id, revision FROM tasks WHERE id = ?", (task_id,)
+            ).fetchone()
+            if row and not row["commit_id"] and row["status"] != "cancelled":
+                connection.execute(
+                    "UPDATE tasks SET status = ? WHERE id = ?", ("cancelled", task_id)
+                )
+                self._event(connection, "task.cancelled", {"task_id": task_id})
+            status = "cancelled" if (not row or not row["commit_id"]) else row["status"]
+            commit_id = row["commit_id"] if row else None
+            revision = row["revision"] if row else 0
+        return RuntimeResult(task_id, commit_id, revision, status)
+
+    # ═══ Narrative-director execution (Ticket 03) ═══
+
+    def _run_director(self, task, text, compiled, signal):
+        # If a concurrent stop() cancelled this task during context compilation
+        # (or before the director body started), finalize as cancelled without
+        # running the director — no commit, no preview promotion.
+        if signal.cancelled or self._task_status(task["id"]) == "cancelled":
+            return self._finalize_cancelled(task["id"])
+        tools = ToolRegistry(self, task, self.manifest_policy)
+        handle = DirectorHandle(task["id"], text, tools, signal, self)
+        terminal_status: str | None = None
+        try:
+            self.executor.direct(handle, compiled)
+        except ProviderAborted:
+            terminal_status = "cancelled"
+        except ProviderError as exc:
+            terminal_status = "failed_terminal" if not exc.retryable else "failed_retryable"
+            self._last_provider_error = exc
+
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            task_now = connection.execute(
+                "SELECT status, commit_id, revision FROM tasks WHERE id = ?",
+                (task["id"],),
+            ).fetchone()
+            status = task_now["status"]
+            commit_id = task_now["commit_id"]
+            revision = task_now["revision"]
+            if not commit_id:
+                # No authoritative commit happened. Classify the non-committed
+                # terminal state: provider error / abort / silent return.
+                if terminal_status:
+                    connection.execute(
+                        "UPDATE tasks SET status = ? WHERE id = ?",
+                        (terminal_status, task["id"]),
+                    )
+                    self._event(
+                        connection,
+                        f"task.{terminal_status}",
+                        {"task_id": task["id"]},
+                    )
+                    status = terminal_status
+                elif signal.cancelled:
+                    connection.execute(
+                        "UPDATE tasks SET status = ? WHERE id = ?",
+                        ("cancelled", task["id"]),
+                    )
+                    self._event(connection, "task.cancelled", {"task_id": task["id"]})
+                    status = "cancelled"
+                elif status == "running":
+                    connection.execute(
+                        "UPDATE tasks SET status = ? WHERE id = ?",
+                        ("failed_terminal", task["id"]),
+                    )
+                    self._event(
+                        connection,
+                        "task.failed_terminal",
+                        {"task_id": task["id"], "reason": "director_did_not_commit"},
+                    )
+                    status = "failed_terminal"
+            # If commit_id is set, an authoritative commit happened; abort /
+            # error after commit cannot un-commit the turn (spec Decision 20–21).
+
+        result = RuntimeResult(task["id"], commit_id, revision, status)
+        if commit_id and status in ("projection_pending", "succeeded"):
+            return self._project(result)
+        return result
+
+    # --- tool implementations (called by engine.tools.ToolRegistry) ---
+
+    def _tool_session_snapshot(self, task, args):
+        revision = args.get("revision")
+        with self._connect() as connection:
+            if revision is None:
+                revision = self._active_revision(connection)
+            commit_row = connection.execute(
+                "SELECT id FROM commits WHERE session_id = ? AND revision = ?",
+                (self.session_id, revision),
+            ).fetchone()
+            task_row = connection.execute(
+                "SELECT status FROM tasks WHERE id = ?", (task["id"],)
+            ).fetchone()
+            recent = connection.execute(
+                "SELECT commits.revision, tasks.text, commits.draft FROM commits "
+                "JOIN tasks ON tasks.id = commits.task_id "
+                "WHERE commits.session_id = ? AND commits.revision <= ? "
+                "ORDER BY commits.revision DESC LIMIT 3",
+                (self.session_id, revision),
+            ).fetchall()
+        return ToolResult(
+            ok=True,
+            value={
+                "session_id": self.session_id,
+                "active_revision": revision,
+                "task_id": task["id"],
+                "task_status": task_row["status"] if task_row else None,
+                "commit_id": commit_row["id"] if commit_row else None,
+                "recent_revisions": [row["revision"] for row in reversed(recent)],
+            },
+        )
+
+    def _tool_recent_memory(self, task, args):
+        max_chars = args.get("max_chars", 3000)
+        if max_chars <= 0:
+            max_chars = 3000
+        project_path = self.card_folder / "memory" / "project.md"
+        text = self._recent_memory(project_path) if project_path.exists() else ""
+        if len(text) > max_chars:
+            text = text[-max_chars:]
+        return ToolResult(ok=True, value={"memory": text, "truncated": len(text) == max_chars})
+
+    def _tool_load_worldbook(self, task, args):
+        title = args["title"]
+        reason = args.get("reason", "")
+        try:
+            entry = self.load_worldbook_for_task(task["id"], title, reason)
+        except ValueError as exc:
+            return ToolResult(ok=False, error="worldbook_load_failed", value={"detail": str(exc)})
+        return ToolResult(
+            ok=True,
+            value={
+                "title": entry.title,
+                "content": entry.content,
+                "content_hash": entry.content_hash,
+            },
+        )
+
+    def _tool_validate_state(self, task, args):
+        proposal = args["proposal"]
+        base_state = self._state_at_revision(task["base_revision"])
+        try:
+            commands = extract_commands_for_proposal(proposal)
+            new_state, _changes = execute_commands(base_state, commands) if commands else (base_state, {})
+        except Exception as exc:
+            return ToolResult(ok=False, error="state_proposal_invalid", value={"detail": str(exc)})
+        return ToolResult(
+            ok=True,
+            value={
+                "accepted": True,
+                "touched_paths": sorted(_collect_changed_paths(base_state, new_state)),
+            },
+        )
+
+    # --- director-side trace emitters ---
+
+    def _emit_preview(self, task_id, delta_text):
+        delta_hash = hashlib.sha256(delta_text.encode("utf-8")).hexdigest()
+        with self._connect() as connection:
+            self._event(
+                connection,
+                "narrative.preview.delta",
+                {
+                    "task_id": task_id,
+                    "length": len(delta_text),
+                    "delta_hash": delta_hash,
+                    "preview": delta_text,
+                },
+            )
+
+    def _emit_tool_started(self, task_id, name, args_hash, redacted_args):
+        with self._connect() as connection:
+            self._event(
+                connection,
+                "tool_run.started",
+                {
+                    "task_id": task_id,
+                    "tool": name,
+                    "args_hash": args_hash,
+                    "args": redacted_args,
+                },
+            )
+
+    def _emit_tool_finished(self, task_id, name, args_hash, redacted_args, ok, error, duration):
+        with self._connect() as connection:
+            self._event(
+                connection,
+                "tool_run.finished",
+                {
+                    "task_id": task_id,
+                    "tool": name,
+                    "args_hash": args_hash,
+                    "ok": bool(ok),
+                    "error": error,
+                    "duration_ms": int(duration * 1000),
+                },
+            )
+
+    def _emit_model_call_started(self, task_id, meta):
+        with self._connect() as connection:
+            self._event(
+                connection,
+                "model_call.started",
+                {
+                    "task_id": task_id,
+                    "call_ordinal": meta["call_ordinal"],
+                    "manifest_id": meta.get("manifest_id"),
+                    "model": meta.get("model"),
+                },
+            )
+
+    def _record_model_call(self, task_id, meta):
+        call_id = self._id()
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute(
+                "INSERT INTO model_calls "
+                "(id, session_id, task_id, call_ordinal, manifest_id, model, "
+                "prompt_tokens, completion_tokens, total_tokens, stop_reason, latency_ms, "
+                "cost_amount, cost_currency, cost_rate_version) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    call_id,
+                    self.session_id,
+                    task_id,
+                    meta["call_ordinal"],
+                    meta.get("manifest_id"),
+                    meta.get("model"),
+                    meta.get("prompt_tokens", 0),
+                    meta.get("completion_tokens", 0),
+                    meta.get("total_tokens", 0),
+                    meta.get("stop_reason", ""),
+                    meta.get("latency_ms", 0),
+                    meta.get("cost_amount", 0.0),
+                    meta.get("cost_currency", "USD"),
+                    meta.get("cost_rate_version", "fake-rates-v0"),
+                ),
+            )
+            self._event(
+                connection,
+                "model_call.finished",
+                {
+                    "task_id": task_id,
+                    "call_ordinal": meta["call_ordinal"],
+                    "manifest_id": meta.get("manifest_id"),
+                    "model": meta.get("model"),
+                    "usage": {
+                        "prompt_tokens": meta.get("prompt_tokens", 0),
+                        "completion_tokens": meta.get("completion_tokens", 0),
+                        "total_tokens": meta.get("total_tokens", 0),
+                    },
+                    "stop_reason": meta.get("stop_reason", ""),
+                    "latency_ms": meta.get("latency_ms", 0),
+                    "cost_estimate": {
+                        "amount": meta.get("cost_amount", 0.0),
+                        "currency": meta.get("cost_currency", "USD"),
+                        "rate_version": meta.get("cost_rate_version", "fake-rates-v0"),
+                    },
+                },
+            )
+
+    def model_calls_for_task(self, task_id):
+        """Public read accessor for model-call telemetry (used by contract tests)."""
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT call_ordinal, manifest_id, model, prompt_tokens, completion_tokens, "
+                "total_tokens, stop_reason, latency_ms, cost_amount, cost_currency, cost_rate_version "
+                "FROM model_calls WHERE session_id = ? AND task_id = ? ORDER BY call_ordinal",
+                (self.session_id, task_id),
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     def _project(self, result):
         if result.status == "succeeded":
@@ -478,7 +946,8 @@ class SessionTurnRuntime:
 
     def _projected_state(self, base_revision, draft):
         base_state = self._state_at_revision(base_revision)
-        commands = extract_commands(draft.content)
+        source = draft.mvu_commands if draft.mvu_commands else draft.content
+        commands = extract_commands(source)
         state, _ = execute_commands(base_state, commands) if commands else (base_state, {})
         return state
 
@@ -557,6 +1026,12 @@ class SessionTurnRuntime:
                     call_ordinal INTEGER NOT NULL, title TEXT NOT NULL, catalog_hash TEXT NOT NULL, reference_hash TEXT NOT NULL,
                     content_hash TEXT NOT NULL, content TEXT NOT NULL, reason TEXT NOT NULL, UNIQUE(task_id, call_ordinal, title)
                 );
+                CREATE TABLE IF NOT EXISTS model_calls (
+                    id TEXT PRIMARY KEY, session_id TEXT NOT NULL, task_id TEXT NOT NULL, call_ordinal INTEGER NOT NULL,
+                    manifest_id TEXT, model TEXT, prompt_tokens INTEGER NOT NULL, completion_tokens INTEGER NOT NULL,
+                    total_tokens INTEGER NOT NULL, stop_reason TEXT, latency_ms INTEGER NOT NULL,
+                    cost_amount REAL NOT NULL, cost_currency TEXT NOT NULL, cost_rate_version TEXT NOT NULL
+                );
                 """
             )
             columns = {row["name"] for row in connection.execute("PRAGMA table_info(tasks)")}
@@ -604,3 +1079,36 @@ class SessionTurnRuntime:
     @staticmethod
     def _id():
         return str(uuid.uuid4())
+
+
+# ═══ Module-level helpers for state-proposal validation ═══
+
+
+def extract_commands_for_proposal(proposal):
+    """Translate a JSONPatch proposal (list of ops) into MVU commands.
+
+    The ``validate_state_proposal`` tool accepts the same JSONPatch op shape
+    the model emits inside ``<JSONPatch>`` blocks (op/path/value[/from]). We
+    synthesize a ``<JSONPatch>`` envelope and reuse :func:`extract_commands`
+    so the proposal path and the live commit path share one parser — no
+    duplicate MVU semantics.
+    """
+    if not isinstance(proposal, list):
+        raise ValueError("proposal must be a list of JSONPatch operations")
+    envelope = "<JSONPatch>\n" + json.dumps(proposal, ensure_ascii=False) + "\n</JSONPatch>"
+    return extract_commands(envelope)
+
+
+def _collect_changed_paths(before, after, prefix=""):
+    """Yield leaf paths whose values differ between ``before`` and ``after``."""
+    paths = set()
+    if isinstance(before, dict) and isinstance(after, dict):
+        for key in set(before.keys()) | set(after.keys()):
+            full = f"{prefix}.{key}" if prefix else key
+            if key not in before or key not in after:
+                paths.add(full)
+            elif isinstance(before[key], dict) and isinstance(after[key], dict):
+                paths.update(_collect_changed_paths(before[key], after[key], full))
+            elif before[key] != after[key]:
+                paths.add(full)
+    return paths
