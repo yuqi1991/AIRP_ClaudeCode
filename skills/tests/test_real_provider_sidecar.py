@@ -98,32 +98,32 @@ def test_mock_sidecar_streams_text_and_result(require_node_sidecar):
 
 
 def test_mock_sidecar_tool_call_then_result(require_node_sidecar):
+    # ADR-0011: the model surface is read-only tools. The mock sidecar emits a
+    # tool_call delta for whatever tool the request carries.
     adapter = RealProviderAdapter(mock=True)
     signal = AbortSignal()
     request = ProviderRequest(
-        messages=[{"role": "user", "content": "提交回合"}],
+        messages=[{"role": "user", "content": "读一下场景"}],
         tools=[
             {
-                "name": "commit_turn_draft",
-                "description": "commit",
+                "name": "get_session_snapshot",
+                "description": "read session snapshot",
                 "parameters": {
-                    "required": ["draft", "expected_revision"],
-                    "optional": [],
-                    "types": {"draft": "dict", "expected_revision": "int"},
+                    "required": [],
+                    "optional": ["revision"],
+                    "types": {"revision": "int"},
                 },
             }
         ],
         model="deepseek-v4-flash",
-        metadata={"mock_expected_revision": 0, "mock_draft": build_draft()},
+        metadata={"mock_script": "tool_call", "mock_expected_revision": 0},
     )
     items = list(adapter.stream(request, signal))
     tool_deltas = [i for i in items if isinstance(i, ProviderDelta) and i.tool_call]
     results = [i for i in items if isinstance(i, ProviderResult)]
     assert tool_deltas, "expected a tool_call delta"
     call = tool_deltas[0].tool_call
-    assert call["name"] == "commit_turn_draft"
-    assert "draft" in call["args"]
-    assert call["args"]["expected_revision"] == 0
+    assert call["name"] == "get_session_snapshot"
     assert results and results[-1].stop_reason in {"tool_calls", "toolUse", "stop"}
 
 

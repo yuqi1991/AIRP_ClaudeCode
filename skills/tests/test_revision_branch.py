@@ -96,6 +96,20 @@ def build_draft(content="<p>海风掠过礁石。</p>", **overrides):
     return draft
 
 
+def final_text(content="<p>海风掠过礁石。</p>", **overrides):
+    """Harness-commit narrative text (ADR-0011)."""
+    d = build_draft(content=content, **overrides)
+    parts = [
+        f"<polished_input>{d['polished_input']}</polished_input>",
+        f"<content>{d['content']}</content>",
+        f"<summary>{d['summary']}</summary>",
+        f"<options>{d['options']}</options>",
+    ]
+    if d.get("mvu_commands"):
+        parts.append(f"<UpdateVariable>{d['mvu_commands']}</UpdateVariable>")
+    return "\n".join(parts)
+
+
 def http_json(method, url, body=None, timeout=10):
     data = None
     headers = {"Accept": "application/json"}
@@ -377,27 +391,23 @@ def test_rollback_unknown_revision_stable_error(tmp_path):
 
 
 def test_rollback_invalidates_in_flight_stale_commit(tmp_path):
-    """Branch stale case: task frozen at base=1 cannot commit after rollback to 0."""
+    """Branch stale case under harness-commit (ADR-0011): a task frozen at
+    base=1 produces final text, but after rollback moved the head to 0 the
+    harness's optimistic check rejects the commit (stale base revision)."""
     from engine.director import NarrativeDirector
 
     class HoldThenCommitDirector(NarrativeDirector):
-        """Blocks until released, then tries commit_turn_draft at expected_revision=1."""
+        """Blocks until released, then emits final text for the harness to commit."""
 
         def __init__(self):
             self.gate = threading.Event()
             self.started = threading.Event()
-            self.last_result = None
 
         def direct(self, handle, compiled):
             self.started.set()
             self.gate.wait(timeout=5)
-            self.last_result = handle.call_tool(
-                "commit_turn_draft",
-                {
-                    "draft": build_draft(content="<p>不应写入。</p>"),
-                    "expected_revision": 1,
-                },
-            )
+            # Produce final text; the harness will try to commit at base_revision=1.
+            handle.set_final_text(final_text(content="<p>不应写入。</p>"))
 
     # First turn via fake executor so we have rev1 committed.
     runtime, card_folder, projection_root, database_path = make_runtime(tmp_path)
@@ -438,11 +448,8 @@ def test_rollback_invalidates_in_flight_stale_commit(tmp_path):
     # Second task must not have committed a turn on top
     if result_box:
         second = result_box[0]
-        assert second.commit_id is None or second.status == "stale_revision"
-        assert second.status in ("stale_revision", "failed_terminal", "cancelled")
-    assert holder.last_result is not None
-    assert holder.last_result.ok is False
-    assert holder.last_result.error == "stale_revision"
+        assert second.commit_id is None
+        assert second.status in ("stale_revision", "failed_terminal", "cancelled", "quality_exhausted")
 
     log = json.loads((card_folder / "chat_log.json").read_text(encoding="utf-8"))
     # Active head 0 → empty chat projection
@@ -513,9 +520,9 @@ def test_command_service_reroll_and_rollback_real_semantics(tmp_path):
 
 
 def test_http_reroll_streams_commit_for_same_input(tmp_path):
-    # Use NarrativeDirector so HTTP async submit/reroll both work with commit tool.
-    # First submit commits A1 at expected 0; reroll commits A2 at expected 0
-    # (parent of rev1).
+    # Harness-commit (ADR-0011): the director emits final narrative text each
+    # phase; the harness commits. Phase 1 commits A1 at base 0; reroll freezes
+    # base at rev1's parent (0) and phase 2 commits A2 — same input, new tip.
     from engine.director import NarrativeDirector
 
     class SwappingDirector(NarrativeDirector):
@@ -526,23 +533,10 @@ def test_http_reroll_streams_commit_for_same_input(tmp_path):
             self.phase += 1
             if self.phase == 1:
                 handle.emit_preview("<p>A1</p>")
-                handle.call_tool(
-                    "commit_turn_draft",
-                    {
-                        "draft": build_draft(content="<p>助手A1。</p>", polished_input="输入A"),
-                        "expected_revision": 0,
-                    },
-                )
+                handle.set_final_text(final_text(content="<p>助手A1。</p>", polished_input="输入A"))
             else:
                 handle.emit_preview("<p>A2</p>")
-                # Reroll freezes base at parent of rev1 (=0); commit against 0.
-                handle.call_tool(
-                    "commit_turn_draft",
-                    {
-                        "draft": build_draft(content="<p>助手A2。</p>", polished_input="输入A"),
-                        "expected_revision": 0,
-                    },
-                )
+                handle.set_final_text(final_text(content="<p>助手A2。</p>", polished_input="输入A"))
 
     runtime, card_folder, projection_root, _ = make_runtime(
         tmp_path, executor=SwappingDirector()

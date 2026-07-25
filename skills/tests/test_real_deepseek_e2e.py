@@ -59,13 +59,14 @@ def write_card_fixture(card_folder):
 
 
 def test_real_deepseek_streams_chinese_and_commits_one_turn(tmp_path):
-    """Selection-gate: real model call happens, Chinese streams, usage/cost real.
+    """Selection-gate (ADR-0011): real model call happens, Chinese streams,
+    usage/cost real, and the harness commits from the model's narrative TEXT.
 
-    The deterministic part (provider path works) is hard-asserted. Commit success
-    is model-dependent: DeepSeek-v4-flash sometimes exhausts its tool rounds before
-    calling commit_turn_draft. We give it generous rounds and retry once; if it
-    still doesn't commit we assert the provider-path invariants hold and surface
-    the event flow for diagnosis rather than failing on model nondeterminism.
+    Per ADR-0011 the prompt asks ONLY for narrative — it must NOT instruct the
+    model to call any commit tool (commit is a harness action). The provider
+    path is hard-asserted; commit success is still given generous rounds + a
+    retry because DeepSeek-v4-flash occasionally stalls, but it no longer
+    depends on the model choosing to commit.
     """
     card_folder = tmp_path / "card"
     card_folder.mkdir()
@@ -94,11 +95,10 @@ def test_real_deepseek_streams_chinese_and_commits_one_turn(tmp_path):
             projection_root=tmp_path / f"projection-{attempt}",
             executor=director,
         )
+        # ADR-0011: ask for NARRATIVE ONLY. No instruction to call any tool.
+        # The harness parses the model's <content>/<summary>/<options> text and commits.
         result = runtime.submit(
-            text=(
-                "请直接调用 commit_turn_draft 工具提交一个回合草稿：用两三句中文描写"
-                "清晨的海边。必须调用 commit_turn_draft 完成提交，不要只输出文本。"
-            ),
+            text="请用两三句中文描写清晨的海边，并用 <summary> 给一句摘要、<options> 给一个选项。",
             idempotency_key=f"deepseek-e2e-{attempt}",
         )
         previews = "".join(

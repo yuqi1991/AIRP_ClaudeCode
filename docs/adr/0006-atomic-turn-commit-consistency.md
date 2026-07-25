@@ -15,6 +15,8 @@ Ticket 05 的目标：无论质量重试、MVU/schema 拒绝、provider 错误�
 
 ## Decision
 
+> **⚠️ Partially superseded by ADR-0011**：commit 不再由模型通过 `commit_turn_draft` 工具发起，而由 harness 在解析模型叙事文本后自动执行。本 ADR 的门禁语义（质量门禁、严格 MVU/schema 校验、有界修订、optimistic revision、唯一 commit、幂等投影）全部保留，只是 commit 的归属从「模型工具」变为「harness 内部动作」。
+
 在 Ticket 03 的单一写入边界之上，补齐提交门禁与一致性保证，全部在提交事务内、写盘前完成：
 
 - **质量门禁 seam**（`engine/quality.py`）：`QualityGate.validate(draft, context) → QualityVerdict`。默认 `DefaultQualityGate` 以 `draft.content` 的可见字符长度对照 `settings.wordCount`（冻结快照中）做宽松的上下限带，无则放行；不复制 `round_deliver.py` 的硬编码交付阈值——这是库层 seam，不是交付层规则。

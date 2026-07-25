@@ -20,6 +20,8 @@ ADR-0004 是 Experimental，**没有**固定长期语言边界；研究文档（
 
 ## Decision
 
+> **⚠️ Superseded in part by ADR-0011**：`commit_turn_draft` 与 `validate_state_proposal` 不再是模型可见工具。commit 成为 harness 动作（harness 从模型叙事文本解析后提交），模型工具面收窄为 read-only。本 ADR 的其余内容（FakeProvider、ProviderAdapter seam、telemetry、RealProviderAdapter 延后）仍然成立。
+
 采用 **选项 A**。本票在 Python 内交付叙事导演执行层，配合确定性 `FakeProvider`，并保留一个窄而干净的 `ProviderAdapter` seam，使真实 Pi/Node 桥接可在后续 sub-ticket 落地而无需重写契约。
 
 AIRP 在本票中拥有并交付（Ticket 03 验收条款 2–6）：

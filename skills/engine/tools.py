@@ -1,13 +1,13 @@
 """engine.tools — typed domain tool registry for the narrative director.
 
-The narrative director may invoke a CLOSED allowlist of tools:
+The narrative director may invoke a CLOSED allowlist of **read-only** tools:
 
     get_session_snapshot     — read session revision / status / recent turns
     get_recent_memory        — read recent memory text (bounded)
     load_worldbook_entry     — exact-title worldbook load (policy-enforced)
-    validate_state_proposal  — dry-run MVU apply (no mutation)
-    commit_turn_draft        — the ONLY tool that produces a committed turn
 
+Commit is a **harness** action (ADR-0011), not a model tool. There is no
+``commit_turn_draft`` or ``validate_state_proposal`` on the model surface.
 There is deliberately NO generic Bash, NO arbitrary filesystem-write tool, and
 NO unrestricted network tool. The allowlist is asserted closed by tests.
 
@@ -15,7 +15,7 @@ All arguments are schema-validated BEFORE any domain work; an invalid call
 yields a stable :class:`ToolResult` error and performs NO state mutation. Tool
 invocations are traced via ``tool_run.started`` / ``tool_run.finished`` runtime
 events carrying ``args_hash``, duration and a redacted view of the args — long
-content (draft prose, worldbook bodies) and secret keys never appear verbatim
+content (worldbook bodies) and secret keys never appear verbatim
 (spec Implementation Decisions 17, 19, 36).
 """
 
@@ -108,6 +108,8 @@ _TYPE_CHECKS = {
 }
 
 
+# Model-facing surface is read-only only (ADR-0011). Write/commit tools are
+# intentionally absent — the harness parses narrative text and commits.
 TOOL_SCHEMAS = {
     "get_session_snapshot": {
         "description": "Read the current session revision, task status and a short recent-turn summary.",
@@ -124,21 +126,11 @@ TOOL_SCHEMAS = {
         "required": {"title": "str"},
         "optional": {"reason": "str"},
     },
-    "validate_state_proposal": {
-        "description": "Dry-run validate a JSONPatch state proposal; performs no mutation.",
-        "required": {"proposal": "list"},
-        "optional": {},
-    },
-    "commit_turn_draft": {
-        "description": "Commit the structured turn draft as the authoritative turn. The ONLY committing tool.",
-        "required": {"draft": "dict", "expected_revision": "int"},
-        "optional": {},
-    },
 }
 
 
 class ToolRegistry:
-    """Closed, schema-validated tool surface presented to a narrative director."""
+    """Closed, schema-validated read-only tool surface for a narrative director."""
 
     ALLOWED = tuple(TOOL_SCHEMAS.keys())
 
@@ -171,14 +163,10 @@ class ToolRegistry:
 
     # --- dispatch ---
 
-    # Read-only tools delegated to the runtime (domain owner). ``commit_turn_draft``
-    # is special-cased because it must validate the draft shape before any
-    # domain work and routes through the tool-path commit service.
     _READONLY_RUNTIME_DISPATCH = {
         "get_session_snapshot": "_tool_session_snapshot",
         "get_recent_memory": "_tool_recent_memory",
         "load_worldbook_entry": "_tool_load_worldbook",
-        "validate_state_proposal": "_tool_validate_state",
     }
 
     def call(self, name: str, args) -> ToolResult:
@@ -218,11 +206,6 @@ class ToolRegistry:
         return result
 
     def _dispatch(self, name: str, args: dict) -> ToolResult:
-        if name == "commit_turn_draft":
-            validate_draft_dict(args["draft"])
-            return self._runtime._commit_via_tool(
-                self._task, args["draft"], args["expected_revision"]
-            )
         runtime_method = self._READONLY_RUNTIME_DISPATCH.get(name)
         if runtime_method is None:
             raise _ToolError(f"unknown_tool:{name}")
@@ -251,10 +234,11 @@ def _validate_args(name: str, args) -> str | None:
 
 
 def validate_draft_dict(draft_dict) -> None:
-    """Validate the ``draft`` payload of ``commit_turn_draft``.
+    """Validate a structured draft dict before harness commit.
 
     Raises :class:`_ToolError` with a stable code on any malformed shape so
-    that NO domain work runs before validation.
+    that NO domain work runs before validation. Used by the harness commit
+    path (not a model-facing tool).
     """
     if not isinstance(draft_dict, dict):
         raise _ToolError("tool_validation_error:draft_not_object")

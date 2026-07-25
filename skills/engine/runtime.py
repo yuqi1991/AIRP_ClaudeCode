@@ -13,6 +13,7 @@ from engine.mvu import execute_commands, extract_commands, generate_schema, vali
 from engine.provider import AbortSignal, ProviderAborted, ProviderError
 from engine.quality import DefaultQualityGate, QualityContext, QualityGate, QualityPolicy
 from engine.tools import ToolResult, ToolRegistry, validate_draft_dict
+from engine.turn_parser import parse_turn_text
 from engine.worldbook import load_worldbook_entry_from_texts
 
 
@@ -1023,18 +1024,69 @@ class SessionTurnRuntime:
         tools = ToolRegistry(self, task, self.manifest_policy)
         handle = DirectorHandle(task["id"], text, tools, signal, self)
         terminal_status: str | None = None
-        try:
-            self.executor.direct(handle, compiled)
-        except ProviderAborted:
-            terminal_status = "cancelled"
-        except ProviderError as exc:
-            terminal_status = "failed_terminal" if not exc.retryable else "failed_retryable"
-            self._last_provider_error = exc
+        # Harness-owned commit (ADR-0011): the director produces narrative text;
+        # this loop parses → validates → commits. Bounded re-entry on quality/MVU
+        # rejection so a bad first draft can be corrected within the same task.
+        max_attempts = self.max_commit_validation_retries
+        for attempt in range(max_attempts):
+            if signal.cancelled or self._task_status(task["id"]) == "cancelled":
+                return self._finalize_cancelled(task["id"])
+            # A prior attempt may have already committed (idempotent) — stop.
+            existing = self.task(task["id"])
+            if existing and existing.commit_id:
+                return self._project(existing)
+            try:
+                self.executor.direct(handle, compiled)
+            except ProviderAborted:
+                terminal_status = "cancelled"
+                break
+            except ProviderError as exc:
+                terminal_status = "failed_terminal" if not exc.retryable else "failed_retryable"
+                self._last_provider_error = exc
+                break
+
+            if signal.cancelled:
+                terminal_status = "cancelled"
+                break
+
+            final_text = handle.take_final_text()
+            if final_text is None:
+                # Director returned without setting text (e.g. pure abort path
+                # inside ScriptedDirector wait_for_aborted). Do not invent content.
+                break
+
+            draft = parse_turn_text(final_text, fallback_input=text)
+            commit_result = self._commit_parsed_draft(task, draft)
+            if commit_result.ok:
+                # Authoritative commit landed (or was reused). Project and return.
+                value = commit_result.value or {}
+                result = RuntimeResult(
+                    task["id"],
+                    value.get("commit_id"),
+                    value.get("revision", task["base_revision"]),
+                    "projection_pending",
+                )
+                return self._project(result)
+
+            error = commit_result.error or "commit_failed"
+            # Stale / exhausted / hard failures are not retriable via re-generation.
+            if error in ("stale_revision", "quality_exhausted", "commit_failed"):
+                break
+            if error in ("quality_gate_failed", "mvu_validation_failed"):
+                # Feed rejection back; re-enter director for a corrected draft.
+                handle.set_commit_feedback(error, (commit_result.value or {}))
+                # Re-check exhaustion flag set by _reject_precommit.
+                status_now = self._task_status(task["id"])
+                if status_now == "quality_exhausted":
+                    break
+                continue
+            # Unknown non-ok: stop retrying.
+            break
 
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             task_now = connection.execute(
-                "SELECT status, commit_id, revision FROM tasks WHERE id = ?",
+                "SELECT status, commit_id, revision, validation_exhausted FROM tasks WHERE id = ?",
                 (task["id"],),
             ).fetchone()
             status = task_now["status"]
@@ -1042,7 +1094,7 @@ class SessionTurnRuntime:
             revision = task_now["revision"]
             if not commit_id:
                 # No authoritative commit happened. Classify the non-committed
-                # terminal state: provider error / abort / silent return.
+                # terminal state: provider error / abort / quality / empty text.
                 if terminal_status:
                     connection.execute(
                         "UPDATE tasks SET status = ? WHERE id = ?",
@@ -1061,17 +1113,32 @@ class SessionTurnRuntime:
                     )
                     self._event(connection, "task.cancelled", {"task_id": task["id"]})
                     status = "cancelled"
+                elif status in (
+                    "quality_exhausted",
+                    "quality_gate_failed",
+                    "mvu_validation_failed",
+                    "stale_revision",
+                ):
+                    # Already classified by the commit path; leave as-is.
+                    pass
                 elif status == "running":
+                    # Empty / unusable final text after director return → treat as
+                    # quality failure (content empty), NOT a flow hang. Prefer
+                    # quality_exhausted when retries are spent.
+                    terminal = "quality_exhausted"
                     connection.execute(
-                        "UPDATE tasks SET status = ? WHERE id = ?",
-                        ("failed_terminal", task["id"]),
+                        "UPDATE tasks SET status = ?, validation_exhausted = 1 WHERE id = ?",
+                        (terminal, task["id"]),
                     )
                     self._event(
                         connection,
-                        "task.failed_terminal",
-                        {"task_id": task["id"], "reason": "director_did_not_commit"},
+                        f"task.{terminal}",
+                        {
+                            "task_id": task["id"],
+                            "reason": "empty_or_missing_narrative",
+                        },
                     )
-                    status = "failed_terminal"
+                    status = terminal
             # If commit_id is set, an authoritative commit happened; abort /
             # error after commit cannot un-commit the turn (spec Decision 20–21).
 
@@ -1079,6 +1146,43 @@ class SessionTurnRuntime:
         if commit_id and status in ("projection_pending", "succeeded"):
             return self._project(result)
         return result
+
+    def _commit_parsed_draft(self, task, draft: TurnDraft) -> ToolResult:
+        """Harness-internal single-write commit (ADR-0011).
+
+        Same optimistic revision + per-task idempotency + quality/MVU gates as
+        the former model-facing ``commit_turn_draft`` tool. ``expected_revision``
+        is always the task's frozen ``base_revision`` — the harness owns the
+        comparison, the model does not.
+        """
+        draft_dict = {
+            "content": draft.content,
+            "summary": draft.summary,
+            "options": draft.options,
+            "polished_input": draft.polished_input,
+            "mvu_commands": draft.mvu_commands,
+        }
+        # Shape check before domain work (empty content → quality path via gate,
+        # but validate_draft_dict also rejects empty; map to quality_gate_failed
+        # so the bounded-retry loop treats it uniformly).
+        try:
+            validate_draft_dict(draft_dict)
+        except Exception as exc:  # _ToolError or similar
+            code = getattr(exc, "code", None) or str(exc)
+            if "draft_content_empty" in code or "draft_not_object" in code:
+                # Record as a quality rejection against the task so exhaustion
+                # accounting stays consistent with DefaultQualityGate failures.
+                with self._connect() as connection:
+                    connection.execute("BEGIN IMMEDIATE")
+                    terminal = self._reject_precommit(
+                        connection,
+                        task,
+                        "quality_gate_failed",
+                        details={"reasons": ["content_empty"], "source": "harness_parse"},
+                    )
+                return ToolResult(ok=False, error=terminal)
+            return ToolResult(ok=False, error=code)
+        return self._commit_via_tool(task, draft_dict, task["base_revision"])
 
     # --- tool implementations (called by engine.tools.ToolRegistry) ---
 

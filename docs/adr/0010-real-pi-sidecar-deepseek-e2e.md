@@ -10,6 +10,8 @@ ADR-0005 将 Ticket 03 的真实 Pi/Node/DeepSeek 接入拆为后续 sub-ticket�
 
 ## Decision
 
+> **⚠️ Partially superseded by ADR-0011**：§7 的 E2E 描述中「`commit_turn_draft` 一次可见 commit」已过时——commit 现由 harness 从模型叙事文本自动执行，模型不调 commit 工具。E2E 的 prompt 也已去掉「调用 commit」指示。其余（IPC 契约、版本、凭证隔离、sidecar 薄路径）不变。
+
 ### 1. 包与运行时
 
 | 项 | 值 |

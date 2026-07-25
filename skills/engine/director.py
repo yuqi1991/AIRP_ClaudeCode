@@ -4,27 +4,30 @@ The narrative director is AIRP's single writing-role Agent for the tracer
 bullet (spec Implementation Decision 1, 33). It is explicitly NOT a story
 character or NPC. A run receives:
 
-* a :class:`DirectorHandle` exposing the closed typed-tool surface, an
-  :class:`~engine.provider.AbortSignal`, a preview emitter and a small set of
-  telemetry hooks;
+* a :class:`DirectorHandle` exposing the closed **read-only** typed-tool
+  surface, an :class:`~engine.provider.AbortSignal`, a preview emitter and a
+  small set of telemetry hooks;
 * a :class:`~engine.context_compiler.CompiledContext` produced by the AIRP-owned
   Context Compiler just before the run.
 
 The director drives the model via a :class:`~engine.provider.ProviderAdapter`
-and produces at most one structured turn by calling the ``commit_turn_draft``
-tool. Streaming text emitted before commit is preview only — only a committed
-draft becomes the player's authoritative turn (spec Implementation Decision
-20–21, Testing Decision 6).
+and produces **narrative text** (legacy ``response.txt`` tags). Commit is a
+**harness** action (ADR-0011): when the model stops issuing read-only tool
+calls and emits final text, the director stores that text on the handle and
+returns; the runtime parses → validates → commits. The model never sees a
+commit tool.
 
 Two concrete director shapes ship here:
 
 * :class:`ScriptedDirector` — a thin test double that replays a canned list of
-  ``preview`` / ``tool`` / ``sleep`` steps; used by the Slice 1–3 contract
-  tests;
-* :class:`ProviderDrivenDirector` — the standard provider + tool loop used by
-  the Slice 4 contract tests; it consumes provider :class:`ProviderDelta`
-  streaming, dispatches typed tool calls, retries retryable provider errors
-  within a bounded policy, aborts on cancel, and records per-call telemetry.
+  ``preview`` / ``tool`` / ``final`` / ``sleep`` steps; used by the contract
+  tests. ``final`` steps set the harness-consumed narrative text; successive
+  ``direct()`` calls advance through the script (bounded quality retries).
+* :class:`ProviderDrivenDirector` — the standard provider + tool loop; it
+  consumes provider :class:`ProviderDelta` streaming, dispatches read-only
+  typed tool calls, retries retryable provider errors within a bounded policy,
+  aborts on cancel, records per-call telemetry, and ends when the model
+  returns final text with no further tool calls.
 """
 
 import time
@@ -48,10 +51,11 @@ from engine.tools import ToolResult
 class DirectorHandle:
     """Surface handed to a director ``direct()`` each run.
 
-    The handle is the ONLY conduit from a director to authoritative state: it
-    exposes the closed tool registry, the abort signal, a preview emitter and
-    telemetry hooks. Directors never touch the runtime, the database, or the
-    projection adapter directly.
+    The handle is the ONLY conduit from a director to the runtime during a
+    generation: closed read-only tools, abort signal, preview emitter,
+    telemetry, and the final narrative text the harness will parse + commit.
+    Directors never touch the database or the projection adapter directly, and
+    they never invoke a commit tool.
     """
 
     def __init__(self, task_id, task_text, tools, signal, runtime):
@@ -60,6 +64,8 @@ class DirectorHandle:
         self._tools = tools
         self._signal: AbortSignal = signal
         self._runtime = runtime
+        self._final_text: str | None = None
+        self._commit_feedback: dict | None = None
 
     # --- tools ---
 
@@ -68,6 +74,26 @@ class DirectorHandle:
 
     def tool_schemas(self) -> list:
         return self._tools.schemas()
+
+    # --- narrative output (harness commit source) ---
+
+    def set_final_text(self, text: str) -> None:
+        """Record the model/director's final narrative for harness commit."""
+        self._final_text = text if text is not None else ""
+
+    def take_final_text(self) -> str | None:
+        """Return and clear the final narrative (None if the director set nothing)."""
+        text = self._final_text
+        self._final_text = None
+        return text
+
+    def set_commit_feedback(self, error: str, details=None) -> None:
+        """Harness feeds the last commit rejection so a re-generation can correct it."""
+        self._commit_feedback = {"error": error, "details": details}
+
+    @property
+    def commit_feedback(self) -> dict | None:
+        return self._commit_feedback
 
     # --- preview + abort ---
 
@@ -106,17 +132,17 @@ class DirectorHandle:
 class NarrativeDirector:
     """Base contract for a narrative-director execution layer.
 
-    Subclasses implement :meth:`direct`. A director MUST call
-    ``handle.call_tool("commit_turn_draft", ...)`` to produce a turn; if it
-    returns without committing, the runtime transitions the task to a terminal
-    non-committed state (see ``_run_director``).
+    Subclasses implement :meth:`direct`. A director produces narrative text via
+    ``handle.set_final_text(...)``; the runtime harness parses and commits.
+    Returning without final text is a quality/empty-content concern, not a
+    separate "forgot to commit" flow failure (ADR-0011).
     """
 
     def direct(self, handle: DirectorHandle, compiled) -> None:
         raise NotImplementedError
 
 
-# ═══ Scripted test director (Slices 1–3) ═══
+# ═══ Scripted test director ═══
 
 
 class ScriptedDirector(NarrativeDirector):
@@ -126,21 +152,29 @@ class ScriptedDirector(NarrativeDirector):
 
         ("preview", "<text>")
         ("tool", "<tool_name>", {<args>})
+        ("final", "<narrative text>")   # sets handle final text and returns
         ("sleep", <seconds>)
-        ("wait_for_aborted",)        # block until aborted (cooperative)
+        ("wait_for_aborted",)           # block until aborted (cooperative)
+
+    Successive :meth:`direct` calls continue from the next unconsumed step so
+    the harness can re-enter after a quality/MVU rejection (bounded retries).
     """
 
     def __init__(self, script):
         self.script = list(script)
+        self._cursor = 0
         self.observed_aborted = False
         self.results: list[ToolResult] = []
         self.last_result: ToolResult | None = None
+        self.final_texts: list[str] = []
 
     def direct(self, handle, compiled):
-        for step in self.script:
+        while self._cursor < len(self.script):
             if handle.aborted:
                 self.observed_aborted = True
                 return
+            step = self.script[self._cursor]
+            self._cursor += 1
             kind = step[0]
             if kind == "preview":
                 handle.emit_preview(step[1])
@@ -148,8 +182,12 @@ class ScriptedDirector(NarrativeDirector):
                 result = handle.call_tool(step[1], step[2])
                 self.results.append(result)
                 self.last_result = result
+            elif kind == "final":
+                text = step[1] if len(step) > 1 else ""
+                self.final_texts.append(text)
+                handle.set_final_text(text)
+                return
             elif kind == "sleep":
-                # poll abort at a fine grain so stop() is observed promptly
                 deadline = time.monotonic() + step[1]
                 while time.monotonic() < deadline:
                     if handle.aborted:
@@ -164,7 +202,7 @@ class ScriptedDirector(NarrativeDirector):
                 raise ValueError(f"unknown scripted step: {kind!r}")
 
 
-# ═══ Provider-driven director (Slice 4) ═══
+# ═══ Provider-driven director ═══
 
 
 def _tool_result_message(result: ToolResult) -> dict:
@@ -172,34 +210,51 @@ def _tool_result_message(result: ToolResult) -> dict:
 
 
 class ProviderDrivenDirector(NarrativeDirector):
-    """Standard narrative-director loop: provider stream + typed tool dispatch.
+    """Standard narrative-director loop: provider stream + read-only tool dispatch.
 
     The loop:
 
     1. builds a :class:`ProviderRequest` from the compiled messages + tool
-       schemas;
+       schemas (read-only only);
     2. consumes the provider stream, emitting preview deltas as they arrive;
     3. dispatches each provider tool_call through the (schema-validating)
        tool registry and feeds the result back into the message history;
     4. retries retryable :class:`ProviderError` up to ``max_retries`` times;
-    5. terminates on abort (``ProviderAborted``), terminal provider error, a
-       committed draft, or a final response with no further tool calls.
+    5. terminates on abort (``ProviderAborted``), terminal provider error, or a
+       final response with **no further tool calls** — at which point the
+       accumulated assistant text is stored on the handle for harness commit.
 
-    The director NEVER writes authoritative state directly — only
-    ``commit_turn_draft`` can, and only via the tool surface.
+    The director NEVER writes authoritative state. Commit is performed by the
+    runtime after :meth:`direct` returns (ADR-0011).
     """
 
     def __init__(self, provider, max_tool_rounds: int = 8, max_retries: int = 3):
         self._provider = provider
         self._max_tool_rounds = max_tool_rounds
         self._max_retries = max_retries
+        self.last_final_text: str | None = None
 
     def direct(self, handle: DirectorHandle, compiled) -> None:
         messages = list(compiled.payload)
+        # If the harness is re-entering after a rejected draft, surface the
+        # rejection so a cooperative model (or FakeProvider script) can correct.
+        if handle.commit_feedback:
+            feedback = handle.commit_feedback
+            messages.append(
+                {
+                    "role": "user",
+                    "content": (
+                        f"[harness] previous draft rejected: {feedback.get('error')}. "
+                        "Produce a corrected narrative turn (content/summary/options; "
+                        "inline MVU tags if needed). Do not call write tools."
+                    ),
+                }
+            )
         tools = handle.tool_schemas()
         model = self._provider.model_id("narrative_director")
         current_manifest = compiled
         rates = getattr(self._provider, "_rates", CostEstimate())
+        accumulated_text = ""
 
         for round_index in range(self._max_tool_rounds):
             if handle.aborted:
@@ -212,6 +267,8 @@ class ProviderDrivenDirector(NarrativeDirector):
             )
             assistant_text = "".join(d.text or "" for d in deltas if d.text)
             tool_calls = [d.tool_call for d in deltas if d.tool_call]
+            if assistant_text:
+                accumulated_text = assistant_text
             if assistant_text or tool_calls:
                 # The assistant message MUST carry tool_calls back to the model;
                 # otherwise a following role:"tool" message has no preceding
@@ -228,7 +285,6 @@ class ProviderDrivenDirector(NarrativeDirector):
                         for call in tool_calls
                     ]
                 messages.append(assistant_msg)
-            committed = False
             for call in tool_calls:
                 if handle.aborted:
                     return
@@ -243,14 +299,17 @@ class ProviderDrivenDirector(NarrativeDirector):
                         "content": _tool_result_message(result),
                     }
                 )
-                if name == "commit_turn_draft" and result.ok:
-                    committed = True
-            if committed:
-                return
             if not tool_calls:
-                # Provider returned a final response without requesting commit.
-                # The task will reach a terminal non-committed state.
+                # Final response: no more read-only tool work. Hand text to harness.
+                final = accumulated_text or assistant_text or ""
+                self.last_final_text = final
+                handle.set_final_text(final)
                 return
+
+        # Bounded rounds exhausted while still requesting tools — commit whatever
+        # narrative text we accumulated (may be empty → quality gate decides).
+        self.last_final_text = accumulated_text
+        handle.set_final_text(accumulated_text)
 
     # --- model invocation with retry + telemetry ---
 

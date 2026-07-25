@@ -58,6 +58,20 @@ def build_draft(content="<p>海风掠过礁石。</p>", **overrides):
     return draft
 
 
+def final_text(content="<p>海风掠过礁石。</p>", **overrides):
+    """Harness-commit narrative text (ADR-0011) from the same fields as build_draft."""
+    d = build_draft(content=content, **overrides)
+    parts = [
+        f"<polished_input>{d['polished_input']}</polished_input>",
+        f"<content>{d['content']}</content>",
+        f"<summary>{d['summary']}</summary>",
+        f"<options>{d['options']}</options>",
+    ]
+    if d.get("mvu_commands"):
+        parts.append(f"<UpdateVariable>{d['mvu_commands']}</UpdateVariable>")
+    return "\n".join(parts)
+
+
 def make_runtime(tmp_path, executor=None):
     card_folder = tmp_path / "card"
     card_folder.mkdir(exist_ok=True)
@@ -82,7 +96,7 @@ def scripted_commit_director(extra_steps=None):
     steps = [
         ("preview", "<p>海风"),
         ("preview", "掠过礁石。</p>"),
-        ("tool", "commit_turn_draft", {"draft": build_draft(), "expected_revision": 0}),
+        ("final", final_text()),
     ]
     if extra_steps:
         steps = list(extra_steps) + steps
@@ -437,7 +451,7 @@ def test_sse_reconnect_replays_gap_without_skipping_commit(tmp_path):
             ("sleep", 0.3),
             ("preview", "第二段</p>"),
             ("sleep", 0.1),
-            ("tool", "commit_turn_draft", {"draft": build_draft(), "expected_revision": 0}),
+            ("final", final_text()),
         ]
     )
     runtime, card_folder, projection_root, _ = make_runtime(tmp_path, executor=director)

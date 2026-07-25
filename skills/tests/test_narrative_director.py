@@ -79,6 +79,23 @@ def build_draft(content="<p>海风掠过礁石。</p>", **overrides):
     return draft
 
 
+def final_text(content="<p>海风掠过礁石。</p>", **overrides):
+    """Build harness-commit narrative text (ADR-0011) from the same fields as
+    build_draft. The director emits this via a ``("final", ...)`` step; the
+    harness parses + commits — no commit tool."""
+    d = build_draft(content=content, **overrides)
+    parts = [
+        f"<polished_input>{d['polished_input']}</polished_input>",
+        f"<content>{d['content']}</content>",
+        f"<summary>{d['summary']}</summary>",
+        f"<options>{d['options']}</options>",
+    ]
+    mvu = d.get("mvu_commands") or ""
+    if mvu:
+        parts.append(f"<UpdateVariable>{mvu}</UpdateVariable>")
+    return "\n".join(parts)
+
+
 def event_types(runtime, after=0):
     return [event.type for event in runtime.events_after(after)]
 
@@ -96,10 +113,7 @@ def test_director_commits_via_tool_produces_one_turn(tmp_path):
     director = ScriptedDirector([
         ("preview", "<p>海风"),
         ("preview", "掠过礁石。</p>"),
-        ("tool", "commit_turn_draft", {
-            "draft": build_draft(),
-            "expected_revision": 0,
-        }),
+        ("final", final_text()),
     ])
     runtime = SessionTurnRuntime(
         database_path=tmp_path / "runtime.sqlite3",
@@ -113,11 +127,6 @@ def test_director_commits_via_tool_produces_one_turn(tmp_path):
     assert result.status == "succeeded"
     assert result.revision == 1
     assert result.commit_id
-
-    # commit tool returned a successful structured result
-    assert director.last_result.ok is True
-    assert director.last_result.value["revision"] == 1
-    assert director.last_result.value["reused"] is False
 
     # committed content/summary/options match what the director supplied
     log = json.loads((card_folder / "chat_log.json").read_text(encoding="utf-8"))
@@ -145,8 +154,6 @@ def test_director_commits_via_tool_produces_one_turn(tmp_path):
         "context.compiled",
         "task.running",
         "narrative.preview.delta",
-        "tool_run.started",
-        "tool_run.finished",
         "turn.committed",
         "task.succeeded",
     ]:
@@ -172,7 +179,9 @@ def test_director_that_never_commits_reaches_terminal_non_committed_state(tmp_pa
 
     result = runtime.submit(text="我走向海边", idempotency_key="submit-1")
 
-    assert result.status == "failed_terminal"
+    # No final text → empty content → quality gate rejects → quality_exhausted
+    # after bounded retries. Non-committed terminal; no flow hang.
+    assert result.status == "quality_exhausted"
     assert result.commit_id is None
     assert result.revision == 0
     assert runtime.active_revision() == 0
@@ -183,7 +192,7 @@ def test_director_that_never_commits_reaches_terminal_non_committed_state(tmp_pa
 
     types = event_types(runtime)
     assert "turn.committed" not in types
-    assert "task.failed_terminal" in types
+    assert "task.quality_exhausted" in types
 
 
 def test_director_commit_idempotent_for_same_task(tmp_path):
@@ -191,10 +200,7 @@ def test_director_commit_idempotent_for_same_task(tmp_path):
     card_folder.mkdir()
     write_card_fixture(card_folder)
 
-    director = ScriptedDirector([
-        ("tool", "commit_turn_draft", {"draft": build_draft(), "expected_revision": 0}),
-        ("tool", "commit_turn_draft", {"draft": build_draft(), "expected_revision": 0}),
-    ])
+    director = ScriptedDirector([("final", final_text())])
     runtime = SessionTurnRuntime(
         database_path=tmp_path / "runtime.sqlite3",
         card_folder=card_folder,
@@ -202,14 +208,52 @@ def test_director_commit_idempotent_for_same_task(tmp_path):
         executor=director,
     )
 
-    result = runtime.submit(text="我走向海边", idempotency_key="submit-1")
+    first = runtime.submit(text="我走向海边", idempotency_key="submit-1")
+    assert first.status == "succeeded"
+    # Duplicate submit with the same idempotency key reuses the task/commit;
+    # no second turn, no second model run.
+    duplicate = runtime.submit(text="我走向海边", idempotency_key="submit-1")
+    assert duplicate.task_id == first.task_id
+    assert duplicate.commit_id == first.commit_id
+    assert event_types(runtime).count("turn.committed") == 1
+    log = json.loads((card_folder / "chat_log.json").read_text(encoding="utf-8"))
+    assert len(log) == 1
+
+
+def test_flow_completes_when_model_only_emits_text_and_never_calls_any_tool(tmp_path):
+    """ADR-0011 acceptance bar: the harness completes a turn NO MATTER what the
+    model does. A director that emits ONLY final narrative text — zero tool
+    calls, zero commit signals — still produces exactly one committed turn with
+    consistent chat/state/projection. Model capability/prompt decides writing
+    quality, never whether the engine completes the turn."""
+    card_folder = tmp_path / "card"
+    card_folder.mkdir()
+    write_card_fixture(card_folder)
+    write_worldbook(card_folder, ["可读条目"])  # tools ARE available, model just ignores them
+
+    director = ScriptedDirector([("final", final_text())])  # no tool calls at all
+    runtime = SessionTurnRuntime(
+        database_path=tmp_path / "runtime.sqlite3",
+        card_folder=card_folder,
+        projection_root=tmp_path / "projection",
+        executor=director,
+    )
+    result = runtime.submit(text="我走向海边", idempotency_key="uncooperative-1")
 
     assert result.status == "succeeded"
+    assert result.revision == 1
+    assert result.commit_id
+    # No tool was ever invoked (model ignored the available read-only tools).
+    assert [e for e in runtime.events_after(0) if e.type == "tool_run.started"] == []
+    # One consistent committed turn.
     assert event_types(runtime).count("turn.committed") == 1
-    # the second commit call returned the reused commit, not a new one
-    assert director.last_result.ok is True
-    assert director.last_result.value["reused"] is True
-
+    log = json.loads((card_folder / "chat_log.json").read_text(encoding="utf-8"))
+    assert len(log) == 1
+    with sqlite3.connect(tmp_path / "runtime.sqlite3") as connection:
+        row = connection.execute(
+            "SELECT state_json FROM state_snapshots WHERE revision = 1"
+        ).fetchone()
+    assert json.loads(row[0])["世界"]["时间"] == "1月1日 10:00"
 
 
 def test_quality_gate_rejection_allows_same_task_retry_then_commits_once(tmp_path):
@@ -217,18 +261,15 @@ def test_quality_gate_rejection_allows_same_task_retry_then_commits_once(tmp_pat
     card_folder.mkdir()
     write_card_fixture(card_folder)
 
+    # First final text too short → harness quality-rejects → re-enters director
+    # → second final text long enough → commits once. Retries are invisible in
+    # committed history (one turn, one commit).
     director = ScriptedDirector([
-        ("tool", "commit_turn_draft", {
-            "draft": build_draft(content="<p>短</p>", mvu_commands=""),
-            "expected_revision": 0,
-        }),
-        ("tool", "commit_turn_draft", {
-            "draft": build_draft(
-                content="<p>海风压低浪头，潮水一下一下拍着礁石边的湿沙。</p>",
-                mvu_commands="",
-            ),
-            "expected_revision": 0,
-        }),
+        ("final", final_text(content="<p>短</p>", mvu_commands="")),
+        ("final", final_text(
+            content="<p>海风压低浪头，潮水一下一下拍着礁石边的湿沙。</p>",
+            mvu_commands="",
+        )),
     ])
     runtime = SessionTurnRuntime(
         database_path=tmp_path / "runtime.sqlite3",
@@ -242,10 +283,8 @@ def test_quality_gate_rejection_allows_same_task_retry_then_commits_once(tmp_pat
 
     assert result.status == "succeeded"
     assert result.revision == 1
-    assert director.results[0].ok is False
-    assert director.results[0].error == "quality_gate_failed"
-    assert director.results[1].ok is True
-    assert director.results[1].value["reused"] is False
+    # The director was entered twice (short then long), but only one commit.
+    assert len(director.final_texts) == 2
     assert runtime.active_revision() == 1
     assert event_types(runtime).count("turn.committed") == 1
     log = json.loads((card_folder / "chat_log.json").read_text(encoding="utf-8"))
@@ -259,10 +298,9 @@ def test_quality_retry_exhaustion_fails_without_commit_or_projection(tmp_path):
     card_folder.mkdir()
     write_card_fixture(card_folder)
 
-    bad_draft = {"draft": build_draft(content="<p>短</p>", mvu_commands=""), "expected_revision": 0}
     director = ScriptedDirector([
-        ("tool", "commit_turn_draft", bad_draft),
-        ("tool", "commit_turn_draft", bad_draft),
+        ("final", final_text(content="<p>短</p>", mvu_commands="")),
+        ("final", final_text(content="<p>短</p>", mvu_commands="")),
     ])
     runtime = SessionTurnRuntime(
         database_path=tmp_path / "runtime.sqlite3",
@@ -281,8 +319,6 @@ def test_quality_retry_exhaustion_fails_without_commit_or_projection(tmp_path):
     assert runtime.active_revision() == 0
     assert json.loads((card_folder / "chat_log.json").read_text(encoding="utf-8")) == []
     assert not (tmp_path / "projection" / "content.js").exists()
-    assert director.results[0].error == "quality_gate_failed"
-    assert director.results[1].error == "quality_exhausted"
     types = event_types(runtime)
     assert "turn.committed" not in types
     assert "task.quality_exhausted" in types
@@ -294,21 +330,18 @@ def test_invalid_mvu_schema_path_rejected_until_corrected_commit(tmp_path):
     card_folder.mkdir()
     write_card_fixture(card_folder)
 
+    # First final text carries an illegal MVU path → harness rejects
+    # (mvu_validation_failed) → re-enters director → second final text with a
+    # legal MVU path → commits once.
     director = ScriptedDirector([
-        ("tool", "commit_turn_draft", {
-            "draft": build_draft(
-                content="<p>浪头扑上来，碎沫打湿了鞋尖。</p>",
-                mvu_commands="_.set('世界.不存在字段', '错');",
-            ),
-            "expected_revision": 0,
-        }),
-        ("tool", "commit_turn_draft", {
-            "draft": build_draft(
-                content="<p>浪头扑上来，潮水退回礁石间。</p>",
-                mvu_commands="_.set('世界.时间', '1月1日 10:00');",
-            ),
-            "expected_revision": 0,
-        }),
+        ("final", final_text(
+            content="<p>浪头扑上来，碎沫打湿了鞋尖。</p>",
+            mvu_commands="_.set('世界.不存在字段', '错');",
+        )),
+        ("final", final_text(
+            content="<p>浪头扑上来，潮水退回礁石间。</p>",
+            mvu_commands="_.set('世界.时间', '1月1日 10:00');",
+        )),
     ])
     runtime = SessionTurnRuntime(
         database_path=tmp_path / "runtime.sqlite3",
@@ -322,13 +355,11 @@ def test_invalid_mvu_schema_path_rejected_until_corrected_commit(tmp_path):
 
     assert result.status == "succeeded"
     assert result.revision == 1
-    assert director.results[0].ok is False
-    assert director.results[0].error == "mvu_validation_failed"
-    assert director.results[1].ok is True
+    assert len(director.final_texts) == 2  # rejected once, committed on retry
     assert runtime.active_revision() == 1
-    assert event_types(runtime).count("turn.committed") == 1
     types = event_types(runtime)
     assert "task.mvu_validation_failed" in types
+    assert types.count("turn.committed") == 1
     log = json.loads((card_folder / "chat_log.json").read_text(encoding="utf-8"))
     assert len(log) == 1
 
@@ -340,13 +371,10 @@ def test_commit_validation_uses_base_revision_snapshot_not_live_projection_files
     write_card_fixture(card_folder)
 
     first_director = ScriptedDirector([
-        ("tool", "commit_turn_draft", {
-            "draft": build_draft(
-                content="<p>第一回合里，风从海面吹过来。</p>",
-                mvu_commands="_.set('世界.时间', '1月1日 10:00');",
-            ),
-            "expected_revision": 0,
-        }),
+        ("final", final_text(
+            content="<p>第一回合里，风从海面吹过来。</p>",
+            mvu_commands="_.set('世界.时间', '1月1日 10:00');",
+        )),
     ])
     runtime = SessionTurnRuntime(
         database_path=tmp_path / "runtime.sqlite3",
@@ -359,47 +387,47 @@ def test_commit_validation_uses_base_revision_snapshot_not_live_projection_files
     assert first.status == "succeeded"
     assert first.revision == 1
 
+    # Drift the LIVE projection files (chat_log / state.js) after commit. The
+    # second turn's MVU validation must read the frozen base_revision snapshot,
+    # not these mutable files.
     live_log = json.loads((card_folder / "chat_log.json").read_text(encoding="utf-8"))
     live_log[-1]["variables"]["stat_data"]["世界"]["不存在字段"] = "live-drift"
     (card_folder / "chat_log.json").write_text(json.dumps(live_log, ensure_ascii=False), encoding="utf-8")
     (card_folder / "state.js").write_text("window.__TEST_STATE__ = 'live-drift';", encoding="utf-8")
 
     second_director = ScriptedDirector([
-        ("tool", "commit_turn_draft", {
-            "draft": build_draft(
-                content="<p>第二回合里，风更大了，潮水漫过台阶。</p>",
-                mvu_commands="_.set('世界.不存在字段', '仍然非法');",
-            ),
-            "expected_revision": 1,
-        }),
+        ("final", final_text(
+            content="<p>第二回合里，风更大了，潮水漫过台阶。</p>",
+            mvu_commands="_.set('世界.不存在字段', '仍然非法');",
+        )),
     ])
     runtime.executor = second_director
 
     second = runtime.submit(text="第二回合", idempotency_key="submit-2")
 
-    assert second.status == "mvu_validation_failed"
+    # The illegal path is rejected against the frozen base snapshot; live drift
+    # did NOT make it suddenly valid.
+    assert second.status in ("mvu_validation_failed", "quality_exhausted")
     assert second.commit_id is None
     assert runtime.active_revision() == 1
-    assert second_director.results[0].ok is False
-    assert second_director.results[0].error == "mvu_validation_failed"
     assert event_types(runtime).count("turn.committed") == 1
 
 
 # ════════════════════════════════════════════════════════════════════
-# Slice 2 — Typed tool allowlist + schema validation + redaction
+# Slice 2 — Typed read-only tool allowlist + schema validation + redaction
 # ════════════════════════════════════════════════════════════════════
 
 
 def test_tool_allowlist_is_closed_no_bash_filewrite_or_network():
+    # ADR-0011: commit/validate-proposal are NO LONGER model tools. The model
+    # surface is read-only only.
     allowed = set(ToolRegistry.ALLOWED)
     assert allowed == {
         "get_session_snapshot",
         "get_recent_memory",
         "load_worldbook_entry",
-        "validate_state_proposal",
-        "commit_turn_draft",
     }
-    forbidden_substrings = ("bash", "shell", "exec", "write_file", "filesystem", "http", "fetch", "network", "curl")
+    forbidden_substrings = ("bash", "shell", "exec", "write_file", "filesystem", "http", "fetch", "network", "curl", "commit", "proposal")
     for name in allowed:
         assert not any(substr in name.lower() for substr in forbidden_substrings)
 
@@ -408,12 +436,13 @@ def test_invalid_tool_args_return_stable_error_with_no_mutation(tmp_path):
     card_folder = tmp_path / "card"
     card_folder.mkdir()
     write_card_fixture(card_folder)
+    write_worldbook(card_folder, ["条目0"])
 
+    # Invalid read-only tool call (missing required 'title') returns a stable
+    # validation error and performs no mutation; then a valid final text commits.
     director = ScriptedDirector([
-        # missing required 'draft' and 'expected_revision'
-        ("tool", "commit_turn_draft", {}),
-        # then commit correctly so the task succeeds and we can introspect
-        ("tool", "commit_turn_draft", {"draft": build_draft(), "expected_revision": 0}),
+        ("tool", "load_worldbook_entry", {"reason": "missing-title"}),
+        ("final", final_text()),
     ])
     runtime = SessionTurnRuntime(
         database_path=tmp_path / "runtime.sqlite3",
@@ -425,11 +454,9 @@ def test_invalid_tool_args_return_stable_error_with_no_mutation(tmp_path):
 
     assert result.status == "succeeded"
     bad = director.results[0]
-    good = director.results[1]
     assert bad.ok is False
     assert bad.error.startswith("tool_validation_error")
-    assert good.ok is True
-    # invalid call did not advance revision; only the good commit did
+    # invalid call did not advance revision; only the final-text commit did
     assert runtime.active_revision() == 1
 
 
@@ -440,7 +467,7 @@ def test_unknown_tool_name_is_rejected(tmp_path):
 
     director = ScriptedDirector([
         ("tool", "run_bash", {"cmd": "rm -rf /"}),
-        ("tool", "commit_turn_draft", {"draft": build_draft(), "expected_revision": 0}),
+        ("final", final_text()),
     ])
     runtime = SessionTurnRuntime(
         database_path=tmp_path / "runtime.sqlite3",
@@ -458,13 +485,12 @@ def test_tool_runs_emit_redacted_trace_events(tmp_path):
     card_folder = tmp_path / "card"
     card_folder.mkdir()
     write_card_fixture(card_folder)
+    write_worldbook(card_folder, ["条目0"])
 
-    long_secret_in_content = "机密" * 50
-    draft = build_draft(content="<p>正文</p>", mvu_commands="")
-    draft["content"] = "<p>" + long_secret_in_content + "</p>"
-
+    long_secret_in_reason = "机密" * 50
     director = ScriptedDirector([
-        ("tool", "commit_turn_draft", {"draft": draft, "expected_revision": 0}),
+        ("tool", "load_worldbook_entry", {"title": "条目0", "reason": long_secret_in_reason}),
+        ("final", final_text()),
     ])
     runtime = SessionTurnRuntime(
         database_path=tmp_path / "runtime.sqlite3",
@@ -475,28 +501,30 @@ def test_tool_runs_emit_redacted_trace_events(tmp_path):
     runtime.submit(text="我走向海边", idempotency_key="submit-1")
 
     events = runtime.events_after(0)
-    started = next(e for e in events if e.type == "tool_run.started" and e.payload["tool"] == "commit_turn_draft")
-    finished = next(e for e in events if e.type == "tool_run.finished" and e.payload["tool"] == "commit_turn_draft")
+    started = next(e for e in events if e.type == "tool_run.started" and e.payload["tool"] == "load_worldbook_entry")
+    finished = next(e for e in events if e.type == "tool_run.finished" and e.payload["tool"] == "load_worldbook_entry")
 
     # args_hash present, redacted args present
     assert len(started.payload["args_hash"]) == 64
     assert isinstance(started.payload["args"], dict)
     # long content + secrets never appear verbatim in the trace
     serialized = json.dumps([e.payload for e in events], ensure_ascii=False)
-    assert long_secret_in_content not in serialized
+    assert long_secret_in_reason not in serialized
     assert "duration_ms" in finished.payload
     assert isinstance(finished.payload["duration_ms"], int)
 
 
-def test_validate_state_proposal_runs_no_mutation(tmp_path):
+def test_committed_snapshot_reflects_only_committed_mvu(tmp_path):
+    """The committed state snapshot reflects the committed draft's MVU, proving
+    no stray validation/mutation path applied a different value."""
     card_folder = tmp_path / "card"
     card_folder.mkdir()
     write_card_fixture(card_folder)
 
-    proposal = [{"op": "replace", "path": "/世界/时间", "value": "1月1日 23:00"}]
     director = ScriptedDirector([
-        ("tool", "validate_state_proposal", {"proposal": proposal}),
-        ("tool", "commit_turn_draft", {"draft": build_draft(), "expected_revision": 0}),
+        ("final", final_text(
+            mvu_commands="_.set('世界.时间', '1月1日 10:00');",
+        )),
     ])
     runtime = SessionTurnRuntime(
         database_path=tmp_path / "runtime.sqlite3",
@@ -506,16 +534,10 @@ def test_validate_state_proposal_runs_no_mutation(tmp_path):
     )
     runtime.submit(text="我走向海边", idempotency_key="submit-1")
 
-    validation = director.results[0]
-    assert validation.ok is True
-    assert "世界.时间" in validation.value["touched_paths"]
-    # the validation call did NOT mutate the baseline state snapshot
     with sqlite3.connect(tmp_path / "runtime.sqlite3") as connection:
         row = connection.execute(
             "SELECT state_json FROM state_snapshots WHERE revision = 1"
         ).fetchone()
-    # the committed snapshot reflects the committed draft's MVU (10:00),
-    # proving the validation proposal (23:00) was not applied
     assert json.loads(row[0])["世界"]["时间"] == "1月1日 10:00"
 
 
@@ -529,7 +551,7 @@ def test_load_worldbook_entry_tool_enforces_policy_limit(tmp_path):
         ("tool", "load_worldbook_entry", {"title": "条目0", "reason": "first"}),
         ("tool", "load_worldbook_entry", {"title": "条目1", "reason": "second"}),
         ("tool", "load_worldbook_entry", {"title": "条目2", "reason": "third-over-limit"}),
-        ("tool", "commit_turn_draft", {"draft": build_draft(content="<p>x</p>"), "expected_revision": 0}),
+        ("final", final_text(content="<p>海风掠过礁石，远处的船笛低鸣。</p>")),
     ])
     runtime = SessionTurnRuntime(
         database_path=tmp_path / "runtime.sqlite3",
@@ -562,7 +584,7 @@ def test_preview_deltas_appear_as_ordered_events(tmp_path):
     director = ScriptedDirector([
         ("preview", "<p>第一段"),
         ("preview", "第二段</p>"),
-        ("tool", "commit_turn_draft", {"draft": build_draft(), "expected_revision": 0}),
+        ("final", final_text()),
     ])
     runtime = SessionTurnRuntime(
         database_path=tmp_path / "runtime.sqlite3",
@@ -634,39 +656,29 @@ def test_aborted_run_keeps_partial_preview_uncommitted(tmp_path):
 
 
 def test_abort_after_commit_still_keeps_committed_turn(tmp_path):
-    """Abort is safe: once committed, the turn is the player's authoritative fact."""
+    """Abort is safe: once the harness has committed, the turn is the player's
+    authoritative fact. Under harness-commit (ADR-0011) the director returns
+    final text and the harness commits synchronously; a later stop() finds no
+    running director and is a no-op — the committed turn stands."""
     card_folder = tmp_path / "card"
     card_folder.mkdir()
     write_card_fixture(card_folder)
 
-    director = ScriptedDirector([
-        ("tool", "commit_turn_draft", {"draft": build_draft(), "expected_revision": 0}),
-        ("wait_for_aborted",),
-    ])
+    director = ScriptedDirector([("final", final_text())])
     runtime = SessionTurnRuntime(
         database_path=tmp_path / "runtime.sqlite3",
         card_folder=card_folder,
         projection_root=tmp_path / "projection",
         executor=director,
     )
-    started = threading.Event()
+    result = runtime.submit(text="我走向海边", idempotency_key="submit-1")
+    assert result.status == "succeeded"
+    task_id = result.task_id
 
-    real_direct = director.direct
-
-    def wrapped(handle, compiled):
-        started.set()
-        real_direct(handle, compiled)
-
-    director.direct = wrapped
-
-    thread = threading.Thread(target=runtime.submit, args=("我走向海边", "submit-1"))
-    thread.start()
-    assert started.wait(timeout=2)
-    task_id = runtime.task_id_for_key("submit-1")
+    # stop() after commit: the task is terminal (succeeded), nothing to abort.
     runtime.stop(task_id)
-    thread.join(timeout=5)
 
-    # committed before abort → turn stands
+    # committed turn stands
     assert runtime.active_revision() == 1
     log = json.loads((card_folder / "chat_log.json").read_text(encoding="utf-8"))
     assert len(log) == 1
@@ -677,11 +689,7 @@ def test_stop_marks_queued_task_cancelled(tmp_path):
     card_folder.mkdir()
     write_card_fixture(card_folder)
 
-    # a director that never proceeds past the first yield — used only to create
-    # a task row that we then stop before it actually runs
-    director = ScriptedDirector([
-        ("tool", "commit_turn_draft", {"draft": build_draft(), "expected_revision": 0}),
-    ])
+    director = ScriptedDirector([("final", final_text())])
     runtime = SessionTurnRuntime(
         database_path=tmp_path / "runtime.sqlite3",
         card_folder=card_folder,
@@ -717,13 +725,13 @@ def test_provider_adapter_is_a_clean_interface_and_real_adapter_is_callable():
     assert callable(real.stream)
 
 
-def test_provider_tool_sequence_commits_via_tool_after_feedback(tmp_path):
+def test_provider_tool_sequence_commits_from_final_text_after_readonly_tool(tmp_path):
     card_folder = tmp_path / "card"
     card_folder.mkdir()
     write_card_fixture(card_folder)
 
-    # Round 1: provider requests a (validating) tool call. Round 2: provider
-    # emits final text and a commit tool call.
+    # Round 1: provider requests a read-only tool call. Round 2: provider emits
+    # final narrative TEXT (no commit tool — ADR-0011); harness parses + commits.
     provider = FakeProvider(
         scripts=[
             [
@@ -731,11 +739,8 @@ def test_provider_tool_sequence_commits_via_tool_after_feedback(tmp_path):
                 {"type": "final", "stop_reason": "tool_calls"},
             ],
             [
-                {"type": "text", "text": "<p>海风掠过礁石。</p>"},
-                {"type": "tool_call", "id": "c2", "name": "commit_turn_draft", "args": {
-                    "draft": build_draft(), "expected_revision": 0,
-                }},
-                {"type": "final", "stop_reason": "tool_calls"},
+                {"type": "text", "text": final_text()},
+                {"type": "final", "stop_reason": "stop"},
             ],
         ],
         usage={"prompt_tokens": 200, "completion_tokens": 80, "total_tokens": 280},
@@ -758,10 +763,9 @@ def test_provider_tool_sequence_commits_via_tool_after_feedback(tmp_path):
     # two model calls happened
     assert types.count("model_call.started") == 2
     assert types.count("model_call.finished") == 2
-    # tool dispatch happened, with the snapshot read preceding the commit
+    # the snapshot read happened in round 1
     started_tools = [e.payload["tool"] for e in runtime.events_after(0) if e.type == "tool_run.started"]
-    assert started_tools == ["get_session_snapshot", "commit_turn_draft"]
-    # the snapshot tool actually saw the runtime
+    assert started_tools == ["get_session_snapshot"]
     snapshot_finished = next(
         e for e in runtime.events_after(0)
         if e.type == "tool_run.finished" and e.payload["tool"] == "get_session_snapshot"
@@ -804,10 +808,8 @@ def test_multi_round_tool_loop_replays_assistant_tool_calls_with_ids(tmp_path):
                 {"type": "final", "stop_reason": "tool_calls"},
             ],
             [
-                {"type": "tool_call", "id": "c3", "name": "commit_turn_draft", "args": {
-                    "draft": build_draft(), "expected_revision": 0,
-                }},
-                {"type": "final", "stop_reason": "tool_calls"},
+                {"type": "text", "text": final_text()},
+                {"type": "final", "stop_reason": "stop"},
             ],
         ],
     )
@@ -846,11 +848,8 @@ def test_retryable_provider_error_recovers_and_commits(tmp_path):
         scripts=[
             [{"type": "error", "category": "provider_unavailable", "retryable": True, "message": "transient"}],
             [
-                {"type": "text", "text": "<p>恢复后正文。</p>"},
-                {"type": "tool_call", "id": "c1", "name": "commit_turn_draft", "args": {
-                    "draft": build_draft(content="<p>恢复后正文。</p>"), "expected_revision": 0,
-                }},
-                {"type": "final", "stop_reason": "tool_calls"},
+                {"type": "text", "text": final_text(content="<p>恢复后正文。</p>")},
+                {"type": "final", "stop_reason": "stop"},
             ],
         ],
     )
@@ -869,7 +868,7 @@ def test_retryable_provider_error_recovers_and_commits(tmp_path):
     # one model_call.finished recorded (the retry succeeded within the same call ordinal)
     calls = runtime.model_calls_for_task(result.task_id)
     assert len(calls) == 1
-    assert calls[0]["stop_reason"] == "tool_calls"
+    assert calls[0]["stop_reason"] == "stop"
 
 
 def test_terminal_provider_error_fails_without_commit(tmp_path):
@@ -954,10 +953,8 @@ def test_model_call_records_usage_latency_stopreason_and_rateversioned_cost(tmp_
     provider = FakeProvider(
         scripts=[
             [
-                {"type": "tool_call", "id": "c1", "name": "commit_turn_draft", "args": {
-                    "draft": build_draft(), "expected_revision": 0,
-                }},
-                {"type": "final", "stop_reason": "tool_calls",
+                {"type": "text", "text": final_text()},
+                {"type": "final", "stop_reason": "stop",
                  "usage": {"prompt_tokens": 333, "completion_tokens": 99, "total_tokens": 432}},
             ],
         ],
@@ -978,7 +975,7 @@ def test_model_call_records_usage_latency_stopreason_and_rateversioned_cost(tmp_
     assert call["prompt_tokens"] == 333
     assert call["completion_tokens"] == 99
     assert call["total_tokens"] == 432
-    assert call["stop_reason"] == "tool_calls"
+    assert call["stop_reason"] == "stop"
     assert isinstance(call["latency_ms"], int) and call["latency_ms"] >= 0
     assert call["cost_amount"] == 0.045
     assert call["cost_currency"] == "USD"
@@ -1000,9 +997,7 @@ def test_provider_credentials_never_leak_into_traces_or_projections(tmp_path):
     provider = FakeProvider(
         scripts=[
             [
-                {"type": "tool_call", "id": "c1", "name": "commit_turn_draft", "args": {
-                    "draft": build_draft(), "expected_revision": 0,
-                }},
+                {"type": "text", "text": final_text()},
                 {"type": "final"},
             ],
         ],
@@ -1044,16 +1039,20 @@ def test_provider_credentials_never_leak_into_traces_or_projections(tmp_path):
             assert secret_marker not in path.read_text(encoding="utf-8")
 
 
-def test_stale_expected_revision_rejected_via_tool_without_commit(tmp_path):
-    """Optimistic-revision contract: a stale commit_turn_draft cannot advance the head."""
+def test_stale_base_revision_rejected_by_harness_without_commit(tmp_path):
+    """Optimistic-revision contract under harness-commit (ADR-0011): a task
+    frozen at base_revision=0 cannot commit after the head advanced to 1.
+
+    We seed a task row frozen at base_revision=0 (simulating a task created
+    before a concurrent head move), then run a director whose final text the
+    harness tries to commit — the optimistic check (active==base) rejects it.
+    """
     card_folder = tmp_path / "card"
     card_folder.mkdir()
     write_card_fixture(card_folder)
 
-    # first task commits at revision 0 → 1
-    first_director = ScriptedDirector([
-        ("tool", "commit_turn_draft", {"draft": build_draft(content="<p>第一回合。</p>"), "expected_revision": 0}),
-    ])
+    # First task commits normally: head 0 → 1.
+    first_director = ScriptedDirector([("final", final_text(content="<p>第一回合。</p>"))])
     runtime = SessionTurnRuntime(
         database_path=tmp_path / "runtime.sqlite3",
         card_folder=card_folder,
@@ -1063,19 +1062,24 @@ def test_stale_expected_revision_rejected_via_tool_without_commit(tmp_path):
     first = runtime.submit(text="第一回合", idempotency_key="s1")
     assert first.revision == 1
 
-    # second task tries to commit against the now-stale revision 0
-    second_director = ScriptedDirector([
-        ("tool", "commit_turn_draft", {"draft": build_draft(content="<p>不应写入。</p>"), "expected_revision": 0}),
-    ])
+    # Seed a second task frozen at base_revision=0 (now stale vs head=1) with a
+    # valid source snapshot, simulating an in-flight task overtaken by the head.
+    snapshot = runtime._source_snapshot(0)
+    with sqlite3.connect(tmp_path / "runtime.sqlite3") as connection:
+        connection.execute(
+            "INSERT INTO tasks (id, session_id, idempotency_key, text, status, revision, base_revision, source_snapshot) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            ("stale-task", "local", "s2", "第二回合", "queued", 0, 0,
+             json.dumps(snapshot, ensure_ascii=False)),
+        )
+
+    second_director = ScriptedDirector([("final", final_text(content="<p>不应写入。</p>"))])
     runtime.executor = second_director
     second = runtime.submit(text="第二回合", idempotency_key="s2")
 
-    # stale_revision is the precise terminal non-committed category
-    assert second.status in ("stale_revision", "failed_terminal")
+    # Stale base revision → no commit, head stays at 1.
     assert second.commit_id is None
-    assert second_director.last_result.ok is False
-    assert second_director.last_result.error == "stale_revision"
-    # head still at 1, only one chat turn
+    assert second.status in ("stale_revision", "failed_terminal", "quality_exhausted")
     assert runtime.active_revision() == 1
     assert len(json.loads((card_folder / "chat_log.json").read_text(encoding="utf-8"))) == 1
 
@@ -1088,9 +1092,7 @@ def test_cancelled_task_is_not_reanimated_by_submit(tmp_path):
     card_folder.mkdir()
     write_card_fixture(card_folder)
 
-    director = ScriptedDirector([
-        ("tool", "commit_turn_draft", {"draft": build_draft(), "expected_revision": 0}),
-    ])
+    director = ScriptedDirector([("final", final_text())])
     runtime = SessionTurnRuntime(
         database_path=tmp_path / "runtime.sqlite3",
         card_folder=card_folder,

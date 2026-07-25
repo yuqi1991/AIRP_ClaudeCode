@@ -290,23 +290,22 @@ async function handleStreamMock(msg) {
       return;
     }
 
-    const tools = msg.tools || [];
-    const commitTool = tools.find((t) => t.name === "commit_turn_draft");
-    if (commitTool || script === "tool_call") {
-      const draft = msg.metadata?.mock_draft || {
-        polished_input: "我走向礁石",
-        content: "<p>海风掠过礁石。浪花轻拍岸边。</p>",
-        summary: "玩家来到海边",
-        options: '<font color="#5a7a5a">继续观察海面</font>',
-        mvu_commands: "_.set('世界.时间', '1月1日 10:00');",
-      };
-      const expected = msg.metadata?.mock_expected_revision ?? 0;
+    // ADR-0011: commit is harness-owned. Mock default emits final narrative
+    // text (legacy response.txt tags) and stops — no commit tool call.
+    // script === "tool_call" still exercises a read-only tool_call delta for
+    // IPC contract tests that inspect tool_call framing.
+    if (script === "tool_call") {
+      const tools = msg.tools || [];
+      const first =
+        tools.find((t) => t.name === "get_session_snapshot") ||
+        tools[0] ||
+        { name: "get_session_snapshot" };
       emit({
         type: "tool_call",
         request_id: requestId,
         id: "mock_call_1",
-        name: "commit_turn_draft",
-        args: { draft, expected_revision: expected },
+        name: first.name || "get_session_snapshot",
+        args: {},
       });
       emit({
         type: "result",
@@ -316,6 +315,35 @@ async function handleStreamMock(msg) {
         cost_estimate: { amount: 0.001, currency: "USD", rate_version: "mock-rates-v0" },
       });
       return;
+    }
+
+    // Optional: if caller still passes mock_draft, fold it into tagged text.
+    const draft = msg.metadata?.mock_draft;
+    if (draft && typeof draft === "object") {
+      const parts = [];
+      if (draft.polished_input) {
+        parts.push(`<polished_input>${draft.polished_input}</polished_input>`);
+      }
+      parts.push(`<content>${draft.content || "<p>海风掠过礁石。浪花轻拍岸边。</p>"}</content>`);
+      if (draft.mvu_commands) {
+        const block = String(draft.mvu_commands).trim().startsWith("<")
+          ? draft.mvu_commands
+          : `<UpdateVariable>\n${draft.mvu_commands}\n</UpdateVariable>`;
+        parts.push(block);
+      }
+      if (draft.summary) parts.push(`<summary>${draft.summary}</summary>`);
+      if (draft.options) parts.push(`<options>\n${draft.options}\n</options>`);
+      const blob = parts.join("\n");
+      // Already streamed Chinese chunks above; append a closing tagged blob as
+      // one more delta so the harness parser sees full tags.
+      emit({ type: "delta", request_id: requestId, text: "\n" + blob });
+    } else {
+      // Tagged narrative the harness will parse + commit.
+      const tagged =
+        '\n<content><p>海风掠过礁石。浪花轻拍岸边。</p></content>\n' +
+        "<summary>玩家来到海边</summary>\n" +
+        '<options>\n<font color="#5a7a5a">继续观察海面</font>\n</options>\n';
+      emit({ type: "delta", request_id: requestId, text: tagged });
     }
 
     emit({
