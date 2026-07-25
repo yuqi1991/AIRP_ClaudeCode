@@ -81,6 +81,17 @@ class TurnCommit:
     task_id: str
 
 
+@dataclass(frozen=True)
+class CommitLineage:
+    """Public read model for a commit's place in the revision DAG."""
+
+    id: str
+    revision: int
+    task_id: str
+    parent_revision: int
+    text: str = ""
+
+
 class FakeNarrativeExecutor:
     def __init__(self, content, summary="", options=""):
         self._draft = TurnDraft(content=content, summary=summary, options=options)
@@ -169,6 +180,11 @@ class SessionTurnRuntime:
     def submit(self, text, idempotency_key):
         if not text.strip():
             raise ValueError("empty input")
+        # Create/lookup under the session lock. For NarrativeDirector runs we
+        # release the lock before the long-running body so concurrent rollback
+        # can move the active head (Ticket 06 branch-stale). Fake/deterministic
+        # executors stay serialized under the lock so duplicate concurrent
+        # submits with the same key still collapse to one commit.
         with self._lock:
             task = self._create_or_get_task(text, idempotency_key)
             result = self._result(task)
@@ -190,16 +206,22 @@ class SessionTurnRuntime:
                 # lease/recovery semantics land in Tickets 04/07.
                 signal = AbortSignal()
                 self._abort_signals[task["id"]] = signal
-            try:
-                compiled = self._compile_and_persist(task)
-                if is_director:
-                    return self._run_director(task, text, compiled, signal)
-                draft = self._execute(text, compiled)
-                result = self._commit_draft(task, draft)
-                return self._project(result)
-            finally:
-                if signal is not None:
-                    self._abort_signals.pop(task["id"], None)
+            else:
+                try:
+                    compiled = self._compile_and_persist(task)
+                    draft = self._execute(text, compiled)
+                    result = self._commit_draft(task, draft)
+                    return self._project(result)
+                finally:
+                    pass
+
+        # Director path — lock released so rollback/stop can interleave.
+        try:
+            compiled = self._compile_and_persist(task)
+            return self._run_director(task, text, compiled, signal)
+        finally:
+            if signal is not None:
+                self._abort_signals.pop(task["id"], None)
 
     def stop(self, task_id):
         """Cancel a running or queued narrative-director task.
@@ -236,6 +258,7 @@ class SessionTurnRuntime:
         return row["id"] if row else None
 
     def active_revision(self):
+        """Return the active branch head revision (what new turns build on)."""
         with self._connect() as connection:
             return connection.execute(
                 "SELECT active_revision FROM sessions WHERE id = ?", (self.session_id,)
@@ -258,6 +281,222 @@ class SessionTurnRuntime:
         if not row:
             return None
         return TurnCommit(id=row["id"], revision=row["revision"], task_id=row["task_id"])
+
+    def commit_lineage(self, revision):
+        """Public read: commit identity + parent_revision + player text at ``revision``."""
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT commits.id, commits.revision, commits.task_id, commits.parent_revision, tasks.text "
+                "FROM commits JOIN tasks ON tasks.id = commits.task_id "
+                "WHERE commits.session_id = ? AND commits.revision = ?",
+                (self.session_id, revision),
+            ).fetchone()
+        if not row:
+            return None
+        return {
+            "id": row["id"],
+            "revision": row["revision"],
+            "task_id": row["task_id"],
+            "parent_revision": row["parent_revision"] if row["parent_revision"] is not None else 0,
+            "text": row["text"] or "",
+        }
+
+    def active_lineage_turns(self, limit=3, head_revision=None):
+        """Recent turns on the active branch only (parent-chain walk, oldest→newest)."""
+        head = self.active_revision() if head_revision is None else head_revision
+        return self._runtime_turns(head if head is not None else 0, limit=limit)
+
+    def reroll(self, revision, idempotency_key):
+        """Reroll the assistant outcome at ``revision`` reusing the original player input.
+
+        Creates a **new** task/commit whose ``parent_revision`` equals the parent of
+        the rerolled turn. On success the new commit becomes the active head; the
+        superseded commit remains queryable for audit but leaves the active lineage.
+        """
+        if not isinstance(idempotency_key, str) or not idempotency_key.strip():
+            raise ValueError("missing idempotency_key")
+        if revision is None or not isinstance(revision, int) or revision < 0:
+            raise ValueError("invalid revision")
+        if revision == 0:
+            return RuntimeResult("", None, self.active_revision(), "cannot_reroll_opening")
+
+        lineage = self.commit_lineage(revision)
+        if lineage is None:
+            return RuntimeResult("", None, self.active_revision(), "unknown_revision")
+        text = (lineage.get("text") or "").strip()
+        if not text:
+            return RuntimeResult("", None, self.active_revision(), "cannot_reroll_opening")
+
+        parent_revision = lineage["parent_revision"]
+        # Snapshot from the parent chain only — safe outside the write txn
+        # because _runtime_turns walks parents of parent_revision, not the
+        # active head. Avoids nested connections while BEGIN IMMEDIATE is held.
+        source_snapshot = self._source_snapshot(parent_revision)
+        project_existing = None
+        task = None
+        signal = None
+        is_director = False
+        with self._lock:
+            with self._connect() as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                existing = self._task_for_key(connection, idempotency_key)
+                if existing and existing["commit_id"]:
+                    project_existing = self._result(existing)
+                    task = existing
+                elif existing:
+                    task = existing
+                else:
+                    # Freeze base at the *parent* of the rerolled turn — not the active head.
+                    # Move the active head to that parent BEFORE generation so the
+                    # optimistic ``active == base`` check can succeed when the new
+                    # tip commits. The superseded tip stays in commits for audit.
+                    from_revision = self._active_revision(connection)
+                    if from_revision != parent_revision:
+                        connection.execute(
+                            "UPDATE sessions SET active_revision = ? WHERE id = ?",
+                            (parent_revision, self.session_id),
+                        )
+                        self._event(
+                            connection,
+                            "session.head_moved",
+                            {
+                                "from_revision": from_revision,
+                                "to_revision": parent_revision,
+                                "reason": "reroll",
+                                "reroll_of_revision": revision,
+                                "idempotency_key": idempotency_key,
+                            },
+                        )
+                    task_id = self._id()
+                    connection.execute(
+                        "INSERT INTO tasks (id, session_id, idempotency_key, text, status, revision, base_revision, source_snapshot) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                        (
+                            task_id,
+                            self.session_id,
+                            idempotency_key,
+                            text,
+                            "queued",
+                            0,
+                            parent_revision,
+                            self._canonical(source_snapshot),
+                        ),
+                    )
+                    self._event(
+                        connection,
+                        "task.reroll_requested",
+                        {
+                            "task_id": task_id,
+                            "reroll_of_revision": revision,
+                            "parent_revision": parent_revision,
+                            "text": text,
+                            "idempotency_key": idempotency_key,
+                        },
+                    )
+                    self._event(connection, "task.queued", {"task_id": task_id, "base_revision": parent_revision})
+                    task = self._task_for_key(connection, idempotency_key)
+
+            if project_existing is not None:
+                return self._project(project_existing)
+
+            result = self._result(task)
+            if result.commit_id:
+                return self._project(result)
+            if result.status == "succeeded":
+                return result
+
+            is_director = isinstance(self.executor, NarrativeDirector)
+            if is_director:
+                signal = AbortSignal()
+                self._abort_signals[task["id"]] = signal
+            else:
+                compiled = self._compile_and_persist(task)
+                draft = self._execute(text, compiled)
+                result = self._commit_draft(task, draft)
+                return self._project(result)
+
+        # Director path — lock released so concurrent commands can interleave.
+        try:
+            compiled = self._compile_and_persist(task)
+            return self._run_director(task, text, compiled, signal)
+        finally:
+            if signal is not None:
+                self._abort_signals.pop(task["id"], None)
+
+    def rollback(self, revision, idempotency_key):
+        """Move the active head to an existing committed revision without deleting history.
+
+        Subsequent submits descend from the new head (may create a new branch).
+        In-flight tasks frozen at a different ``base_revision`` fail with ``stale_revision``.
+        """
+        if not isinstance(idempotency_key, str) or not idempotency_key.strip():
+            raise ValueError("missing idempotency_key")
+        if revision is None or not isinstance(revision, int) or revision < 0:
+            raise ValueError("invalid revision")
+
+        with self._lock:
+            with self._connect() as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                # Idempotent replay: same key already moved the head.
+                prior = connection.execute(
+                    "SELECT payload FROM events WHERE session_id = ? AND type = ? ORDER BY sequence",
+                    (self.session_id, "session.head_moved"),
+                ).fetchall()
+                for row in prior:
+                    payload = json.loads(row["payload"])
+                    if payload.get("idempotency_key") == idempotency_key:
+                        to_rev = payload.get("to_revision", revision)
+                        return RuntimeResult("", None, to_rev, "rolled_back")
+
+                if revision > 0:
+                    commit_row = connection.execute(
+                        "SELECT id FROM commits WHERE session_id = ? AND revision = ?",
+                        (self.session_id, revision),
+                    ).fetchone()
+                    if not commit_row:
+                        return RuntimeResult("", None, self._active_revision(connection), "unknown_revision")
+                # revision == 0 is always valid (empty/opening head)
+
+                from_revision = self._active_revision(connection)
+                if from_revision == revision:
+                    self._event(
+                        connection,
+                        "session.head_moved",
+                        {
+                            "from_revision": from_revision,
+                            "to_revision": revision,
+                            "idempotency_key": idempotency_key,
+                            "noop": True,
+                        },
+                    )
+                    return RuntimeResult("", None, revision, "rolled_back")
+
+                connection.execute(
+                    "UPDATE sessions SET active_revision = ? WHERE id = ?",
+                    (revision, self.session_id),
+                )
+                self._event(
+                    connection,
+                    "session.head_moved",
+                    {
+                        "from_revision": from_revision,
+                        "to_revision": revision,
+                        "idempotency_key": idempotency_key,
+                    },
+                )
+                self._event(
+                    connection,
+                    "session.rolled_back",
+                    {
+                        "from_revision": from_revision,
+                        "to_revision": revision,
+                        "idempotency_key": idempotency_key,
+                    },
+                )
+
+            # Rebuild compatibility projections for the new active head (no commit delete).
+            self._rebuild_active_projections(revision)
+            return RuntimeResult("", None, revision, "rolled_back")
 
     def events_after(self, sequence):
         with self._connect() as connection:
@@ -344,22 +583,42 @@ class SessionTurnRuntime:
         return entry
 
     def _create_or_get_task(self, text, idempotency_key):
-        with self._connect() as connection:
-            connection.execute("BEGIN IMMEDIATE")
-            task = self._task_for_key(connection, idempotency_key)
-            if task:
-                return task
-            base_revision = self._active_revision(connection)
+        # Snapshot reads open their own connections; never nest them under
+        # BEGIN IMMEDIATE or the process deadlocks against itself. Loop until
+        # the base we snapshotted still matches the head at insert time.
+        while True:
+            with self._connect() as connection:
+                task = self._task_for_key(connection, idempotency_key)
+                if task:
+                    return task
+                base_revision = self._active_revision(connection)
             source_snapshot = self._source_snapshot(base_revision)
-            task_id = self._id()
-            connection.execute(
-                "INSERT INTO tasks (id, session_id, idempotency_key, text, status, revision, base_revision, source_snapshot) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                (task_id, self.session_id, idempotency_key, text, "queued", 0, base_revision, self._canonical(source_snapshot)),
-            )
-            self._event(connection, "player_message.submitted", {"task_id": task_id, "text": text})
-            self._event(connection, "task.queued", {"task_id": task_id, "base_revision": base_revision})
-            return self._task_for_key(connection, idempotency_key)
+            with self._connect() as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                task = self._task_for_key(connection, idempotency_key)
+                if task:
+                    return task
+                current_base = self._active_revision(connection)
+                if current_base != base_revision:
+                    continue
+                task_id = self._id()
+                connection.execute(
+                    "INSERT INTO tasks (id, session_id, idempotency_key, text, status, revision, base_revision, source_snapshot) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        task_id,
+                        self.session_id,
+                        idempotency_key,
+                        text,
+                        "queued",
+                        0,
+                        base_revision,
+                        self._canonical(source_snapshot),
+                    ),
+                )
+                self._event(connection, "player_message.submitted", {"task_id": task_id, "text": text})
+                self._event(connection, "task.queued", {"task_id": task_id, "base_revision": base_revision})
+                return self._task_for_key(connection, idempotency_key)
 
     def compile_follow_up_manifest(self, task_id, player_input):
         with self._lock:
@@ -471,25 +730,52 @@ class SessionTurnRuntime:
         commit_id = None
         revision = None
         validation_error = None
+        # Preload base state OUTSIDE the write txn — _state_at_revision opens its
+        # own connection and must not nest under BEGIN IMMEDIATE.
+        base_state = self._state_at_revision(task["base_revision"])
+        projected_state = self._projected_state_from_base(base_state, draft)
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
+            # Idempotent: a concurrent duplicate for the same task may already
+            # have committed while we were outside the session lock.
+            existing = connection.execute(
+                "SELECT id, revision, status, commit_id FROM tasks WHERE id = ?",
+                (task["id"],),
+            ).fetchone()
+            if existing and existing["commit_id"]:
+                return RuntimeResult(
+                    task["id"], existing["commit_id"], existing["revision"], "projection_pending"
+                )
             if self._active_revision(connection) != task["base_revision"]:
                 stale = True
             else:
-                validation_error = self._validate_draft_before_commit(connection, task, draft)
+                validation_error = self._validate_draft_before_commit(
+                    connection, task, draft, base_state=base_state
+                )
                 if validation_error is None:
-                    commit_id, revision = self._perform_commit_in_connection(connection, task, draft)
+                    commit_id, revision = self._perform_commit_in_connection(
+                        connection, task, draft, projected_state=projected_state
+                    )
         if stale:
             with self._connect() as connection:
                 connection.execute("BEGIN IMMEDIATE")
-                connection.execute("UPDATE tasks SET status = ? WHERE id = ?", ("stale_revision", task["id"]))
+                # Don't clobber a task that committed between our check and now.
+                connection.execute(
+                    "UPDATE tasks SET status = ? WHERE id = ? AND commit_id IS NULL",
+                    ("stale_revision", task["id"]),
+                )
+                row = connection.execute(
+                    "SELECT commit_id, revision, status FROM tasks WHERE id = ?", (task["id"],)
+                ).fetchone()
+                if row and row["commit_id"]:
+                    return RuntimeResult(task["id"], row["commit_id"], row["revision"], "projection_pending")
                 self._event(connection, "task.stale_revision", {"task_id": task["id"]})
             raise RuntimeError("stale revision")
         if validation_error is not None:
             raise RuntimeError(validation_error)
         return RuntimeResult(task["id"], commit_id, revision, "projection_pending")
 
-    def _validate_draft_before_commit(self, connection, task, draft):
+    def _validate_draft_before_commit(self, connection, task, draft, base_state=None):
         verdict = self.quality_gate.validate(
             draft,
             self._quality_context(task),
@@ -498,7 +784,8 @@ class SessionTurnRuntime:
             details = (verdict.metrics or {}) | {"reasons": list(verdict.reasons)}
             return self._reject_precommit(connection, task, "quality_gate_failed", details=details)
 
-        base_state = self._state_at_revision(task["base_revision"])
+        if base_state is None:
+            base_state = self._state_at_revision(task["base_revision"])
         source = draft.mvu_commands if draft.mvu_commands else draft.content
         commands = extract_commands(source)
         if not commands:
@@ -553,17 +840,31 @@ class SessionTurnRuntime:
         self._event(connection, f"task.{terminal_code}", payload)
         return terminal_code
 
-    def _perform_commit_in_connection(self, connection, task, draft):
+    def _perform_commit_in_connection(self, connection, task, draft, projected_state=None):
         """Insert commit + state snapshot + advance revision + emit turn.committed.
 
         Caller holds ``BEGIN IMMEDIATE`` and has verified revision freshness.
+        Revisions are globally monotonic (``max(revision)+1``), never renumbered.
+        ``parent_revision`` is the task's frozen ``base_revision``.
+        ``projected_state`` must be precomputed outside the write txn (avoids
+        nested connections via ``_state_at_revision``).
         Returns ``(commit_id, revision)``.
         """
-        revision = self._active_revision(connection) + 1
+        parent_revision = task["base_revision"] if task["base_revision"] is not None else 0
+        # Globally unique monotonic revision — not active+1, so branches after
+        # rollback/reroll never collide with superseded siblings.
+        row = connection.execute(
+            "SELECT COALESCE(MAX(revision), 0) AS max_rev FROM commits WHERE session_id = ?",
+            (self.session_id,),
+        ).fetchone()
+        revision = int(row["max_rev"]) + 1
         commit_id = self._id()
+        if projected_state is None:
+            projected_state = self._projected_state(task["base_revision"], draft)
         connection.execute(
-            "INSERT INTO commits (id, session_id, revision, task_id, draft) VALUES (?, ?, ?, ?, ?)",
-            (commit_id, self.session_id, revision, task["id"], draft.to_json()),
+            "INSERT INTO commits (id, session_id, revision, task_id, draft, parent_revision) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (commit_id, self.session_id, revision, task["id"], draft.to_json(), parent_revision),
         )
         connection.execute(
             "INSERT INTO projection_checkpoints (commit_id, state) VALUES (?, ?)",
@@ -571,7 +872,7 @@ class SessionTurnRuntime:
         )
         connection.execute(
             "INSERT INTO state_snapshots (session_id, revision, state_json) VALUES (?, ?, ?)",
-            (self.session_id, revision, self._canonical(self._projected_state(task["base_revision"], draft))),
+            (self.session_id, revision, self._canonical(projected_state)),
         )
         connection.execute(
             "UPDATE sessions SET active_revision = ? WHERE id = ?",
@@ -584,7 +885,12 @@ class SessionTurnRuntime:
         self._event(
             connection,
             "turn.committed",
-            {"task_id": task["id"], "commit_id": commit_id, "revision": revision},
+            {
+                "task_id": task["id"],
+                "commit_id": commit_id,
+                "revision": revision,
+                "parent_revision": parent_revision,
+            },
         )
         return commit_id, revision
 
@@ -646,10 +952,31 @@ class SessionTurnRuntime:
                         error="stale_revision",
                         value={"expected": expected_revision, "actual": active},
                     )
-                validation_error = self._validate_draft_before_commit(connection, task, draft)
+                # Preload outside nested connection use: we already hold the write
+                # txn, so compute from the task's frozen base via a pure helper.
+                # base_state was snapshotted at task creation; re-read is fine for
+                # committed revisions (immutable snapshots). Use connection-local
+                # read of state_snapshots to avoid a second sqlite connection.
+                base_rev = task["base_revision"]
+                if base_rev == 0:
+                    base_state = self._read_json(self.card_folder / ".initvar.json", {})
+                else:
+                    snap = connection.execute(
+                        "SELECT state_json FROM state_snapshots WHERE session_id = ? AND revision = ?",
+                        (self.session_id, base_rev),
+                    ).fetchone()
+                    if not snap:
+                        return ToolResult(ok=False, error="revision state snapshot is unavailable")
+                    base_state = json.loads(snap["state_json"])
+                projected_state = self._projected_state_from_base(base_state, draft)
+                validation_error = self._validate_draft_before_commit(
+                    connection, task, draft, base_state=base_state
+                )
                 if validation_error is not None:
                     return ToolResult(ok=False, error=validation_error)
-                commit_id, revision = self._perform_commit_in_connection(connection, task, draft)
+                commit_id, revision = self._perform_commit_in_connection(
+                    connection, task, draft, projected_state=projected_state
+                )
         except Exception as exc:
             return ToolResult(ok=False, error="commit_failed", value={"detail": str(exc)})
         return ToolResult(
@@ -767,13 +1094,8 @@ class SessionTurnRuntime:
             task_row = connection.execute(
                 "SELECT status FROM tasks WHERE id = ?", (task["id"],)
             ).fetchone()
-            recent = connection.execute(
-                "SELECT commits.revision, tasks.text, commits.draft FROM commits "
-                "JOIN tasks ON tasks.id = commits.task_id "
-                "WHERE commits.session_id = ? AND commits.revision <= ? "
-                "ORDER BY commits.revision DESC LIMIT 3",
-                (self.session_id, revision),
-            ).fetchall()
+        # Active-lineage only — walk parent chain from the requested revision.
+        recent = self._runtime_turns(revision, limit=3)
         return ToolResult(
             ok=True,
             value={
@@ -782,7 +1104,7 @@ class SessionTurnRuntime:
                 "task_id": task["id"],
                 "task_status": task_row["status"] if task_row else None,
                 "commit_id": commit_row["id"] if commit_row else None,
-                "recent_revisions": [row["revision"] for row in reversed(recent)],
+                "recent_revisions": [row["revision"] for row in recent],
             },
         )
 
@@ -949,27 +1271,42 @@ class SessionTurnRuntime:
     def _project(self, result):
         if result.commit_id is None and result.status == "succeeded":
             return result
+        if result.commit_id is None:
+            return result
         with self._lock:
             with self._connect() as connection:
-                commit = connection.execute("SELECT draft FROM commits WHERE id = ?", (result.commit_id,)).fetchone()
                 checkpoint = connection.execute(
                     "SELECT state, applied_marker FROM projection_checkpoints WHERE commit_id = ?",
                     (result.commit_id,),
                 ).fetchone()
+                if checkpoint is None:
+                    return result
                 if checkpoint["state"] == "applied" or checkpoint["applied_marker"] == result.commit_id:
+                    # Already projected — just ensure task status is terminal.
+                    # Avoid BEGIN IMMEDIATE on a connection that already ran a
+                    # SELECT (implicit read txn); use a fresh write connection.
+                    pass
+            if checkpoint["state"] == "applied" or checkpoint["applied_marker"] == result.commit_id:
+                with self._connect() as connection:
                     connection.execute("BEGIN IMMEDIATE")
                     connection.execute(
                         "UPDATE projection_checkpoints SET state = ?, applied_marker = ? WHERE commit_id = ?",
                         ("applied", result.commit_id, result.commit_id),
                     )
                     connection.execute("UPDATE tasks SET status = ? WHERE id = ?", ("succeeded", result.task_id))
-                    return RuntimeResult(result.task_id, result.commit_id, result.revision, "succeeded")
-                draft = TurnDraft.from_json(commit["draft"])
+                return RuntimeResult(result.task_id, result.commit_id, result.revision, "succeeded")
+            # Rebuild compatibility files from the active parent-chain only.
+            # Append-only projection would leave superseded branch tips in chat_log
+            # after reroll/rollback; lineage rebuild keeps one assistant turn per
+            # active position while commits remain auditable in SQLite.
             try:
-                self.projection.apply(self._task_text(result.task_id), draft)
+                self._rebuild_active_projections(result.revision)
             except Exception:
                 with self._connect() as connection:
-                    connection.execute("UPDATE tasks SET status = ? WHERE id = ?", ("projection_pending", result.task_id))
+                    connection.execute(
+                        "UPDATE tasks SET status = ? WHERE id = ?",
+                        ("projection_pending", result.task_id),
+                    )
                 raise
             with self._connect() as connection:
                 connection.execute("BEGIN IMMEDIATE")
@@ -1028,20 +1365,47 @@ class SessionTurnRuntime:
             raise RuntimeError("revision state snapshot is unavailable")
         return json.loads(row["state_json"])
 
-    def _runtime_turns(self, base_revision):
+    def _runtime_turns(self, base_revision, limit=3):
+        """Walk the parent chain from ``base_revision`` (active-lineage context).
+
+        Superseded sibling branches are excluded even when their revision numbers
+        are lower — only the chain head→parent→… is returned (oldest→newest),
+        capped at ``limit``.
+        """
+        if base_revision is None or base_revision <= 0:
+            return []
         with self._connect() as connection:
-            rows = connection.execute(
-                "SELECT commits.revision, tasks.text, commits.draft FROM commits JOIN tasks ON tasks.id = commits.task_id "
-                "WHERE commits.session_id = ? AND commits.revision <= ? ORDER BY commits.revision DESC LIMIT 3",
-                (self.session_id, base_revision),
-            ).fetchall()
-        return [
-            {"revision": row["revision"], "user": row["text"], "assistant": TurnDraft.from_json(row["draft"]).content}
-            for row in reversed(rows)
-        ]
+            chain = []
+            current = base_revision
+            seen = set()
+            while current and current > 0 and current not in seen and len(chain) < max(1, int(limit)):
+                seen.add(current)
+                row = connection.execute(
+                    "SELECT commits.revision, commits.parent_revision, commits.draft, tasks.text "
+                    "FROM commits JOIN tasks ON tasks.id = commits.task_id "
+                    "WHERE commits.session_id = ? AND commits.revision = ?",
+                    (self.session_id, current),
+                ).fetchone()
+                if not row:
+                    break
+                chain.append(
+                    {
+                        "revision": row["revision"],
+                        "user": row["text"],
+                        "assistant": TurnDraft.from_json(row["draft"]).content,
+                    }
+                )
+                parent = row["parent_revision"]
+                current = parent if parent is not None else 0
+        chain.reverse()
+        return chain
 
     def _projected_state(self, base_revision, draft):
         base_state = self._state_at_revision(base_revision)
+        return self._projected_state_from_base(base_state, draft)
+
+    @staticmethod
+    def _projected_state_from_base(base_state, draft):
         source = draft.mvu_commands if draft.mvu_commands else draft.content
         commands = extract_commands(source)
         state, _ = execute_commands(base_state, commands) if commands else (base_state, {})
@@ -1095,6 +1459,63 @@ class SessionTurnRuntime:
         manifest["payload"] = json.loads(row["payload_json"])
         return manifest
 
+    def _rebuild_active_projections(self, head_revision):
+        """Rewrite chat_log / content.js / state.js to match the active lineage only.
+
+        Superseded branch commits stay in SQLite for audit; compatibility files
+        reflect only the parent chain ending at ``head_revision``. Rebuild is
+        clear-then-replay through the existing LegacyProjectionAdapter so
+        Ticket 03/05 projection failure + idempotency contracts stay intact.
+        """
+        from engine.card import write_chat_log, read_state, write_state
+        import re as _re
+
+        lineage = self._lineage_commits(head_revision)
+        # Reset compatibility surfaces, then replay active lineage in order.
+        write_chat_log(self.card_folder, [])
+        state_raw = read_state(projection_root=self.projection.projection_root)
+        state_raw = _re.sub(r"(\s+generatedCount:\s*)\d+", r"\g<1>0", state_raw)
+        # Only write the zeroed state when we have a projection root that can
+        # accept files; a deliberately-broken root (file-not-dir) must still
+        # raise from projection.apply below so pending-commit tests stay valid.
+        try:
+            write_state(state_raw, self.card_folder, projection_root=self.projection.projection_root)
+        except OSError:
+            pass
+        for item in lineage:
+            self.projection.apply(item["text"], item["draft"])
+
+    def _lineage_commits(self, head_revision):
+        """Full parent-chain walk from head (oldest→newest), no limit."""
+        if head_revision is None or head_revision <= 0:
+            return []
+        with self._connect() as connection:
+            chain = []
+            current = head_revision
+            seen = set()
+            while current and current > 0 and current not in seen:
+                seen.add(current)
+                row = connection.execute(
+                    "SELECT commits.revision, commits.parent_revision, commits.draft, tasks.text "
+                    "FROM commits JOIN tasks ON tasks.id = commits.task_id "
+                    "WHERE commits.session_id = ? AND commits.revision = ?",
+                    (self.session_id, current),
+                ).fetchone()
+                if not row:
+                    break
+                chain.append(
+                    {
+                        "revision": row["revision"],
+                        "parent_revision": row["parent_revision"] if row["parent_revision"] is not None else 0,
+                        "text": row["text"],
+                        "draft": TurnDraft.from_json(row["draft"]),
+                    }
+                )
+                parent = row["parent_revision"]
+                current = parent if parent is not None else 0
+        chain.reverse()
+        return chain
+
     def _initialize(self):
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as connection:
@@ -1108,7 +1529,10 @@ class SessionTurnRuntime:
                     base_revision INTEGER, source_snapshot TEXT, validation_failures INTEGER NOT NULL DEFAULT 0,
                     validation_exhausted INTEGER NOT NULL DEFAULT 0
                 );
-                CREATE TABLE IF NOT EXISTS commits (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, revision INTEGER NOT NULL, task_id TEXT NOT NULL UNIQUE, draft TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS commits (
+                    id TEXT PRIMARY KEY, session_id TEXT NOT NULL, revision INTEGER NOT NULL,
+                    task_id TEXT NOT NULL UNIQUE, draft TEXT NOT NULL, parent_revision INTEGER NOT NULL DEFAULT 0
+                );
                 CREATE TABLE IF NOT EXISTS projection_checkpoints (commit_id TEXT PRIMARY KEY, state TEXT NOT NULL, applied_marker TEXT);
                 CREATE TABLE IF NOT EXISTS state_snapshots (session_id TEXT NOT NULL, revision INTEGER NOT NULL, state_json TEXT NOT NULL, PRIMARY KEY (session_id, revision));
                 CREATE TABLE IF NOT EXISTS events (sequence INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, type TEXT NOT NULL, payload TEXT NOT NULL);
@@ -1143,15 +1567,36 @@ class SessionTurnRuntime:
             checkpoint_columns = {row["name"] for row in connection.execute("PRAGMA table_info(projection_checkpoints)")}
             if "applied_marker" not in checkpoint_columns:
                 connection.execute("ALTER TABLE projection_checkpoints ADD COLUMN applied_marker TEXT")
+            commit_columns = {row["name"] for row in connection.execute("PRAGMA table_info(commits)")}
+            if "parent_revision" not in commit_columns:
+                connection.execute(
+                    "ALTER TABLE commits ADD COLUMN parent_revision INTEGER NOT NULL DEFAULT 0"
+                )
+            # Backfill linear history: parent = revision - 1 (rev 1 → 0).
+            # Only fill rows still at the DEFAULT 0 that are not the first commit.
+            # For a pure linear DB this is correct; branched DBs already set parents.
+            connection.execute(
+                "UPDATE commits SET parent_revision = CASE "
+                "WHEN revision <= 1 THEN 0 ELSE revision - 1 END "
+                "WHERE parent_revision = 0 AND revision > 1 "
+                "AND session_id = ?",
+                (self.session_id,),
+            )
+            # Also fix any NULL-ish leftover if an older ALTER path left defaults odd.
+            connection.execute(
+                "UPDATE commits SET parent_revision = 0 WHERE parent_revision IS NULL"
+            )
             connection.execute("UPDATE tasks SET base_revision = MAX(revision - 1, 0) WHERE base_revision IS NULL")
             connection.execute("UPDATE tasks SET validation_failures = 0 WHERE validation_failures IS NULL")
             connection.execute("UPDATE tasks SET validation_exhausted = 0 WHERE validation_exhausted IS NULL")
             connection.execute("INSERT OR IGNORE INTO schema_migrations (version) VALUES (2)")
+            connection.execute("INSERT OR IGNORE INTO schema_migrations (version) VALUES (3)")
             connection.execute("INSERT OR IGNORE INTO sessions (id, active_revision) VALUES (?, 0)", (self.session_id,))
 
     def _connect(self):
-        connection = sqlite3.connect(self.database_path, timeout=5)
+        connection = sqlite3.connect(self.database_path, timeout=30)
         connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA busy_timeout = 30000")
         return connection
 
     def _event(self, connection, event_type, payload):

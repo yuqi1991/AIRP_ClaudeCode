@@ -16,8 +16,13 @@ Endpoints
     Body ``{task_id?}`` and/or ``{idempotency_key?}``. Propagates abort via the
     command service.
 
-``POST /v1/session/commands/reroll`` / ``rollback``
-    Reserved for Ticket 06 — returns ``501`` with ``not_implemented``.
+``POST /v1/session/commands/reroll``
+    Body ``{revision, idempotency_key}``. Creates a new branch tip reusing the
+    original player input; streams via the same SSE channel.
+
+``POST /v1/session/commands/rollback``
+    Body ``{revision, idempotency_key}``. Moves the active head without deleting
+    history; subsequent submits descend from the new head.
 
 ``GET /v1/session/snapshot``
     Active revision, current task, last event sequence.
@@ -160,14 +165,33 @@ class SessionRuntimeServer:
         This is the load-bearing non-blocking path for SSE: the HTTP request
         handler must not wait for the full director run.
         """
+        return self._command_async(
+            idempotency_key,
+            worker_fn=lambda: self.service.submit(text, idempotency_key),
+            thread_name=f"submit-{idempotency_key[:24]}",
+        )
+
+    def reroll_async(self, revision: int, idempotency_key: str) -> dict:
+        """Background ``service.reroll`` so SSE can stream the new branch tip."""
+        return self._command_async(
+            idempotency_key,
+            worker_fn=lambda: self.service.reroll(revision=revision, idempotency_key=idempotency_key),
+            thread_name=f"reroll-{idempotency_key[:24]}",
+        )
+
+    def _command_async(self, idempotency_key: str, worker_fn, thread_name: str) -> dict:
         with self._submit_lock:
             existing = self._submit_results.get(idempotency_key)
-            if existing is not None and existing.get("task_id"):
+            if existing is not None and (existing.get("task_id") or existing.get("finished")):
                 # In-flight or finished prior accept for this key.
+                finished = bool(existing.get("finished", False))
+                ok = existing.get("ok")
+                if ok is None:
+                    ok = True
                 return {
-                    "ok": True,
-                    "accepted": not existing.get("finished", False),
-                    "finished": bool(existing.get("finished", False)),
+                    "ok": ok,
+                    "accepted": not finished,
+                    "finished": finished,
                     "task_id": existing.get("task_id"),
                     "commit_id": existing.get("commit_id"),
                     "revision": existing.get("revision"),
@@ -181,7 +205,7 @@ class SessionRuntimeServer:
             self._submit_results[idempotency_key] = slot
 
         def worker():
-            result = self.service.submit(text, idempotency_key)
+            result = worker_fn()
             with self._submit_lock:
                 slot.update(result.to_dict())
                 slot["finished"] = True
@@ -190,7 +214,7 @@ class SessionRuntimeServer:
 
         thread = threading.Thread(
             target=worker,
-            name=f"submit-{idempotency_key[:24]}",
+            name=thread_name,
             daemon=True,
         )
         with self._submit_lock:
@@ -214,8 +238,11 @@ class SessionRuntimeServer:
             if task_id:
                 slot["task_id"] = task_id
             finished = bool(slot.get("finished"))
+            ok_val = slot.get("ok")
+            if ok_val is None:
+                ok_val = True if task_id or not finished else False
             payload = {
-                "ok": True if task_id or finished else slot.get("ok", True),
+                "ok": ok_val if finished else (True if task_id or finished else slot.get("ok", True)),
                 "accepted": not finished,
                 "finished": finished,
                 "task_id": slot.get("task_id") or task_id,
@@ -342,11 +369,40 @@ class SessionRuntimeServer:
                     return
 
                 if path == "/v1/session/commands/reroll":
-                    result = server_ref.service.reroll(
-                        revision=body.get("revision"),
-                        idempotency_key=body.get("idempotency_key"),
-                    )
-                    self._send_json(501, result.to_dict())
+                    # Reroll may run a full director generation; accept on a
+                    # background thread the same way submit does so SSE can
+                    # stream preview while the new branch tip is produced.
+                    key = body.get("idempotency_key", "")
+                    revision = body.get("revision")
+                    if not isinstance(key, str) or not key.strip():
+                        self._send_json(
+                            400,
+                            {
+                                "ok": False,
+                                "error": "invalid_command",
+                                "message": "missing idempotency_key",
+                                "retryable": False,
+                            },
+                        )
+                        return
+                    if revision is None or not isinstance(revision, int):
+                        self._send_json(
+                            400,
+                            {
+                                "ok": False,
+                                "error": "invalid_command",
+                                "message": "revision required",
+                                "retryable": False,
+                            },
+                        )
+                        return
+                    result = server_ref.reroll_async(revision, key)
+                    status = 200 if result.get("finished") else 202
+                    if result.get("ok") is False and result.get("finished"):
+                        status = 200
+                    if result.get("error") in ("unknown_revision", "cannot_reroll_opening"):
+                        status = 400
+                    self._send_json(status, result)
                     return
 
                 if path == "/v1/session/commands/rollback":
@@ -354,7 +410,10 @@ class SessionRuntimeServer:
                         revision=body.get("revision"),
                         idempotency_key=body.get("idempotency_key"),
                     )
-                    self._send_json(501, result.to_dict())
+                    code = 200 if result.ok else 400
+                    if result.error == "unknown_revision":
+                        code = 404
+                    self._send_json(code, result.to_dict())
                     return
 
                 self._send_json(404, {"ok": False, "error": "not_found"})

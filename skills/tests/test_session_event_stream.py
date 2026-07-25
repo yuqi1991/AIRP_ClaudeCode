@@ -27,8 +27,6 @@ SKILLS = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SKILLS))
 
 from engine.commands import (  # noqa: E402
-    ERROR_DEFERRED_TICKET_06,
-    ERROR_NOT_IMPLEMENTED,
     ERROR_UNKNOWN_TASK,
     SessionCommandService,
 )
@@ -321,25 +319,25 @@ def test_command_cancel_unknown_task_returns_stable_error(tmp_path):
     assert by_key.error == ERROR_UNKNOWN_TASK
 
 
-def test_command_reroll_and_rollback_are_not_implemented(tmp_path):
+def test_command_reroll_and_rollback_are_live_on_empty_session(tmp_path):
+    """Ticket 06: reroll/rollback are real. Empty session → stable unknown_revision."""
     runtime, card_folder, projection_root, _ = make_runtime(tmp_path)
     service = SessionCommandService(runtime)
     before_rev = service.snapshot().active_revision
     before_events = len(service.events_after(0))
 
     reroll = service.reroll(revision=1, idempotency_key="reroll-1")
-    rollback = service.rollback(revision=0, idempotency_key="rollback-1")
+    rollback = service.rollback(revision=1, idempotency_key="rollback-1")
 
     assert reroll.ok is False
-    assert reroll.error == ERROR_NOT_IMPLEMENTED
-    assert reroll.message == ERROR_DEFERRED_TICKET_06
+    assert reroll.error == "unknown_revision"
     assert reroll.retryable is False
 
     assert rollback.ok is False
-    assert rollback.error == ERROR_NOT_IMPLEMENTED
-    assert rollback.message == ERROR_DEFERRED_TICKET_06
+    assert rollback.error == "unknown_revision"
 
     assert service.snapshot().active_revision == before_rev
+    # No side-effect events on failed unknown_revision
     assert len(service.events_after(0)) == before_events
     assert json.loads((card_folder / "chat_log.json").read_text(encoding="utf-8")) == []
     assert_no_legacy_pending(card_folder, projection_root)
@@ -574,14 +572,18 @@ def test_http_path_never_touches_legacy_pending_files(tmp_path):
         assert status == 200
         assert any(e["type"] == "turn.committed" for e in payload["events"])
 
-        # Deferred endpoints stable.
+        # Reroll of the just-committed tip is live (Ticket 06); may 200/202.
         status, reroll = http_json(
             "POST",
             f"{server.base_url}/v1/session/commands/reroll",
             {"revision": 1, "idempotency_key": "r1"},
         )
-        assert status == 501
-        assert reroll["error"] == ERROR_NOT_IMPLEMENTED
+        assert status in (200, 202)
+        assert reroll.get("ok") is not False or reroll.get("error") in (
+            None,
+            "unknown_revision",
+            "cannot_reroll_opening",
+        )
 
     assert_no_legacy_pending(card_folder, projection_root)
 

@@ -1,18 +1,20 @@
 """Session command API — sole external entry into the new Pi-runtime path.
 
-This module is the library seam for Ticket 04 (Session Event Stream). HTTP and
-other transports wrap :class:`SessionCommandService`; they must not call
+This module is the library seam for Ticket 04 (Session Event Stream) and
+Ticket 06 (revision branch / reroll / rollback). HTTP and other transports wrap
+:class:`SessionCommandService`; they must not call
 :class:`~engine.runtime.SessionTurnRuntime` write paths directly.
 
-Design notes (spec Decisions 8–11, 25, 34, 35):
+Design notes (spec Decisions 8–11, 25–28, 34, 35):
 
 * One serialized command stream per Session — ordering is provided by the
   runtime lock / ``BEGIN IMMEDIATE``, not a second lock hierarchy here.
 * Every mutating command carries an idempotency key. Duplicate ``submit`` with
   the same key returns the same task/commit identity (runtime-guaranteed;
   re-asserted at this layer).
-* ``reroll`` / ``rollback`` are reserved with stable ``not_implemented`` /
-  ``deferred_to_ticket_06`` codes — branch lineage is Ticket 06.
+* ``reroll`` / ``rollback`` implement branch lineage: globally unique revisions,
+  ``parent_revision`` edges, single active head. Superseded commits stay
+  auditable; active context walks the parent chain only.
 * Error categories are stable strings on :class:`CommandResult`; retryability is
   data, never inferred from free text by callers.
 """
@@ -28,11 +30,13 @@ if TYPE_CHECKING:
     pass
 
 
-# Stable error categories (spec Decision 35 + Ticket 04 minimum set).
+# Stable error categories (spec Decision 35 + Ticket 04/06 minimum set).
 ERROR_INVALID_COMMAND = "invalid_command"
 ERROR_UNKNOWN_TASK = "unknown_task"
-ERROR_NOT_IMPLEMENTED = "not_implemented"
-ERROR_DEFERRED_TICKET_06 = "deferred_to_ticket_06"
+ERROR_UNKNOWN_REVISION = "unknown_revision"
+ERROR_CANNOT_REROLL_OPENING = "cannot_reroll_opening"
+ERROR_NOT_IMPLEMENTED = "not_implemented"  # retained for genuinely-N/A cases
+ERROR_DEFERRED_TICKET_06 = "deferred_to_ticket_06"  # historical; reroll/rollback are live
 ERROR_CANCELLED = "cancelled"
 ERROR_STALE_REVISION = "stale_revision"
 ERROR_TERMINAL_INTERNAL = "terminal_internal_failure"
@@ -48,10 +52,13 @@ _TERMINAL_TASK_STATUSES = frozenset(
         "quality_exhausted",
         "quality_gate_failed",
         "mvu_validation_failed",
+        "rolled_back",
+        "cannot_reroll_opening",
+        "unknown_revision",
     }
 )
 
-_SUCCESS_TASK_STATUSES = frozenset({"succeeded", "projection_pending"})
+_SUCCESS_TASK_STATUSES = frozenset({"succeeded", "projection_pending", "rolled_back"})
 
 
 @dataclass(frozen=True)
@@ -110,7 +117,7 @@ class SessionCommandService:
     """Only external write entry for the new runtime path.
 
     Thin orchestration over :class:`SessionTurnRuntime`. Does not invent a second
-    lock hierarchy or branch lineage.
+    lock hierarchy.
     """
 
     def __init__(self, runtime: SessionTurnRuntime):
@@ -210,28 +217,71 @@ class SessionCommandService:
         revision: int | None = None,
         idempotency_key: str | None = None,
     ) -> CommandResult:
-        """Reserved — branch lineage lands in Ticket 06."""
-        del revision, idempotency_key
-        return CommandResult(
-            ok=False,
-            error=ERROR_NOT_IMPLEMENTED,
-            retryable=False,
-            message=ERROR_DEFERRED_TICKET_06,
-        )
+        """Reroll the assistant turn at ``revision`` with a fresh task/idempotency key.
+
+        Reuses the original player input and the parent of the target revision.
+        On success the new commit becomes the active head; the old branch stays
+        auditable off the active lineage.
+        """
+        if not isinstance(idempotency_key, str) or not idempotency_key.strip():
+            return CommandResult(
+                ok=False,
+                error=ERROR_INVALID_COMMAND,
+                retryable=False,
+                message="missing idempotency_key",
+            )
+        if revision is None or not isinstance(revision, int):
+            return CommandResult(
+                ok=False,
+                error=ERROR_INVALID_COMMAND,
+                retryable=False,
+                message="revision required",
+            )
+        try:
+            result = self.runtime.reroll(revision, idempotency_key)
+        except ValueError as exc:
+            return CommandResult(
+                ok=False,
+                error=ERROR_INVALID_COMMAND,
+                retryable=False,
+                message=str(exc),
+            )
+        except RuntimeError as exc:
+            return self._from_runtime_error(exc, idempotency_key)
+        return self._from_runtime_result(result)
 
     def rollback(
         self,
         revision: int | None = None,
         idempotency_key: str | None = None,
     ) -> CommandResult:
-        """Reserved — branch lineage lands in Ticket 06."""
-        del revision, idempotency_key
-        return CommandResult(
-            ok=False,
-            error=ERROR_NOT_IMPLEMENTED,
-            retryable=False,
-            message=ERROR_DEFERRED_TICKET_06,
-        )
+        """Move the active head to ``revision`` without deleting history."""
+        if not isinstance(idempotency_key, str) or not idempotency_key.strip():
+            return CommandResult(
+                ok=False,
+                error=ERROR_INVALID_COMMAND,
+                retryable=False,
+                message="missing idempotency_key",
+            )
+        if revision is None or not isinstance(revision, int):
+            return CommandResult(
+                ok=False,
+                error=ERROR_INVALID_COMMAND,
+                retryable=False,
+                message="revision required",
+            )
+        try:
+            result = self.runtime.rollback(revision, idempotency_key)
+        except ValueError as exc:
+            return CommandResult(
+                ok=False,
+                error=ERROR_INVALID_COMMAND,
+                retryable=False,
+                message=str(exc),
+            )
+        except RuntimeError as exc:
+            return self._from_runtime_error(exc, idempotency_key)
+        return self._from_runtime_result(result)
 
     # ── reads ──────────────────────────────────────────────────────────
 
@@ -257,7 +307,7 @@ class SessionCommandService:
     def _latest_task_from_events(self, events: list[RuntimeEvent]) -> RuntimeResult | None:
         task_id = None
         for event in reversed(events):
-            if event.type == "player_message.submitted":
+            if event.type in ("player_message.submitted", "task.reroll_requested"):
                 task_id = event.payload.get("task_id")
                 break
         if not task_id:
@@ -268,7 +318,7 @@ class SessionCommandService:
         if result.status in _SUCCESS_TASK_STATUSES:
             return CommandResult(
                 ok=True,
-                task_id=result.task_id,
+                task_id=result.task_id or None,
                 commit_id=result.commit_id,
                 revision=result.revision,
                 status=result.status,
@@ -276,9 +326,15 @@ class SessionCommandService:
         error = result.status or ERROR_TERMINAL_INTERNAL
         if result.status == "cancelled":
             error = ERROR_CANCELLED
+        elif result.status == "cannot_reroll_opening":
+            error = ERROR_CANNOT_REROLL_OPENING
+        elif result.status == "unknown_revision":
+            error = ERROR_UNKNOWN_REVISION
+        elif result.status == "stale_revision":
+            error = ERROR_STALE_REVISION
         return CommandResult(
             ok=False,
-            task_id=result.task_id,
+            task_id=result.task_id or None,
             commit_id=result.commit_id,
             revision=result.revision,
             status=result.status,

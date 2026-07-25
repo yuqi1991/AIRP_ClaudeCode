@@ -12,7 +12,7 @@ Ticket 01–03/05 已在 Python Runtime Spine 上交付 durable events、task、
 
 ## Decision
 
-1. **库层唯一写入口**：新增 `engine/commands.py` 的 `SessionCommandService`，对外部暴露 `submit` / `cancel` / `snapshot` / `events_after`；`reroll` / `rollback` 预留稳定 `not_implemented` / `deferred_to_ticket_06`，不发明分支语义。
+1. **库层唯一写入口**：新增 `engine/commands.py` 的 `SessionCommandService`，对外部暴露 `submit` / `cancel` / `snapshot` / `events_after`；`reroll` / `rollback` 在 Ticket 04 预留为 `not_implemented` / `deferred_to_ticket_06`，**Ticket 06（ADR-0008）已实现真实分支语义**。
 2. **并行 HTTP 服务**：新增 `skills/runtime_server.py`（stdlib `ThreadingHTTPServer` + SSE），**不** import 或 patch `skills/server.py`。legacy bridge 与 new runtime path 并存；迁移由 Session/服务启动的 feature 控制（规格 Decision 37），本票只交付 new path 的 tracer bullet。
 3. **SSE 是 durable event 的投影**：`id` = 单调 `sequence`，`event` = runtime type，`data` = JSON（含 sequence/type）。连接时回放 `sequence > after`，再 live-tail；重连至少一次补齐 gap，客户端按 sequence 去重。
 4. **submit 非阻塞 SSE**：HTTP `submit` 在后台线程跑 `service.submit`，请求线程只等到 durable task 行出现即返回 `202`，以便 SSE 在 director 运行期间推送 `narrative.preview.delta`。
@@ -21,6 +21,6 @@ Ticket 01–03/05 已在 Python Runtime Spine 上交付 durable events、task、
 ## Consequences
 
 - 浏览器/集成测试可黑盒驱动 command + SSE，而不启动 Claude Code loop。
-- Ticket 06 可在 command service 上实现真实 reroll/rollback，而不改 SSE 线格式。
+- Ticket 06 已在 command service 上实现真实 reroll/rollback（ADR-0008），SSE 线格式未改。
 - Ticket 07 的 crash recovery / lease 仍可挂在同一 durable events/tasks 上；本票不分类 abandoned leased/running。
 - 真实 Pi/Node sidecar 与 DeepSeek E2E 仍属后续门槛（ADR-0005）；本票 SSE 契约以 FakeProvider/ScriptedDirector 为充分条件。
