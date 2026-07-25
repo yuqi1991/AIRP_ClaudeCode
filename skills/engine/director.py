@@ -212,16 +212,36 @@ class ProviderDrivenDirector(NarrativeDirector):
             )
             assistant_text = "".join(d.text or "" for d in deltas if d.text)
             tool_calls = [d.tool_call for d in deltas if d.tool_call]
-            if assistant_text:
-                messages.append({"role": "assistant", "content": assistant_text})
+            if assistant_text or tool_calls:
+                # The assistant message MUST carry tool_calls back to the model;
+                # otherwise a following role:"tool" message has no preceding
+                # tool_calls to respond to and the provider rejects the request
+                # (real DeepSeek enforces this; FakeProvider does not).
+                assistant_msg = {"role": "assistant", "content": assistant_text}
+                if tool_calls:
+                    assistant_msg["tool_calls"] = [
+                        {
+                            "id": call.get("id") or f"call_{name}",
+                            "name": (name := call.get("name")),
+                            "args": call.get("args", {}),
+                        }
+                        for call in tool_calls
+                    ]
+                messages.append(assistant_msg)
             committed = False
             for call in tool_calls:
                 if handle.aborted:
                     return
                 name = call.get("name")
+                call_id = call.get("id") or f"call_{name}"
                 result = handle.call_tool(name, call.get("args", {}))
                 messages.append(
-                    {"role": "tool", "name": name, "content": _tool_result_message(result)}
+                    {
+                        "role": "tool",
+                        "tool_call_id": call_id,
+                        "name": name,
+                        "content": _tool_result_message(result),
+                    }
                 )
                 if name == "commit_turn_draft" and result.ok:
                     committed = True

@@ -707,17 +707,14 @@ def test_stop_marks_queued_task_cancelled(tmp_path):
 # ════════════════════════════════════════════════════════════════════
 
 
-def test_provider_adapter_is_a_clean_interface_and_real_adapter_raises():
-    # the seam exists and is clearly marked
+def test_provider_adapter_is_a_clean_interface_and_real_adapter_is_callable():
+    # the seam exists; RealProviderAdapter is the Node/Pi sidecar bridge (ADR-0010).
+    # Default construction is mock-friendly and does not require a live key.
     assert hasattr(ProviderAdapter, "stream")
     assert hasattr(ProviderAdapter, "model_id")
-    real = RealProviderAdapter()
-    for method, args in (("stream", (object(), AbortSignal())), ("model_id", ("narrative_director",))):
-        try:
-            getattr(real, method)(*args)
-        except NotImplementedError:
-            continue
-        raise AssertionError(f"RealProviderAdapter.{method} must raise NotImplementedError")
+    real = RealProviderAdapter(mock=True)
+    assert real.model_id("narrative_director") == "deepseek-v4-flash"
+    assert callable(real.stream)
 
 
 def test_provider_tool_sequence_commits_via_tool_after_feedback(tmp_path):
@@ -773,6 +770,71 @@ def test_provider_tool_sequence_commits_via_tool_after_feedback(tmp_path):
     # preview delta arrived during round 2
     preview_events = [e for e in runtime.events_after(0) if e.type == "narrative.preview.delta"]
     assert any("海风掠过礁石" in e.payload["preview"] for e in preview_events)
+
+
+def test_multi_round_tool_loop_replays_assistant_tool_calls_with_ids(tmp_path):
+    """Regression lock for the real-DeepSeek multi-round bug.
+
+    A following role:"tool" message MUST be preceded by an assistant message
+    carrying the matching tool_calls; real providers (DeepSeek) reject the
+    request otherwise ("tool must be a response to preceding tool_calls").
+    FakeProvider does not validate message shape, so this test inspects the
+    messages the director builds across rounds and asserts:
+      * the assistant turn carries tool_calls back into the next request;
+      * each tool result carries tool_call_id matching the call id.
+    """
+    card_folder = tmp_path / "card"
+    card_folder.mkdir()
+    write_card_fixture(card_folder)
+
+    captured = {"round2_messages": None}
+
+    class InspectingProvider(FakeProvider):
+        def stream(self, request, signal):
+            # The 2nd call (round_index 1) sees round-1's assistant + tool msgs.
+            if request.metadata.get("call_ordinal") == 2:
+                captured["round2_messages"] = list(request.messages)
+            return super().stream(request, signal)
+
+    provider = InspectingProvider(
+        scripts=[
+            [
+                {"type": "tool_call", "id": "c1", "name": "get_session_snapshot", "args": {}},
+                {"type": "tool_call", "id": "c2", "name": "get_recent_memory", "args": {}},
+                {"type": "final", "stop_reason": "tool_calls"},
+            ],
+            [
+                {"type": "tool_call", "id": "c3", "name": "commit_turn_draft", "args": {
+                    "draft": build_draft(), "expected_revision": 0,
+                }},
+                {"type": "final", "stop_reason": "tool_calls"},
+            ],
+        ],
+    )
+    director = ProviderDrivenDirector(provider, max_tool_rounds=4, max_retries=0)
+    runtime = SessionTurnRuntime(
+        database_path=tmp_path / "runtime.sqlite3",
+        card_folder=card_folder,
+        projection_root=tmp_path / "projection",
+        executor=director,
+    )
+    result = runtime.submit(text="我走向海边", idempotency_key="submit-1")
+    assert result.status == "succeeded"
+
+    round2 = captured["round2_messages"]
+    assert round2 is not None, "expected a second model call"
+    # The assistant turn before the tool results carries both tool_calls.
+    assistant_turns = [m for m in round2 if m.get("role") == "assistant"]
+    assert assistant_turns, "expected an assistant message replayed into round 2"
+    last_assistant = assistant_turns[-1]
+    calls = last_assistant.get("tool_calls")
+    assert calls and {c["id"] for c in calls} == {"c1", "c2"}, (
+        f"assistant must replay tool_calls c1+c2, got: {calls}"
+    )
+    # Each tool result carries a tool_call_id matching a replayed call id.
+    tool_msgs = [m for m in round2 if m.get("role") == "tool"]
+    assert len(tool_msgs) == 2
+    assert {m["tool_call_id"] for m in tool_msgs} == {"c1", "c2"}
 
 
 def test_retryable_provider_error_recovers_and_commits(tmp_path):

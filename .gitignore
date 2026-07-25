@@ -32,6 +32,15 @@ skills/styles/openings.json
 *.lock
 .claude/scheduled_tasks.lock
 
+# Node sidecar deps (Pi packages). package.json + package-lock.json stay tracked.
+node_modules/
+**/node_modules/
+
+# Env files — never commit secrets (placeholder .env.example is ok if present)
+.env
+.env.*
+!.env.example
+
 # User card folders — ignore all top-level dirs except project core
 # (Any new card folder is automatically protected from accidental git add)
 */
@@ -44,8 +53,12 @@ skills/styles/openings.json
 !skills/
 !skills/engine/
 !skills/engine/*.py
+!skills/sidecar/
+!skills/sidecar/**
 !skills/tests/
 !skills/tests/*.py
 !docs/
 !docs/**/
 !docs/**/*.md
+!package.json
+!package-lock.json
