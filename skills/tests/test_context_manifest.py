@@ -450,3 +450,254 @@ def test_runtime_limits_worldbook_loads_per_call(tmp_path):
         assert str(error) == "worldbook load limit exceeded"
     else:
         raise AssertionError("worldbook load limit must be enforced")
+
+
+# --- Manifest slotization / macros (pi-rp borrowing note §1) ---
+
+
+def test_default_preset_is_byte_identical_to_legacy_inline_behavior():
+    """Regression lock: DEFAULT_PRESET must not silently change payload bytes/hashes."""
+    request = ContextCompileRequest(
+        session_id="session-1",
+        task_id="task-1",
+        base_revision=1,
+        player_input="我走向港口",
+        snapshot=context_snapshot(),
+        policy=ContextPolicy(version="test-v1", token_budget=4000),
+    )
+    compiled = compile_context(request)
+    assert compiled.payload_hash == "1f4239fd3b5a285e6525f0ce9bf6cd24d0fb89981fc62bef928fb7606eb932d7"
+    assert compiled.stable_payload_hash == "79f991ccf7bf98d150ab36e8deeb035b038edd4a2e64db1c095e3c811469e55f"
+    assert compiled.manifest["preset_id"] == "default"
+    assert compiled.manifest["macros_version"] == "macros-v1"
+    # Extra metadata must not leak into the hashed payload shape.
+    assert all("preset" not in item["content"] for item in compiled.payload)
+
+
+def test_custom_preset_selects_slots_in_declared_order():
+    from engine.context_compiler import ManifestSlot, PromptPreset, static_slot, replay_payload
+
+    def resolve_a(request):
+        return "A-content", {"id": "a", "version": "1"}
+
+    def resolve_b(request):
+        return {"value": request.player_input}, {"id": "b", "version": "1"}
+
+    preset = PromptPreset(
+        id="two-slot",
+        version="v1",
+        slots=(
+            ManifestSlot("narrative_policy", "stable", "role", resolve_a),
+            ManifestSlot("player_input", "dynamic", "input", resolve_b),
+            static_slot("nsfw_directive", "stable", "disabled nsfw", "NSFW off", enabled=False),
+        ),
+    )
+    request = ContextCompileRequest(
+        session_id="s",
+        task_id="t",
+        base_revision=0,
+        player_input="hello",
+        snapshot={},
+        policy=ContextPolicy(version="p", token_budget=4000),
+        preset=preset,
+    )
+    first = compile_context(request)
+    second = compile_context(request)
+    assert first.payload == second.payload
+    assert first.payload_hash == second.payload_hash
+    assert first.stable_payload_hash == second.stable_payload_hash
+    assert [s["kind"] for s in first.manifest["sections"]] == ["narrative_policy", "player_input"]
+    assert all(s["source"]["id"] and s["source"]["hash"] for s in first.manifest["sections"])
+    # Only the stable section feeds stable_payload_hash.
+    stable_only = [item for item, section in zip(first.payload, first.manifest["sections"]) if section["stability"] == "stable"]
+    from engine.context_compiler import _hash
+    assert first.stable_payload_hash == _hash(stable_only)
+    assert replay_payload(first.manifest) == first.payload
+    assert first.manifest["preset_id"] == "two-slot"
+
+
+def test_compile_time_macros_expand_before_hash_and_are_deterministic():
+    from engine.context_compiler import ManifestSlot, PromptPreset, MACROS_VERSION
+
+    def resolve_policy(request):
+        return "风格：{{style}}；人称：{{person}}；NSFW：{{nsfw}}；角色：{{charName}}；玩家：{{user}}", {
+            "id": "policy",
+            "version": "macro-src",
+        }
+
+    preset = PromptPreset(
+        id="macro-demo",
+        version="v1",
+        slots=(
+            ManifestSlot(
+                "narrative_policy",
+                "stable",
+                "role baseline",
+                resolve_policy,
+                expand_macros=True,
+            ),
+        ),
+    )
+    snapshot = {
+        "settings": {"style": "北棱特调", "person": "第二人称", "nsfw": "直白", "user": "旅人"},
+        "card_facts": {"name": "格蕾丝"},
+    }
+    request = ContextCompileRequest(
+        session_id="s",
+        task_id="t",
+        base_revision=0,
+        player_input="",
+        snapshot=snapshot,
+        policy=ContextPolicy(version="p", token_budget=4000),
+        preset=preset,
+    )
+    first = compile_context(request)
+    second = compile_context(request)
+    section = first.manifest["sections"][0]
+    assert section["content"] == "风格：北棱特调；人称：第二人称；NSFW：直白；角色：格蕾丝；玩家：旅人"
+    assert "{{" not in section["content"]
+    assert first.payload == second.payload
+    assert first.payload_hash == second.payload_hash
+    assert MACROS_VERSION in section["source"]["version"]
+    assert first.manifest["macros_version"] == MACROS_VERSION
+
+    # Missing settings → empty string, never error, still deterministic.
+    bare = ContextCompileRequest(
+        session_id="s",
+        task_id="t",
+        base_revision=0,
+        player_input="",
+        snapshot={},
+        policy=ContextPolicy(version="p", token_budget=4000),
+        preset=preset,
+    )
+    empty = compile_context(bare)
+    assert empty.manifest["sections"][0]["content"] == "风格：；人称：；NSFW：；角色：；玩家："
+    assert compile_context(bare).payload_hash == empty.payload_hash
+
+    # Two presets differing only by macro template produce different hashes.
+    def resolve_other(_request):
+        return "风格：{{style}}", {"id": "policy", "version": "macro-src"}
+
+    other = PromptPreset(
+        id="macro-other",
+        version="v1",
+        slots=(ManifestSlot("narrative_policy", "stable", "role", resolve_other, expand_macros=True),),
+    )
+    other_req = ContextCompileRequest(
+        session_id="s",
+        task_id="t",
+        base_revision=0,
+        player_input="",
+        snapshot=snapshot,
+        policy=ContextPolicy(version="p", token_budget=4000),
+        preset=other,
+    )
+    assert compile_context(other_req).payload_hash != first.payload_hash
+
+
+def test_modular_directive_knobs_via_compose_preset_without_compiler_changes():
+    """CLAUDE.md 模块化指令: enable/disable/swap NSFW/style at the preset layer."""
+    from engine.context_compiler import (
+        DEFAULT_PRESET,
+        compose_preset,
+        static_slot,
+        replay_payload,
+    )
+
+    full = compose_preset(
+        DEFAULT_PRESET,
+        id="full-directives",
+        version="v1",
+        append_slots=(
+            static_slot(
+                "style_directive",
+                "stable",
+                "style module",
+                "文风：{{style}}",
+                source_id="style_module",
+                expand_macros=True,
+            ),
+            static_slot(
+                "nsfw_directive",
+                "stable",
+                "nsfw module",
+                "NSFW 档位：{{nsfw}}；允许成人描写。",
+                source_id="nsfw_module",
+                expand_macros=True,
+            ),
+            static_slot(
+                "anti_impersonation",
+                "stable",
+                "anti-impersonation module",
+                "防抢话：不替用户角色说话或行动。",
+                source_id="anti_impersonation",
+            ),
+        ),
+    )
+    # Safe variant: swap style text, disable NSFW slot — no compile_context edits.
+    safe = compose_preset(
+        DEFAULT_PRESET,
+        id="safe-directives",
+        version="v1",
+        append_slots=(
+            static_slot(
+                "style_directive",
+                "stable",
+                "style module",
+                "文风：温和叙述（安全变体）",
+                source_id="style_module",
+                source_version="safe",
+            ),
+            static_slot(
+                "nsfw_directive",
+                "stable",
+                "nsfw module",
+                "NSFW 档位：关闭",
+                source_id="nsfw_module",
+                source_version="off",
+                enabled=False,  # declarative disable
+            ),
+            static_slot(
+                "anti_impersonation",
+                "stable",
+                "anti-impersonation module",
+                "防抢话：不替用户角色说话或行动。",
+                source_id="anti_impersonation",
+            ),
+        ),
+    )
+
+    snapshot = {
+        **context_snapshot(),
+        "settings": {"style": "北棱特调", "nsfw": "直白", "wordCount": 600},
+    }
+    policy = ContextPolicy(version="test-v1", token_budget=8000)
+    full_req = ContextCompileRequest(
+        session_id="s", task_id="t-full", base_revision=1, player_input="我走向港口",
+        snapshot=snapshot, policy=policy, preset=full,
+    )
+    safe_req = ContextCompileRequest(
+        session_id="s", task_id="t-safe", base_revision=1, player_input="我走向港口",
+        snapshot=snapshot, policy=policy, preset=safe,
+    )
+    full_c = compile_context(full_req)
+    safe_c = compile_context(safe_req)
+
+    full_kinds = [s["kind"] for s in full_c.manifest["sections"]]
+    safe_kinds = [s["kind"] for s in safe_c.manifest["sections"]]
+    assert "nsfw_directive" in full_kinds
+    assert "nsfw_directive" not in safe_kinds
+    assert "style_directive" in safe_kinds
+    full_text = json.dumps(full_c.payload, ensure_ascii=False)
+    safe_text = json.dumps(safe_c.payload, ensure_ascii=False)
+    assert "允许成人描写" in full_text
+    assert "允许成人描写" not in safe_text
+    assert "温和叙述（安全变体）" in safe_text
+    assert "文风：北棱特调" in full_text
+    # Both deterministic and replayable; same snapshot under two presets → distinct manifests.
+    assert full_c.payload_hash != safe_c.payload_hash
+    assert compile_context(full_req).payload_hash == full_c.payload_hash
+    assert compile_context(safe_req).payload_hash == safe_c.payload_hash
+    assert replay_payload(full_c.manifest) == full_c.payload
+    assert replay_payload(safe_c.manifest) == safe_c.payload
