@@ -865,6 +865,13 @@ def validate_command(cmd: Command, schema: SchemaNode) -> tuple[bool, str]:
     """
     Validate a command against schema. Returns (valid, error_message).
     Currently checks: type compatibility for set commands, path existence.
+
+    This is the lenient live validation path used by the legacy turn pipeline
+    (handler.py). It MUST stay permissive about unknown paths so that cards can
+    introduce new variable keys at runtime (new NPCs, counters, etc.) without
+    being rejected. Stricter commit-time validation lives in
+    :func:`validate_command_strict` — do NOT tighten this function for the new
+    runtime, or you change the live MVU semantics.
     """
     if schema is None or cmd.type not in ("set", "add"):
         return True, ""
@@ -893,11 +900,75 @@ def validate_command(cmd: Command, schema: SchemaNode) -> tuple[bool, str]:
     return True, ""
 
 
+def validate_command_strict(cmd: Command, schema: SchemaNode) -> tuple[bool, str]:
+    """Strict commit-time validation. Used only by the new runtime's commit gate.
+
+    Unlike :func:`validate_command`, this rejects unknown paths and validates
+    more command shapes (set/add/delete/insert/move). It is paired with a schema
+    built via ``generate_schema(data, strict_template=True)`` (non-extensible
+    objects), so a draft cannot silently create or reshape variable structure
+    beyond what the frozen base_revision schema allows. This is deliberately a
+    SEPARATE function so the lenient live MVU semantics are untouched.
+    """
+    if schema is None:
+        return True, ""
+
+    path = path_fix(trim_quotes(cmd.args[0])) if cmd.args else ""
+    if cmd.type in ("set", "add", "delete"):
+        if not path:
+            return True, ""
+        target_schema = _get_schema_for_path(schema, path)
+        if target_schema is None:
+            return False, f"Unknown path '{path}'"
+        if cmd.type == "set":
+            new_value = parse_command_value(cmd.args[-1])
+            if target_schema.type == "number" and not isinstance(new_value, (int, float)):
+                return False, f"Type mismatch at '{path}': expected number, got {type(new_value).__name__}"
+            if target_schema.type == "string" and not isinstance(new_value, str):
+                return False, f"Type mismatch at '{path}': expected string, got {type(new_value).__name__}"
+            if target_schema.type == "boolean" and not isinstance(new_value, bool):
+                return False, f"Type mismatch at '{path}': expected boolean, got {type(new_value).__name__}"
+        if cmd.type == "add" and target_schema.type != "number":
+            return False, f"Cannot add to non-numeric field at '{path}'"
+        return True, ""
+
+    if cmd.type == "insert":
+        if not path:
+            return True, ""
+        container_schema = _get_schema_for_path(schema, path)
+        if container_schema is None:
+            return False, f"Unknown path '{path}'"
+        if container_schema.type not in ("object", "array"):
+            return False, f"Cannot insert into non-collection field at '{path}'"
+        return True, ""
+
+    if cmd.type == "move":
+        if len(cmd.args) < 2:
+            return False, "Move command requires source and destination"
+        from_schema = _get_schema_for_path(schema, path_fix(trim_quotes(cmd.args[0])))
+        if from_schema is None:
+            return False, f"Unknown path '{cmd.args[0]}'"
+        dest_path = path_fix(trim_quotes(cmd.args[1]))
+        if dest_path:
+            parent_parts = to_path(dest_path)[:-1]
+            parent_schema = _get_schema_for_parts(schema, parent_parts)
+            if parent_schema is None:
+                return False, f"Unknown path '{dest_path}'"
+            if parent_schema.type not in ("object", "array"):
+                return False, f"Cannot move into non-collection field at '{dest_path}'"
+        return True, ""
+
+    return True, ""
+
+
 def _get_schema_for_path(schema: SchemaNode, path: str) -> Optional[SchemaNode]:
     """Navigate schema tree following a path."""
     if not path:
         return schema
-    parts = to_path(path)
+    return _get_schema_for_parts(schema, to_path(path))
+
+
+def _get_schema_for_parts(schema: SchemaNode, parts: list) -> Optional[SchemaNode]:
     current = schema
     for p in parts:
         if current.type == "object":

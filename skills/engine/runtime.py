@@ -9,8 +9,9 @@ from pathlib import Path
 import handler
 from engine.context_compiler import CompiledContext, ContextCompileRequest, ContextPolicy, compile_context, replay_payload
 from engine.director import DirectorHandle, NarrativeDirector
-from engine.mvu import execute_commands, extract_commands
+from engine.mvu import execute_commands, extract_commands, generate_schema, validate_command_strict
 from engine.provider import AbortSignal, ProviderAborted, ProviderError
+from engine.quality import DefaultQualityGate, QualityContext, QualityGate, QualityPolicy
 from engine.tools import ToolResult, ToolRegistry, validate_draft_dict
 from engine.worldbook import load_worldbook_entry_from_texts
 
@@ -147,6 +148,9 @@ class SessionTurnRuntime:
         session_id="local",
         manifest_policy=None,
         session_settings=None,
+        quality_gate: QualityGate | None = None,
+        quality_policy: QualityPolicy | None = None,
+        max_commit_validation_retries: int = 3,
     ):
         self.database_path = Path(database_path)
         self.card_folder = Path(card_folder)
@@ -154,6 +158,9 @@ class SessionTurnRuntime:
         self.session_id = session_id
         self.manifest_policy = manifest_policy or ContextPolicy(version="runtime-v1", token_budget=8000)
         self.session_settings = json.loads(self._canonical(session_settings or {}))
+        self.quality_policy = quality_policy or QualityPolicy()
+        self.quality_gate = quality_gate or DefaultQualityGate(self.quality_policy)
+        self.max_commit_validation_retries = max(1, int(max_commit_validation_retries))
         self.projection = LegacyProjectionAdapter(card_folder, projection_root)
         self._lock = threading.RLock()
         self._abort_signals: dict[str, AbortSignal] = {}
@@ -165,10 +172,10 @@ class SessionTurnRuntime:
         with self._lock:
             task = self._create_or_get_task(text, idempotency_key)
             result = self._result(task)
-            if result.status == "succeeded":
-                return result
             if result.commit_id:
                 return self._project(result)
+            if result.status == "succeeded":
+                return result
 
             is_director = isinstance(self.executor, NarrativeDirector)
             signal = None
@@ -463,19 +470,88 @@ class SessionTurnRuntime:
         stale = False
         commit_id = None
         revision = None
+        validation_error = None
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             if self._active_revision(connection) != task["base_revision"]:
                 stale = True
             else:
-                commit_id, revision = self._perform_commit_in_connection(connection, task, draft)
+                validation_error = self._validate_draft_before_commit(connection, task, draft)
+                if validation_error is None:
+                    commit_id, revision = self._perform_commit_in_connection(connection, task, draft)
         if stale:
             with self._connect() as connection:
                 connection.execute("BEGIN IMMEDIATE")
                 connection.execute("UPDATE tasks SET status = ? WHERE id = ?", ("stale_revision", task["id"]))
                 self._event(connection, "task.stale_revision", {"task_id": task["id"]})
             raise RuntimeError("stale revision")
+        if validation_error is not None:
+            raise RuntimeError(validation_error)
         return RuntimeResult(task["id"], commit_id, revision, "projection_pending")
+
+    def _validate_draft_before_commit(self, connection, task, draft):
+        verdict = self.quality_gate.validate(
+            draft,
+            self._quality_context(task),
+        )
+        if not verdict.ok:
+            details = (verdict.metrics or {}) | {"reasons": list(verdict.reasons)}
+            return self._reject_precommit(connection, task, "quality_gate_failed", details=details)
+
+        base_state = self._state_at_revision(task["base_revision"])
+        source = draft.mvu_commands if draft.mvu_commands else draft.content
+        commands = extract_commands(source)
+        if not commands:
+            return None
+        schema = generate_schema(base_state, strict_template=True)
+        for command in commands:
+            ok, reason = validate_command_strict(command, schema)
+            if not ok:
+                return self._reject_precommit(
+                    connection,
+                    task,
+                    "mvu_validation_failed",
+                    details={"reason": reason, "command": command.full_match or repr(command.args)},
+                )
+        try:
+            execute_commands(base_state, commands)
+        except Exception as exc:
+            return self._reject_precommit(
+                connection,
+                task,
+                "mvu_validation_failed",
+                details={"reason": str(exc)},
+            )
+        return None
+
+    def _quality_context(self, task):
+        snapshot = json.loads(task["source_snapshot"]) if task["source_snapshot"] else {}
+        settings = snapshot.get("settings") if isinstance(snapshot, dict) else {}
+        return QualityContext(
+            settings=settings or {},
+            task_id=task["id"],
+            base_revision=task["base_revision"],
+        )
+
+    def _reject_precommit(self, connection, task, code, details=None):
+        row = connection.execute(
+            "SELECT validation_failures, validation_exhausted FROM tasks WHERE id = ?",
+            (task["id"],),
+        ).fetchone()
+        failures = ((row["validation_failures"] if row else 0) or 0) + 1
+        exhausted = failures >= self.max_commit_validation_retries
+        terminal_code = code
+        if exhausted and code == "quality_gate_failed":
+            terminal_code = "quality_exhausted"
+        connection.execute(
+            "UPDATE tasks SET status = ?, validation_failures = ?, validation_exhausted = ? WHERE id = ?",
+            (terminal_code, failures, 1 if exhausted else 0, task["id"]),
+        )
+        payload = {"task_id": task["id"], "attempt": failures}
+        if details:
+            payload.update(details)
+        self._event(connection, f"task.{terminal_code}", payload)
+        return terminal_code
 
     def _perform_commit_in_connection(self, connection, task, draft):
         """Insert commit + state snapshot + advance revision + emit turn.committed.
@@ -517,11 +593,10 @@ class SessionTurnRuntime:
 
         Idempotent: a second call for an already-committed task returns the
         existing commit. Validates ``expected_revision`` against the current
-        active revision (optimistic) before any write. Performs NO projection
-        — projection is applied by the submit loop once the director returns.
-        Any unexpected failure (e.g. an MVU payload the engine cannot apply)
-        surfaces as a stable ``commit_failed`` ToolResult so the director can
-        react instead of crashing the run.
+        active revision (optimistic) before any write and runs quality + MVU
+        validation against the task's frozen ``base_revision`` snapshot.
+        Performs NO projection — projection is applied by the submit loop once
+        the director returns.
         """
         draft = TurnDraft(
             content=draft_dict["content"],
@@ -533,6 +608,10 @@ class SessionTurnRuntime:
         try:
             with self._connect() as connection:
                 connection.execute("BEGIN IMMEDIATE")
+                task_now = connection.execute(
+                    "SELECT status, validation_failures, validation_exhausted FROM tasks WHERE id = ?",
+                    (task["id"],),
+                ).fetchone()
                 existing = connection.execute(
                     "SELECT id, revision FROM commits WHERE task_id = ?", (task["id"],)
                 ).fetchone()
@@ -545,6 +624,8 @@ class SessionTurnRuntime:
                             "reused": True,
                         },
                     )
+                if task_now and task_now["validation_exhausted"]:
+                    return ToolResult(ok=False, error=task_now["status"])
                 active = self._active_revision(connection)
                 if expected_revision != active:
                     connection.execute(
@@ -565,6 +646,9 @@ class SessionTurnRuntime:
                         error="stale_revision",
                         value={"expected": expected_revision, "actual": active},
                     )
+                validation_error = self._validate_draft_before_commit(connection, task, draft)
+                if validation_error is not None:
+                    return ToolResult(ok=False, error=validation_error)
                 commit_id, revision = self._perform_commit_in_connection(connection, task, draft)
         except Exception as exc:
             return ToolResult(ok=False, error="commit_failed", value={"detail": str(exc)})
@@ -863,13 +947,22 @@ class SessionTurnRuntime:
         return [dict(row) for row in rows]
 
     def _project(self, result):
-        if result.status == "succeeded":
+        if result.commit_id is None and result.status == "succeeded":
             return result
         with self._lock:
             with self._connect() as connection:
                 commit = connection.execute("SELECT draft FROM commits WHERE id = ?", (result.commit_id,)).fetchone()
-                checkpoint = connection.execute("SELECT state FROM projection_checkpoints WHERE commit_id = ?", (result.commit_id,)).fetchone()
-                if checkpoint["state"] == "applied":
+                checkpoint = connection.execute(
+                    "SELECT state, applied_marker FROM projection_checkpoints WHERE commit_id = ?",
+                    (result.commit_id,),
+                ).fetchone()
+                if checkpoint["state"] == "applied" or checkpoint["applied_marker"] == result.commit_id:
+                    connection.execute("BEGIN IMMEDIATE")
+                    connection.execute(
+                        "UPDATE projection_checkpoints SET state = ?, applied_marker = ? WHERE commit_id = ?",
+                        ("applied", result.commit_id, result.commit_id),
+                    )
+                    connection.execute("UPDATE tasks SET status = ? WHERE id = ?", ("succeeded", result.task_id))
                     return RuntimeResult(result.task_id, result.commit_id, result.revision, "succeeded")
                 draft = TurnDraft.from_json(commit["draft"])
             try:
@@ -880,7 +973,10 @@ class SessionTurnRuntime:
                 raise
             with self._connect() as connection:
                 connection.execute("BEGIN IMMEDIATE")
-                connection.execute("UPDATE projection_checkpoints SET state = ? WHERE commit_id = ?", ("applied", result.commit_id))
+                connection.execute(
+                    "UPDATE projection_checkpoints SET state = ?, applied_marker = ? WHERE commit_id = ?",
+                    ("applied", result.commit_id, result.commit_id),
+                )
                 connection.execute("UPDATE tasks SET status = ? WHERE id = ?", ("succeeded", result.task_id))
                 self._event(connection, "task.succeeded", {"task_id": result.task_id, "commit_id": result.commit_id})
             return RuntimeResult(result.task_id, result.commit_id, result.revision, "succeeded")
@@ -1009,10 +1105,11 @@ class SessionTurnRuntime:
                 CREATE TABLE IF NOT EXISTS tasks (
                     id TEXT PRIMARY KEY, session_id TEXT NOT NULL, idempotency_key TEXT NOT NULL UNIQUE,
                     text TEXT NOT NULL, status TEXT NOT NULL, commit_id TEXT, revision INTEGER NOT NULL,
-                    base_revision INTEGER, source_snapshot TEXT
+                    base_revision INTEGER, source_snapshot TEXT, validation_failures INTEGER NOT NULL DEFAULT 0,
+                    validation_exhausted INTEGER NOT NULL DEFAULT 0
                 );
                 CREATE TABLE IF NOT EXISTS commits (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, revision INTEGER NOT NULL, task_id TEXT NOT NULL UNIQUE, draft TEXT NOT NULL);
-                CREATE TABLE IF NOT EXISTS projection_checkpoints (commit_id TEXT PRIMARY KEY, state TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS projection_checkpoints (commit_id TEXT PRIMARY KEY, state TEXT NOT NULL, applied_marker TEXT);
                 CREATE TABLE IF NOT EXISTS state_snapshots (session_id TEXT NOT NULL, revision INTEGER NOT NULL, state_json TEXT NOT NULL, PRIMARY KEY (session_id, revision));
                 CREATE TABLE IF NOT EXISTS events (sequence INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, type TEXT NOT NULL, payload TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS context_manifests (
@@ -1039,7 +1136,16 @@ class SessionTurnRuntime:
                 connection.execute("ALTER TABLE tasks ADD COLUMN base_revision INTEGER")
             if "source_snapshot" not in columns:
                 connection.execute("ALTER TABLE tasks ADD COLUMN source_snapshot TEXT")
+            if "validation_failures" not in columns:
+                connection.execute("ALTER TABLE tasks ADD COLUMN validation_failures INTEGER NOT NULL DEFAULT 0")
+            if "validation_exhausted" not in columns:
+                connection.execute("ALTER TABLE tasks ADD COLUMN validation_exhausted INTEGER NOT NULL DEFAULT 0")
+            checkpoint_columns = {row["name"] for row in connection.execute("PRAGMA table_info(projection_checkpoints)")}
+            if "applied_marker" not in checkpoint_columns:
+                connection.execute("ALTER TABLE projection_checkpoints ADD COLUMN applied_marker TEXT")
             connection.execute("UPDATE tasks SET base_revision = MAX(revision - 1, 0) WHERE base_revision IS NULL")
+            connection.execute("UPDATE tasks SET validation_failures = 0 WHERE validation_failures IS NULL")
+            connection.execute("UPDATE tasks SET validation_exhausted = 0 WHERE validation_exhausted IS NULL")
             connection.execute("INSERT OR IGNORE INTO schema_migrations (version) VALUES (2)")
             connection.execute("INSERT OR IGNORE INTO sessions (id, active_revision) VALUES (?, 0)", (self.session_id,))
 

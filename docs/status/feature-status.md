@@ -14,6 +14,7 @@
 | Pi Runtime Spine | Experimental | 单 Session 的命令、任务、revision、唯一提交和兼容投影可通过确定性 executor 端到端验证 | `engine/runtime.py`、Session Turn Runtime Contract、ADR-0004 | 尚未接入 Pi、真实 provider、SSE、恢复或 revision branch |
 | Context Manifest | Experimental | 编译器在执行前冻结 revision-scoped snapshot，持久化可重放 payload、section source/hash、预算决策和 worldbook provenance | `engine/context_compiler.py`、`engine.runtime`、Ticket 02 contract | 当前仅支持线性 revision；旧非零 revision 需先重建 state snapshot；未接 Pi/tool loop、SSE 或 branch lineage |
 | Narrative Director Execution Layer | Experimental | 叙事导演作为单一写作职能 Agent：通过封闭 typed tools 提交结构化回合草稿，流式 preview、abort、provider 错误分类与 telemetry 端到端可验证；Python + FakeProvider 范围 | `engine/director.py`、`engine/tools.py`、`engine/provider.py`、`engine/runtime.py`、Ticket 03 contract、ADR-0005 | 真实 `@earendil-works/pi-agent-core` + `pi-ai`、Node sidecar、真实 DeepSeek E2E、SSE 与 reroll/rollback 均为后续 sub-ticket（re-scope 决策） |
+| Atomic Turn Commit | Experimental | 结构化质量门禁、commit 时严格 MVU/schema 校验、同 task 有界修订、optimistic revision、唯一 commit 与可重试且幂等的兼容投影，保证玩家只看到已提交且一致的正式回合 | `engine/runtime.py`、`engine/quality.py`、`engine/mvu.py`、`skills/tests/test_session_turn_runtime.py`、`skills/tests/test_narrative_director.py`、Ticket 05 contract、ADR-0006 | 仍未覆盖 reroll/rollback 分支语义、崩溃恢复分类、真实浏览器/SSE 与真实 DeepSeek E2E；这些留待 Ticket 06/07 与最终选型门槛 |
 
 ## Working
 

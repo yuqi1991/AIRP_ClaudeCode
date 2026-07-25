@@ -35,6 +35,7 @@ from engine.provider import (
     RealProviderAdapter,
     UsageRecord,
 )
+from engine.quality import QualityPolicy
 from engine.runtime import SessionTurnRuntime
 from engine.tools import ToolRegistry, ToolResult, TOOL_SCHEMAS, validate_draft_dict
 
@@ -208,6 +209,180 @@ def test_director_commit_idempotent_for_same_task(tmp_path):
     # the second commit call returned the reused commit, not a new one
     assert director.last_result.ok is True
     assert director.last_result.value["reused"] is True
+
+
+
+def test_quality_gate_rejection_allows_same_task_retry_then_commits_once(tmp_path):
+    card_folder = tmp_path / "card"
+    card_folder.mkdir()
+    write_card_fixture(card_folder)
+
+    director = ScriptedDirector([
+        ("tool", "commit_turn_draft", {
+            "draft": build_draft(content="<p>短</p>", mvu_commands=""),
+            "expected_revision": 0,
+        }),
+        ("tool", "commit_turn_draft", {
+            "draft": build_draft(
+                content="<p>海风压低浪头，潮水一下一下拍着礁石边的湿沙。</p>",
+                mvu_commands="",
+            ),
+            "expected_revision": 0,
+        }),
+    ])
+    runtime = SessionTurnRuntime(
+        database_path=tmp_path / "runtime.sqlite3",
+        card_folder=card_folder,
+        projection_root=tmp_path / "projection",
+        executor=director,
+        session_settings={"wordCount": 20},
+    )
+
+    result = runtime.submit(text="我走向海边", idempotency_key="submit-1")
+
+    assert result.status == "succeeded"
+    assert result.revision == 1
+    assert director.results[0].ok is False
+    assert director.results[0].error == "quality_gate_failed"
+    assert director.results[1].ok is True
+    assert director.results[1].value["reused"] is False
+    assert runtime.active_revision() == 1
+    assert event_types(runtime).count("turn.committed") == 1
+    log = json.loads((card_folder / "chat_log.json").read_text(encoding="utf-8"))
+    assert len(log) == 1
+    assert "海风压低浪头" in log[0]["ai"]
+
+
+
+def test_quality_retry_exhaustion_fails_without_commit_or_projection(tmp_path):
+    card_folder = tmp_path / "card"
+    card_folder.mkdir()
+    write_card_fixture(card_folder)
+
+    bad_draft = {"draft": build_draft(content="<p>短</p>", mvu_commands=""), "expected_revision": 0}
+    director = ScriptedDirector([
+        ("tool", "commit_turn_draft", bad_draft),
+        ("tool", "commit_turn_draft", bad_draft),
+    ])
+    runtime = SessionTurnRuntime(
+        database_path=tmp_path / "runtime.sqlite3",
+        card_folder=card_folder,
+        projection_root=tmp_path / "projection",
+        executor=director,
+        quality_policy=QualityPolicy(min_chars=8, max_chars=200),
+        max_commit_validation_retries=2,
+    )
+
+    result = runtime.submit(text="我走向海边", idempotency_key="submit-1")
+
+    assert result.status == "quality_exhausted"
+    assert result.commit_id is None
+    assert result.revision == 0
+    assert runtime.active_revision() == 0
+    assert json.loads((card_folder / "chat_log.json").read_text(encoding="utf-8")) == []
+    assert not (tmp_path / "projection" / "content.js").exists()
+    assert director.results[0].error == "quality_gate_failed"
+    assert director.results[1].error == "quality_exhausted"
+    types = event_types(runtime)
+    assert "turn.committed" not in types
+    assert "task.quality_exhausted" in types
+
+
+
+def test_invalid_mvu_schema_path_rejected_until_corrected_commit(tmp_path):
+    card_folder = tmp_path / "card"
+    card_folder.mkdir()
+    write_card_fixture(card_folder)
+
+    director = ScriptedDirector([
+        ("tool", "commit_turn_draft", {
+            "draft": build_draft(
+                content="<p>浪头扑上来，碎沫打湿了鞋尖。</p>",
+                mvu_commands="_.set('世界.不存在字段', '错');",
+            ),
+            "expected_revision": 0,
+        }),
+        ("tool", "commit_turn_draft", {
+            "draft": build_draft(
+                content="<p>浪头扑上来，潮水退回礁石间。</p>",
+                mvu_commands="_.set('世界.时间', '1月1日 10:00');",
+            ),
+            "expected_revision": 0,
+        }),
+    ])
+    runtime = SessionTurnRuntime(
+        database_path=tmp_path / "runtime.sqlite3",
+        card_folder=card_folder,
+        projection_root=tmp_path / "projection",
+        executor=director,
+        quality_policy=QualityPolicy(min_chars=8, max_chars=200),
+    )
+
+    result = runtime.submit(text="我走向海边", idempotency_key="submit-1")
+
+    assert result.status == "succeeded"
+    assert result.revision == 1
+    assert director.results[0].ok is False
+    assert director.results[0].error == "mvu_validation_failed"
+    assert director.results[1].ok is True
+    assert runtime.active_revision() == 1
+    assert event_types(runtime).count("turn.committed") == 1
+    types = event_types(runtime)
+    assert "task.mvu_validation_failed" in types
+    log = json.loads((card_folder / "chat_log.json").read_text(encoding="utf-8"))
+    assert len(log) == 1
+
+
+
+def test_commit_validation_uses_base_revision_snapshot_not_live_projection_files(tmp_path):
+    card_folder = tmp_path / "card"
+    card_folder.mkdir()
+    write_card_fixture(card_folder)
+
+    first_director = ScriptedDirector([
+        ("tool", "commit_turn_draft", {
+            "draft": build_draft(
+                content="<p>第一回合里，风从海面吹过来。</p>",
+                mvu_commands="_.set('世界.时间', '1月1日 10:00');",
+            ),
+            "expected_revision": 0,
+        }),
+    ])
+    runtime = SessionTurnRuntime(
+        database_path=tmp_path / "runtime.sqlite3",
+        card_folder=card_folder,
+        projection_root=tmp_path / "projection",
+        executor=first_director,
+        quality_policy=QualityPolicy(min_chars=8, max_chars=200),
+    )
+    first = runtime.submit(text="第一回合", idempotency_key="submit-1")
+    assert first.status == "succeeded"
+    assert first.revision == 1
+
+    live_log = json.loads((card_folder / "chat_log.json").read_text(encoding="utf-8"))
+    live_log[-1]["variables"]["stat_data"]["世界"]["不存在字段"] = "live-drift"
+    (card_folder / "chat_log.json").write_text(json.dumps(live_log, ensure_ascii=False), encoding="utf-8")
+    (card_folder / "state.js").write_text("window.__TEST_STATE__ = 'live-drift';", encoding="utf-8")
+
+    second_director = ScriptedDirector([
+        ("tool", "commit_turn_draft", {
+            "draft": build_draft(
+                content="<p>第二回合里，风更大了，潮水漫过台阶。</p>",
+                mvu_commands="_.set('世界.不存在字段', '仍然非法');",
+            ),
+            "expected_revision": 1,
+        }),
+    ])
+    runtime.executor = second_director
+
+    second = runtime.submit(text="第二回合", idempotency_key="submit-2")
+
+    assert second.status == "mvu_validation_failed"
+    assert second.commit_id is None
+    assert runtime.active_revision() == 1
+    assert second_director.results[0].ok is False
+    assert second_director.results[0].error == "mvu_validation_failed"
+    assert event_types(runtime).count("turn.committed") == 1
 
 
 # ════════════════════════════════════════════════════════════════════
