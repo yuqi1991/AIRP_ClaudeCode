@@ -34,7 +34,7 @@ from runtime_server import SessionRuntimeServer  # noqa: E402
 
 def write_card_fixture(card_folder):
     (card_folder / ".initvar.json").write_text(
-        json.dumps({"世界": {"时间": "1月1日 09:00"}}, ensure_ascii=False),
+        json.dumps({"世界": {"时间": "1月1日 09:00", "地点": "港口"}}, ensure_ascii=False),
         encoding="utf-8",
     )
     (card_folder / "chat_log.json").write_text("[]", encoding="utf-8")
@@ -604,3 +604,48 @@ def test_http_reroll_streams_commit_for_same_input(tmp_path):
         assert log[0]["user"] == "输入A"
         assert "助手A2" in log[0]["ai"]
         assert "助手A1" not in log[0]["ai"]
+
+def test_state_projection_tracks_active_head_after_rollback_and_rebranch(tmp_path):
+    drafts = [
+        TurnDraft(
+            content="<p>港口起了雾。</p>",
+            summary="到达港口",
+            options='<font color="#5a7a5a">继续前进</font>',
+            mvu_commands="_.set('世界.时间', '1月1日 10:00');\n_.set('世界.地点', '港口');",
+        ),
+        TurnDraft(
+            content="<p>酒馆门帘晃了晃。</p>",
+            summary="进入酒馆",
+            options='<font color="#5a7a5a">点一杯酒</font>',
+            mvu_commands="_.set('世界.时间', '1月1日 11:00');\n_.set('世界.地点', '酒馆');",
+        ),
+        TurnDraft(
+            content="<p>甲板被浪花打湿。</p>",
+            summary="回到船上",
+            options='<font color="#5a7a5a">扶住栏杆</font>',
+            mvu_commands="_.set('世界.时间', '1月1日 12:00');\n_.set('世界.地点', '甲板');",
+        ),
+    ]
+    runtime, card_folder, projection_root, _ = make_runtime(tmp_path, drafts=drafts)
+
+    runtime.submit(text="输入A", idempotency_key="s1")
+    runtime.submit(text="输入B", idempotency_key="s2")
+    state_before = (projection_root / "state.js").read_text(encoding="utf-8")
+    assert state_before.startswith("window.STATE")
+    assert 'time: "1月1日 11:00"' in state_before
+    assert 'location: "酒馆"' in state_before
+
+    runtime.rollback(revision=1, idempotency_key="rb-1")
+    rolled_state = (projection_root / "state.js").read_text(encoding="utf-8")
+    assert rolled_state.startswith("window.STATE")
+    assert 'time: "1月1日 10:00"' in rolled_state
+    assert 'location: "港口"' in rolled_state
+    assert "酒馆" not in rolled_state
+
+    runtime.submit(text="输入C", idempotency_key="s3")
+    branched_state = (projection_root / "state.js").read_text(encoding="utf-8")
+    assert branched_state.startswith("window.STATE")
+    assert 'time: "1月1日 12:00"' in branched_state
+    assert 'location: "甲板"' in branched_state
+    log = json.loads((card_folder / "chat_log.json").read_text(encoding="utf-8"))
+    assert [turn["user"] for turn in log] == ["输入A", "输入C"]

@@ -1082,14 +1082,17 @@ def run_import(card_dir, root_dir):
     openings = extract_openings(card_data)
     result["openings_count"] = len(openings)
     openings_path = os.path.join(styles_dir, "openings.json")
-    with open(openings_path, "w", encoding="utf-8") as f:
-        json.dump(openings, f, ensure_ascii=False, indent=2)
+    memory_dir = os.path.join(card_dir, "memory")
+    os.makedirs(memory_dir, exist_ok=True)
+    card_openings_path = os.path.join(memory_dir, "openings.json")
+    for path in (openings_path, card_openings_path):
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(openings, f, ensure_ascii=False, indent=2)
 
     # 7. 处理世界书条目 → memory/
     entries = card_data.get("data", {}).get("character_book", {}).get("entries", [])
     if isinstance(entries, list) and entries:
         result["worldbook_entries_total"] = len(entries)
-        memory_dir = os.path.join(card_dir, "memory")
         mem_stats = init_memory_entries(entries, memory_dir)
         result["memory"] = mem_stats
 
@@ -1212,16 +1215,16 @@ def run_import(card_dir, root_dir):
         if openings and merged_initvar:
             import copy as _copy
             per_greeting = _extract_per_greeting_initvar(card_data)
-            openings_path = os.path.join(styles_dir, "openings.json")
-            with open(openings_path, "r", encoding="utf-8") as f:
+            with open(card_openings_path, "r", encoding="utf-8") as f:
                 _openings_data = json.load(f)
             for _i, _o in enumerate(_openings_data):
                 _ov = _copy.deepcopy(merged_initvar)
                 if _i < len(per_greeting) and per_greeting[_i]:
                     _deep_merge(_ov, per_greeting[_i])
                 _o["variables"] = _ov
-            with open(openings_path, "w", encoding="utf-8") as f:
-                json.dump(_openings_data, f, ensure_ascii=False, indent=2)
+            for path in (openings_path, card_openings_path):
+                with open(path, "w", encoding="utf-8") as f:
+                    json.dump(_openings_data, f, ensure_ascii=False, indent=2)
             result["openings_variables_added"] = True
 
         # 7.3 Beautify: 提取 [beautify] 美化数据 → .beautify.json

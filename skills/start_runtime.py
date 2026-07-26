@@ -207,11 +207,8 @@ def main() -> None:
     # DeepSeek-v4-flash has ample context. Budget fits recent_memory first.
     manifest_policy = ContextPolicy(version="runtime-v1", token_budget=32000)
     if mock:
-        from engine.director import ScriptedDirector
-        from engine.runtime import SessionTurnRuntime
-        opening_text = ("<content><p>清晨的薄雾漫过港口，远处的船笛低沉地响起。</p></content>\n"
-                        "<summary>玩家抵达港口</summary>\n<options><font color=\"#5a7a5a\">观察四周</font></options>")
-        executor = ScriptedDirector([("final", opening_text)])
+        from engine.runtime import MultiTurnFakeExecutor, SessionTurnRuntime
+        executor = MultiTurnFakeExecutor()
         runtime = SessionTurnRuntime(
             database_path=card_folder / ".runtime.sqlite3",
             card_folder=str(card_folder), projection_root=styles,
@@ -250,23 +247,11 @@ def main() -> None:
             turns = []
     if not turns:
         origin = _deliver_opening(card_folder, styles, runtime, mock=mock)
+        runtime.capture_opening_from_chat_log()
+        runtime.resume_projection()
         print(f"[start_runtime] 开场已交付（来源: {origin}）", file=sys.stderr)
     else:
-        # Existing save: rebuild the projection so content.js/state.js reflect it
-        # (import_prepare writes placeholders; a returning player must see their save).
-        import handler
-        handler.write_content_js(str(card_folder), projection_root=styles)
-        try:
-            from engine.card import write_state, read_state
-            # read_state reads styles/state.js by default; rebuild from chat_log vars.
-            last_stat = handler.compute_current_variables(turns) if hasattr(handler, "compute_current_variables") else {}
-            if last_stat:
-                write_state({"world": "", "stage": "", "time": "", "location": "",
-                             "env": "", "quest": "", "generatedCount": len(turns),
-                             "totalTokens": 0, "actions": [], "npcs": {}},
-                            card_folder=str(card_folder), projection_root=styles)
-        except Exception:
-            pass
+        runtime.resume_projection()
         print(f"[start_runtime] 已有存档（{len(turns)} 回合），projection 已重建", file=sys.stderr)
 
     # 6. Start unified server on :8765

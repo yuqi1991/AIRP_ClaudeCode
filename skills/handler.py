@@ -531,17 +531,32 @@ def bridge_done():
 OPENINGS_FILE = STYLES / "openings.json"
 
 
-def list_openings():
-    """Return list of available openings."""
-    if OPENINGS_FILE.exists():
-        with open(OPENINGS_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
+def _opening_files(card_folder=None):
+    paths = []
+    if card_folder:
+        base = Path(card_folder)
+        paths.extend([base / "memory" / "openings.json", base / "openings.json"])
+    paths.append(OPENINGS_FILE)
+    return paths
+
+
+def list_openings(card_folder=None):
+    """Return card-local openings before the shared compatibility copy."""
+    for path in _opening_files(card_folder):
+        if path.exists():
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if isinstance(data, list):
+                    return data
+            except Exception:
+                continue
     return []
 
 
 def switch_opening(card_folder, opening_id):
     """Replace the current opening (index 0) with a different one."""
-    openings = list_openings()
+    openings = list_openings(card_folder)
     target = None
     for o in openings:
         if o["id"] == opening_id:

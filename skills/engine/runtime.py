@@ -1,3 +1,4 @@
+import copy
 import hashlib
 import json
 import sqlite3
@@ -99,6 +100,25 @@ class FakeNarrativeExecutor:
 
     def run(self, text, compiled_context=None):
         return self._draft
+
+
+class MultiTurnFakeExecutor:
+    """Reusable deterministic fake executor for mock/runtime smoke flows."""
+
+    def __init__(self):
+        self._turn = 0
+
+    def run(self, text, compiled_context=None):
+        self._turn += 1
+        hour = min(23, 9 + self._turn)
+        polished = (text or '').strip() or f'玩家行动 {self._turn}'
+        return TurnDraft(
+            polished_input=polished,
+            content=f'<p>Mock 回合 {self._turn}：{polished}</p>',
+            summary=f'Mock 回合 {self._turn}',
+            options='<font color="#5a7a5a">继续行动</font>',
+            mvu_commands=f"_.set('世界.时间', '1月1日 {hour:02d}:00');",
+        )
 
 
 class LegacyProjectionAdapter:
@@ -1564,31 +1584,394 @@ class SessionTurnRuntime:
         manifest["payload"] = json.loads(row["payload_json"])
         return manifest
 
+    def capture_opening_from_chat_log(self):
+        log = self._read_json(self.card_folder / "chat_log.json", [])
+        opening = None
+        if isinstance(log, list) and log:
+            candidate = log[0]
+            if isinstance(candidate, dict) and not candidate.get("user"):
+                opening = copy.deepcopy(candidate)
+                opening["index"] = 0
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute(
+                "UPDATE sessions SET opening_turn_json = ? WHERE id = ?",
+                (self._canonical(opening) if opening is not None else None, self.session_id),
+            )
+        return opening is not None
+
+    def visible_turns(self, head_revision=None):
+        head = self.active_revision() if head_revision is None else head_revision
+        visible = []
+        if self._opening_entry() is not None:
+            visible.append({"visible_index": 0, "revision": 0, "is_opening": True})
+        for item in self._lineage_commits(head):
+            visible.append({
+                "visible_index": len(visible),
+                "revision": item["revision"],
+                "is_opening": False,
+            })
+        return visible
+
+    def resume_projection(self):
+        self.capture_opening_from_chat_log()
+        self._rebuild_active_projections(self.active_revision())
+
     def _rebuild_active_projections(self, head_revision):
-        """Rewrite chat_log / content.js / state.js to match the active lineage only.
+        """Rewrite compatibility files from opening + active lineage + head state."""
+        from engine.card import write_chat_log, write_state
 
-        Superseded branch commits stay in SQLite for audit; compatibility files
-        reflect only the parent chain ending at ``head_revision``. Rebuild is
-        clear-then-replay through the existing LegacyProjectionAdapter so
-        Ticket 03/05 projection failure + idempotency contracts stay intact.
-        """
-        from engine.card import write_chat_log, read_state, write_state
-        import re as _re
-
-        lineage = self._lineage_commits(head_revision)
-        # Reset compatibility surfaces, then replay active lineage in order.
-        write_chat_log(self.card_folder, [])
-        state_raw = read_state(projection_root=self.projection.projection_root)
-        state_raw = _re.sub(r"(\s+generatedCount:\s*)\d+", r"\g<1>0", state_raw)
-        # Only write the zeroed state when we have a projection root that can
-        # accept files; a deliberately-broken root (file-not-dir) must still
-        # raise from projection.apply below so pending-commit tests stay valid.
+        projection_log = self._projection_log(head_revision)
+        state_js = self._state_js_for_projection(projection_log, head_revision)
+        backups = self.projection._backup()
         try:
-            write_state(state_raw, self.card_folder, projection_root=self.projection.projection_root)
-        except OSError:
-            pass
-        for item in lineage:
-            self.projection.apply(item["text"], item["draft"], tokens=item.get("tokens"))
+            write_chat_log(self.card_folder, [])
+            for item in self._lineage_commits(head_revision):
+                self.projection.apply(item["text"], item["draft"], tokens=item.get("tokens"))
+            if self._opening_entry() is not None:
+                write_chat_log(self.card_folder, projection_log)
+                handler.write_content_js(self.card_folder, projection_root=self.projection.projection_root)
+            write_state(state_js, self.card_folder, projection_root=self.projection.projection_root)
+        except Exception:
+            self.projection._restore(backups)
+            raise
+
+    def _projection_log(self, head_revision):
+        log = []
+        opening = self._opening_entry()
+        previous_state = None
+        if opening is not None:
+            opening_entry = copy.deepcopy(opening)
+            opening_entry["index"] = 0
+            log.append(opening_entry)
+            previous_state = ((opening_entry.get("variables") or {}).get("stat_data") or None)
+        if previous_state is None:
+            previous_state = self._read_json(self.card_folder / ".initvar.json", {})
+        for item in self._lineage_commits(head_revision):
+            entry, previous_state = self._projection_entry_for_commit(item, len(log), previous_state)
+            log.append(entry)
+        return log
+
+    def _projection_entry_for_commit(self, item, index, previous_state):
+        state = self._state_at_revision(item["revision"])
+        draft = item["draft"]
+        entry = {
+            "index": index,
+            "user": draft.polished_input or item.get("text") or "",
+            "ai": self._compose_ai_text(draft),
+            "summary": draft.summary or "",
+            "variables": {
+                "stat_data": state,
+                "delta": self._state_delta(previous_state or {}, state),
+            },
+        }
+        if item.get("tokens"):
+            entry["tokens"] = item["tokens"]
+        return entry, state
+
+    @staticmethod
+    def _compose_ai_text(draft):
+        ai_text = draft.content or ""
+        if draft.summary:
+            ai_text += "\n\n<summary>" + draft.summary + "</summary>"
+        if draft.options:
+            ai_text += "\n\n<options>\n" + draft.options + "\n</options>"
+        return ai_text
+
+    @staticmethod
+    def _state_delta(before, after):
+        delta = {}
+        keys = set(before.keys()) | set(after.keys())
+        for key in keys:
+            b = before.get(key)
+            a = after.get(key)
+            if isinstance(b, dict) and isinstance(a, dict):
+                nested = SessionTurnRuntime._state_delta(b, a)
+                if nested:
+                    delta[key] = nested
+            elif b != a:
+                delta[key] = a
+        return delta
+
+    def _state_js_for_projection(self, projection_log, head_revision):
+        state = self._projection_root_state(head_revision, projection_log)
+        total_tokens = sum(((turn.get("tokens") or {}).get("total") or 0) for turn in projection_log)
+        payload = {
+            "world": self._projection_field(state, (("世界", "世界名"), ("世界", "名称"))) or self._projection_field(self._read_json(self.card_folder / ".card_data.json", {}), (("name",), ("data", "name"))) or "",
+            "stage": self._projection_field(state, (("剧情", "阶段"), ("玩家", "当前阶段"), ("stage",))) or "开局",
+            "time": self._projection_field(state, (("世界", "时间"), ("time",))) or "",
+            "location": self._projection_field(state, (("世界", "地点"), ("玩家", "现处地点"), ("location",))) or "",
+            "env": self._projection_field(state, (("世界", "环境"), ("世界", "天气"), ("env",))) or "",
+            "quest": self._projection_field(state, (("世界", "任务"), ("世界", "当前任务"), ("quest",))) or "",
+            "generatedCount": len(projection_log),
+            "totalTokens": int(total_tokens),
+            "actions": [],
+            "player": self._projection_field(state, (("玩家", "姓名"), ("player", "name"))) or "",
+            "hp": self._projection_field(state, (("玩家", "HP"), ("player", "hp"))) or 0,
+            "hpMax": self._projection_field(state, (("玩家", "HP上限"), ("player", "hpMax"))) or 0,
+            "mp": self._projection_field(state, (("玩家", "MP"), ("player", "mp"))) or 0,
+            "mpMax": self._projection_field(state, (("玩家", "MP上限"), ("player", "mpMax"))) or 0,
+            "exp": self._projection_field(state, (("玩家", "EXP"), ("player", "exp"))) or 0,
+            "expMax": self._projection_field(state, (("玩家", "EXP上限"), ("player", "expMax"))) or 0,
+            "ed": bool(self._projection_field(state, (("玩家", "ed"), ("player", "ed"))) or False),
+            "npcs": self._projection_npcs(state),
+        }
+        lines = ["window.STATE = {"]
+        for key, value in payload.items():
+            lines.append(f"  {key}: {json.dumps(value, ensure_ascii=False)},")
+        lines.append("};")
+        return "\n".join(lines) + "\n"
+
+    def _projection_root_state(self, head_revision, projection_log):
+        if head_revision and head_revision > 0:
+            return self._state_at_revision(head_revision)
+        if projection_log:
+            opening_state = ((projection_log[0].get("variables") or {}).get("stat_data") or None)
+            if opening_state is not None:
+                return opening_state
+        return self._read_json(self.card_folder / ".initvar.json", {})
+
+    @staticmethod
+    def _projection_field(state, path_options):
+        for path in path_options:
+            node = state
+            ok = True
+            for part in path:
+                if not isinstance(node, dict) or part not in node:
+                    ok = False
+                    break
+                node = node[part]
+            if ok and node not in (None, ""):
+                return node
+        return None
+
+    @staticmethod
+    def _projection_npcs(state):
+        if not isinstance(state, dict):
+            return []
+        out = []
+        for key, value in state.items():
+            if key.startswith("_") or key in {"世界", "玩家", "player", "world"}:
+                continue
+            if isinstance(value, dict):
+                out.append({
+                    "name": key,
+                    "status": value.get("当前状况") or value.get("现状") or value.get("status") or "",
+                })
+        return out
+
+    def _opening_entry(self):
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT opening_turn_json FROM sessions WHERE id = ?",
+                (self.session_id,),
+            ).fetchone()
+        if not row or not row["opening_turn_json"]:
+            return None
+        try:
+            data = json.loads(row["opening_turn_json"])
+        except json.JSONDecodeError:
+            return None
+        return data if isinstance(data, dict) else None
+
+    def _bootstrap_legacy_history_if_needed(self):
+        legacy_log = self._read_json(self.card_folder / "chat_log.json", [])
+        if not isinstance(legacy_log, list):
+            legacy_log = []
+        imported = False
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            opening_captured = self._capture_opening_if_missing_in_connection(connection, legacy_log)
+            commit_count = connection.execute(
+                "SELECT COUNT(*) AS count FROM commits WHERE session_id = ?",
+                (self.session_id,),
+            ).fetchone()["count"]
+            task_count = connection.execute(
+                "SELECT COUNT(*) AS count FROM tasks WHERE session_id = ?",
+                (self.session_id,),
+            ).fetchone()["count"]
+            if commit_count == 0 and task_count == 0 and legacy_log:
+                active_revision, imported_count = self._import_legacy_turns_in_connection(connection, legacy_log)
+                connection.execute(
+                    "UPDATE sessions SET active_revision = ? WHERE id = ?",
+                    (active_revision, self.session_id),
+                )
+                if imported_count or opening_captured:
+                    self._event(
+                        connection,
+                        "session.legacy_bootstrapped",
+                        {"imported_revisions": imported_count, "active_revision": active_revision},
+                    )
+                    imported = True
+        if imported:
+            self._rebuild_active_projections(self.active_revision())
+
+    def _capture_opening_if_missing_in_connection(self, connection, legacy_log):
+        if not legacy_log:
+            return False
+        current = connection.execute(
+            "SELECT opening_turn_json FROM sessions WHERE id = ?",
+            (self.session_id,),
+        ).fetchone()
+        if current and current["opening_turn_json"]:
+            return False
+        opening = legacy_log[0]
+        if not isinstance(opening, dict) or opening.get("user"):
+            return False
+        opening_copy = copy.deepcopy(opening)
+        opening_copy["index"] = 0
+        connection.execute(
+            "UPDATE sessions SET opening_turn_json = ? WHERE id = ?",
+            (self._canonical(opening_copy), self.session_id),
+        )
+        return True
+
+    def _import_legacy_turns_in_connection(self, connection, legacy_log):
+        imported_turns = []
+        previous_state = self._read_json(self.card_folder / ".initvar.json", {})
+        previous_revision = 0
+        imported_count = 0
+        max_revision = 0
+        if legacy_log and isinstance(legacy_log[0], dict) and not legacy_log[0].get("user"):
+            opening_state = ((legacy_log[0].get("variables") or {}).get("stat_data") or None)
+            if isinstance(opening_state, dict) and opening_state:
+                previous_state = copy.deepcopy(opening_state)
+        for turn in legacy_log:
+            if not isinstance(turn, dict) or not (turn.get("user") or "").strip():
+                continue
+            draft = parse_turn_text(turn.get("ai", ""), fallback_input=turn.get("user", ""))
+            if not draft.summary and turn.get("summary"):
+                draft = TurnDraft(
+                    content=draft.content,
+                    summary=turn.get("summary", ""),
+                    options=draft.options,
+                    polished_input=draft.polished_input,
+                    mvu_commands=draft.mvu_commands,
+                )
+            state = ((turn.get("variables") or {}).get("stat_data") or None)
+            if not isinstance(state, dict) or not state:
+                state = self._projected_state_from_base(copy.deepcopy(previous_state), draft)
+            task_id = self._id()
+            commit_id = self._id()
+            imported_count += 1
+            revision = imported_count
+            max_revision = revision
+            source_snapshot = self._legacy_source_snapshot(previous_state, imported_turns)
+            connection.execute(
+                "INSERT INTO tasks (id, session_id, idempotency_key, text, status, commit_id, revision, base_revision, source_snapshot, validation_failures, validation_exhausted) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0)",
+                (
+                    task_id,
+                    self.session_id,
+                    f'legacy-import-{revision}-{task_id[:8]}',
+                    turn.get("user", ""),
+                    "succeeded",
+                    commit_id,
+                    revision,
+                    previous_revision,
+                    self._canonical(source_snapshot),
+                ),
+            )
+            connection.execute(
+                "INSERT INTO commits (id, session_id, revision, task_id, draft, parent_revision) VALUES (?, ?, ?, ?, ?, ?)",
+                (commit_id, self.session_id, revision, task_id, draft.to_json(), previous_revision),
+            )
+            connection.execute(
+                "INSERT INTO projection_checkpoints (commit_id, state, applied_marker) VALUES (?, ?, ?)",
+                (commit_id, "applied", commit_id),
+            )
+            connection.execute(
+                "INSERT INTO state_snapshots (session_id, revision, state_json) VALUES (?, ?, ?)",
+                (self.session_id, revision, self._canonical(state)),
+            )
+            tokens = turn.get("tokens") or {}
+            prompt_tokens = int(tokens.get("in") or 0)
+            completion_tokens = int(tokens.get("out") or 0)
+            total_tokens = int(tokens.get("total") or tokens.get("round_total") or tokens.get("startup_total") or (prompt_tokens + completion_tokens))
+            if total_tokens or prompt_tokens or completion_tokens:
+                connection.execute(
+                    "INSERT INTO model_calls (id, session_id, task_id, call_ordinal, manifest_id, model, prompt_tokens, completion_tokens, total_tokens, stop_reason, latency_ms, cost_amount, cost_currency, cost_rate_version) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        self._id(),
+                        self.session_id,
+                        task_id,
+                        1,
+                        None,
+                        "legacy-import",
+                        prompt_tokens,
+                        completion_tokens,
+                        total_tokens,
+                        "legacy_import",
+                        0,
+                        0.0,
+                        "USD",
+                        "legacy-import",
+                    ),
+                )
+            imported_turns.append({"revision": revision, "user": turn.get("user", ""), "assistant": draft.content})
+            if len(imported_turns) > 3:
+                imported_turns = imported_turns[-3:]
+            previous_state = copy.deepcopy(state)
+            previous_revision = revision
+        return max_revision, imported_count
+
+    def _legacy_source_snapshot(self, current_state, recent_turns):
+        memory = self.card_folder / "memory"
+        initvar_path = self.card_folder / ".initvar.json"
+        card_data_path = self.card_folder / ".card_data.json"
+        catalog_path = memory / ".worldbook_index.json"
+        reference_path = memory / "reference.md"
+        user_path = memory / "user.md"
+        structure_path = memory / ".card_structure.json"
+        project_path = memory / "project.md"
+        initvar = self._read_json(initvar_path, {})
+        return {
+            "card_facts": self._read_json(card_data_path, {}),
+            "settings": self.session_settings,
+            "worldbook_catalog": self._read_json(catalog_path, []),
+            "worldbook_reference": self._read_text(reference_path),
+            "worldbook_user": self._read_text(user_path),
+            "card_structure": self._read_json(structure_path, {}),
+            "initvar": initvar,
+            "current_state": current_state,
+            "recent_memory": self._recent_memory(project_path),
+            "recent_turns": list(recent_turns),
+            "sources": {
+                "card_facts": self._file_source(card_data_path),
+                "settings": {"id": "session_settings", "version": self._hash_bytes(self._canonical(self.session_settings).encode("utf-8"))},
+                "worldbook_catalog": self._file_source(catalog_path),
+                "card_structure": self._file_source(structure_path),
+                "initvar": self._file_source(initvar_path),
+                "current_state": {"id": "runtime_state", "version": "legacy"},
+                "recent_memory": self._file_source(project_path),
+                "recent_turns": {"id": "legacy_lineage", "version": str(len(recent_turns))},
+            },
+        }
+
+    def _recover_startup_state(self):
+        pending = []
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            rows = connection.execute(
+                "SELECT id, commit_id, revision, status FROM tasks WHERE session_id = ? AND status IN ('projection_pending', 'running', 'queued')",
+                (self.session_id,),
+            ).fetchall()
+            for row in rows:
+                if row["status"] == "projection_pending" and row["commit_id"]:
+                    pending.append(RuntimeResult(row["id"], row["commit_id"], row["revision"], "projection_pending"))
+                elif row["status"] in ("running", "queued") and not row["commit_id"]:
+                    recovered_status = f'abandoned_{row["status"]}'
+                    connection.execute(
+                        "UPDATE tasks SET status = ? WHERE id = ?",
+                        (recovered_status, row["id"]),
+                    )
+                    self._event(connection, recovered_status, {"task_id": row["id"], "recovered_on_startup": True})
+        for result in pending:
+            try:
+                self._project(result)
+            except Exception:
+                pass
 
     def _lineage_commits(self, head_revision):
         """Full parent-chain walk from head (oldest→newest), no limit.
@@ -1687,6 +2070,9 @@ class SessionTurnRuntime:
                 connection.execute(
                     "ALTER TABLE commits ADD COLUMN parent_revision INTEGER NOT NULL DEFAULT 0"
                 )
+            session_columns = {row["name"] for row in connection.execute("PRAGMA table_info(sessions)")}
+            if "opening_turn_json" not in session_columns:
+                connection.execute("ALTER TABLE sessions ADD COLUMN opening_turn_json TEXT")
             # Backfill linear history: parent = revision - 1 (rev 1 → 0).
             # Only fill rows still at the DEFAULT 0 that are not the first commit.
             # For a pure linear DB this is correct; branched DBs already set parents.
@@ -1707,6 +2093,8 @@ class SessionTurnRuntime:
             connection.execute("INSERT OR IGNORE INTO schema_migrations (version) VALUES (2)")
             connection.execute("INSERT OR IGNORE INTO schema_migrations (version) VALUES (3)")
             connection.execute("INSERT OR IGNORE INTO sessions (id, active_revision) VALUES (?, 0)", (self.session_id,))
+        self._bootstrap_legacy_history_if_needed()
+        self._recover_startup_state()
 
     def _connect(self):
         connection = sqlite3.connect(self.database_path, timeout=30)

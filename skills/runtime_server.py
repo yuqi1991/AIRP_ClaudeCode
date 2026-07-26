@@ -57,6 +57,7 @@ Thread model
 from __future__ import annotations
 
 import json
+import re
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -70,6 +71,8 @@ from engine.runtime import RuntimeEvent, SessionTurnRuntime
 SSE_HEARTBEAT_SECONDS = 15.0
 SSE_POLL_INTERVAL_SECONDS = 0.05
 SUBMIT_ACCEPT_WAIT_SECONDS = 2.0
+RUNNING_TASK_STATUSES = frozenset({"queued", "running", "projection_pending"})
+CONFIG_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
 
 
 def _event_to_dict(event: RuntimeEvent) -> dict:
@@ -103,6 +106,8 @@ class SessionRuntimeServer:
         heartbeat_seconds: float = SSE_HEARTBEAT_SECONDS,
         poll_interval_seconds: float = SSE_POLL_INTERVAL_SECONDS,
         static_root: str | None = None,
+        preset_root: str | None = None,
+        graph_root: str | None = None,
     ):
         self.runtime = runtime
         self.service = command_service or SessionCommandService(runtime)
@@ -112,7 +117,10 @@ class SessionRuntimeServer:
         self.poll_interval_seconds = poll_interval_seconds
         # Frontend compat: serve static files (index.html/content.js/state.js/...)
         # from styles dir, and adapt the legacy /api/* calls onto the runtime.
-        self.static_root = Path(static_root) if static_root else None
+        self.static_root = Path(static_root).resolve() if static_root else None
+        repo_root = Path(__file__).resolve().parents[1]
+        self.preset_root = Path(preset_root).resolve() if preset_root else ((self.static_root / "presets").resolve() if self.static_root else None)
+        self.graph_root = Path(graph_root).resolve() if graph_root else (repo_root / "graphs").resolve()
         self._httpd: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
         self._submit_threads: list[threading.Thread] = []
@@ -262,6 +270,54 @@ class SessionRuntimeServer:
                 payload["ok"] = False
             return payload
 
+    def _snapshot_payload(self) -> dict[str, Any]:
+        snap = self.service.snapshot()
+        data = snap.to_dict()
+        current_task = data.get("current_task")
+        status = current_task.get("status") if isinstance(current_task, dict) else "idle"
+        pending = status in RUNNING_TASK_STATUSES
+        data["status"] = status
+        data["pending"] = pending
+        return data
+
+    def _session_status_payload(self) -> dict[str, Any]:
+        snapshot = self._snapshot_payload()
+        return {
+            "initialized": True,
+            "pending": snapshot["pending"],
+            "status": snapshot["status"],
+            "task_id": (snapshot.get("current_task") or {}).get("task_id"),
+            "snapshot": snapshot,
+        }
+
+    def _runtime_selection(self) -> dict[str, str | None]:
+        settings = self._read_settings()
+        runtime_cfg = settings.get("runtime") if isinstance(settings, dict) else {}
+        if not isinstance(runtime_cfg, dict):
+            runtime_cfg = {}
+        return {
+            "preset_id": runtime_cfg.get("preset_id"),
+            "graph_id": runtime_cfg.get("graph_id"),
+        }
+
+    def _config_collection_payload(self, kind: str) -> dict[str, Any]:
+        selection = self._runtime_selection()
+        selected_key = "preset_id" if kind == "preset" else "graph_id"
+        return {
+            "ok": True,
+            "kind": kind,
+            "selected_id": selection.get(selected_key),
+            "items": self._list_json_configs(kind),
+        }
+
+    def _runtime_config_payload(self) -> dict[str, Any]:
+        return {
+            "ok": True,
+            "selected": self._runtime_selection(),
+            "presets": self._list_json_configs("preset"),
+            "graphs": self._list_json_configs("graph"),
+        }
+
     # ── HTTP handler factory ───────────────────────────────────────────
 
     def _make_handler(self):
@@ -272,6 +328,11 @@ class SessionRuntimeServer:
 
             def log_message(self, fmt, *args):  # noqa: A003 — silence default stderr logs
                 return
+
+            def _send_cors_headers(self) -> None:
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.send_header("Access-Control-Allow-Methods", "GET, POST, PUT, OPTIONS")
+                self.send_header("Access-Control-Allow-Headers", "Content-Type")
 
             def _read_json(self) -> dict:
                 length = int(self.headers.get("Content-Length") or 0)
@@ -290,10 +351,17 @@ class SessionRuntimeServer:
                 payload = json.dumps(body, ensure_ascii=False).encode("utf-8")
                 self.send_response(status)
                 self.send_header("Content-Type", "application/json; charset=utf-8")
+                self._send_cors_headers()
                 self.send_header("Content-Length", str(len(payload)))
                 self.send_header("Cache-Control", "no-store")
                 self.end_headers()
                 self.wfile.write(payload)
+
+            def do_OPTIONS(self):  # noqa: N802
+                self.send_response(200)
+                self._send_cors_headers()
+                self.send_header("Content-Length", "0")
+                self.end_headers()
 
             def do_GET(self):  # noqa: N802
                 parsed = urlparse(self.path)
@@ -324,10 +392,9 @@ class SessionRuntimeServer:
 
                 # ── Frontend compat: file-backed /api/* reads ──────────────
                 if path == "/api/pending":
-                    snap = server_ref.service.snapshot()
-                    running = bool(snap.current_task and snap.current_task.status
-                                   in ("queued", "running", "projection_pending"))
-                    self._send_json(200, {"ok": True, "pending": running})
+                    payload = server_ref._session_status_payload()
+                    payload["ok"] = True
+                    self._send_json(200, payload)
                     return
                 if path == "/api/openings":
                     self._send_json(200, server_ref._read_openings())
@@ -339,7 +406,29 @@ class SessionRuntimeServer:
                     self._send_json(200, server_ref._read_style_profiles())
                     return
                 if path == "/api/session_status":
-                    self._send_json(200, {"initialized": True})
+                    self._send_json(200, server_ref._session_status_payload())
+                    return
+                if path == "/api/session_snapshot":
+                    self._send_json(200, server_ref._snapshot_payload())
+                    return
+                if path == "/api/runtime/config":
+                    self._send_json(200, server_ref._runtime_config_payload())
+                    return
+                if path == "/api/runtime/presets":
+                    self._send_json(200, server_ref._config_collection_payload("preset"))
+                    return
+                if path == "/api/runtime/graphs":
+                    self._send_json(200, server_ref._config_collection_payload("graph"))
+                    return
+                if path.startswith("/api/runtime/presets/"):
+                    config_id = path[len("/api/runtime/presets/"):]
+                    payload, code = server_ref._read_json_config("preset", config_id)
+                    self._send_json(code, payload)
+                    return
+                if path.startswith("/api/runtime/graphs/"):
+                    config_id = path[len("/api/runtime/graphs/"):]
+                    payload, code = server_ref._read_json_config("graph", config_id)
+                    self._send_json(code, payload)
                     return
 
                 # ── Static files from styles dir (index.html/content.js/...) ──
@@ -451,10 +540,17 @@ class SessionRuntimeServer:
                     if not text:
                         self._send_json(400, {"ok": False, "error": "empty input"})
                         return
+                    char_name = (body.get("charName") or "").strip()
+                    submitted_text = f"【{char_name}】{text}" if char_name else text
                     key = body.get("idempotency_key") or f"api-submit-{time.time_ns()}"
-                    server_ref.submit_async(text, key)
+                    result = server_ref.submit_async(submitted_text, key)
+                    payload = {
+                        **result,
+                        "submitted_text": submitted_text,
+                        "snapshot": server_ref._snapshot_payload(),
+                    }
                     # Acknowledge immediately; frontend polls content.js for the result.
-                    self._send_json(200, {"ok": True})
+                    self._send_json(200, payload)
                     return
 
                 if path == "/api/reroll":
@@ -463,28 +559,22 @@ class SessionRuntimeServer:
                         self._send_json(400, {"ok": False, "error": "no turns to reroll"})
                         return
                     key = body.get("idempotency_key") or f"api-reroll-{time.time_ns()}"
-                    server_ref.reroll_async(head, key)
-                    self._send_json(200, {"ok": True})
+                    result = server_ref.reroll_async(head, key)
+                    self._send_json(200, {**result, "snapshot": server_ref._snapshot_payload()})
                     return
 
                 if path == "/api/delete_turns":
-                    # Map legacy delete_turns(from_index) onto rollback to the
-                    # parent of the deleted range. Tracer-bullet: roll back to
-                    # the revision at from_index-1 if resolvable, else reject.
                     from_index = body.get("from_index")
-                    head = server_ref.runtime.active_revision()
-                    target = None
-                    if isinstance(from_index, int) and from_index > 0:
-                        lineage = server_ref.runtime.commit_lineage(head) if head else None
-                        # Best-effort: rollback to (from_index-1)-th committed ancestor.
-                        chain = server_ref.runtime.active_lineage_turns(limit=from_index)
-                        if len(chain) >= from_index:
-                            target = chain[from_index - 1]["revision"] if from_index - 1 < len(chain) else None
-                    if target is None:
+                    if not isinstance(from_index, int) or from_index < 0:
                         self._send_json(400, {"ok": False, "error": "cannot resolve rollback target"})
                         return
+                    visible = server_ref.runtime.visible_turns()
+                    target = 0
+                    for turn in visible[:min(from_index, len(visible))]:
+                        if turn["revision"] > 0:
+                            target = turn["revision"]
                     result = server_ref.service.rollback(revision=target, idempotency_key=f"api-delete-{time.time_ns()}")
-                    self._send_json(200 if result.ok else 400, result.to_dict())
+                    self._send_json(200 if result.ok else 400, {**result.to_dict(), "snapshot": server_ref._snapshot_payload()})
                     return
 
                 if path == "/api/settings":
@@ -501,6 +591,29 @@ class SessionRuntimeServer:
                     name = (body.get("name") or "").strip()
                     ok = server_ref._delete_style_profile(name)
                     self._send_json(200 if ok else 404, {"ok": ok})
+                    return
+
+                self._send_json(404, {"ok": False, "error": "not_found"})
+
+            def do_PUT(self):  # noqa: N802
+                parsed = urlparse(self.path)
+                path = parsed.path.rstrip("/") or "/"
+                body = self._read_json()
+
+                if path == "/api/runtime/config":
+                    payload, code = server_ref._write_runtime_selection(body)
+                    self._send_json(code, payload)
+                    return
+                if path.startswith("/api/runtime/presets/"):
+                    config_id = path[len("/api/runtime/presets/"):]
+                    payload, code = server_ref._write_json_config("preset", config_id, body)
+                    self._send_json(code, payload)
+                    return
+                if path.startswith("/api/runtime/graphs/"):
+                    config_id = path[len("/api/runtime/graphs/"):]
+                    payload, code = server_ref._write_json_config("graph", config_id, body)
+                    self._send_json(code, payload)
+                    return
 
                 self._send_json(404, {"ok": False, "error": "not_found"})
 
@@ -556,6 +669,7 @@ class SessionRuntimeServer:
                 ctype = _content_type_for(target.name)
                 self.send_response(200)
                 self.send_header("Content-Type", ctype)
+                self._send_cors_headers()
                 self.send_header("Content-Length", str(len(data)))
                 self.send_header("Cache-Control", "no-cache")
                 self.end_headers()
@@ -567,12 +681,20 @@ class SessionRuntimeServer:
     # ── Frontend-compat file helpers (read/write styles dir) ────────────
 
     def _read_openings(self) -> list:
-        p = self.static_root / "openings.json" if self.static_root else None
-        if p and p.is_file():
-            try:
-                return json.loads(p.read_text(encoding="utf-8"))
-            except Exception:
-                return []
+        candidates = [
+            self.runtime.card_folder / "memory" / "openings.json",
+            self.runtime.card_folder / "openings.json",
+        ]
+        if self.static_root is not None:
+            candidates.append(self.static_root / "openings.json")
+        for path in candidates:
+            if path.is_file():
+                try:
+                    data = json.loads(path.read_text(encoding="utf-8"))
+                except Exception:
+                    continue
+                if isinstance(data, list):
+                    return data
         return []
 
     def _read_settings(self) -> dict:
@@ -595,6 +717,131 @@ class SessionRuntimeServer:
                 json.dumps(current, ensure_ascii=False, indent=2), encoding="utf-8"
             )
         return current
+
+    def _config_root_for(self, kind: str) -> Path | None:
+        if kind == "preset":
+            return self.preset_root
+        if kind == "graph":
+            return self.graph_root
+        return None
+
+    def _config_file_for(self, kind: str, config_id: str) -> tuple[Path | None, str | None]:
+        if not isinstance(config_id, str) or not CONFIG_ID_RE.fullmatch(config_id):
+            return None, "invalid_config_id"
+        root = self._config_root_for(kind)
+        if root is None:
+            return None, "config_root_unavailable"
+        root = root.resolve()
+        target = (root / f"{config_id}.json").resolve()
+        try:
+            target.relative_to(root)
+        except ValueError:
+            return None, "invalid_config_id"
+        return target, None
+
+    def _list_json_configs(self, kind: str) -> list[dict[str, Any]]:
+        root = self._config_root_for(kind)
+        if root is None or not root.is_dir():
+            return []
+        items = []
+        for path in sorted(root.glob("*.json")):
+            items.append(
+                {
+                    "id": path.stem,
+                    "path": str(path.relative_to(root.parent)),
+                    "updated_at": int(path.stat().st_mtime),
+                }
+            )
+        return items
+
+    def _read_json_config(self, kind: str, config_id: str) -> tuple[dict[str, Any], int]:
+        target, error = self._config_file_for(kind, config_id)
+        if error:
+            return {"ok": False, "error": error, "kind": kind, "id": config_id}, 400
+        if target is None or not target.is_file():
+            return {"ok": False, "error": "not_found", "kind": kind, "id": config_id}, 404
+        try:
+            text = target.read_text(encoding="utf-8")
+            data = json.loads(text)
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            return {"ok": False, "error": "invalid_json_file", "kind": kind, "id": config_id, "message": str(exc)}, 500
+        return {
+            "ok": True,
+            "kind": kind,
+            "id": config_id,
+            "text": json.dumps(data, ensure_ascii=False, indent=2),
+            "data": data,
+        }, 200
+
+    def _coerce_config_payload(self, body: dict) -> tuple[Any, str | None]:
+        if not isinstance(body, dict):
+            return None, "invalid_payload"
+        if "text" in body:
+            text = body.get("text")
+            if not isinstance(text, str) or not text.strip():
+                return None, "missing_text"
+            try:
+                data = json.loads(text)
+            except json.JSONDecodeError:
+                return None, "invalid_json"
+        elif "data" in body:
+            data = body.get("data")
+        else:
+            data = body
+        if not isinstance(data, (dict, list)):
+            return None, "config_must_be_object_or_array"
+        return data, None
+
+    def _write_json_config(self, kind: str, config_id: str, body: dict) -> tuple[dict[str, Any], int]:
+        target, error = self._config_file_for(kind, config_id)
+        if error:
+            return {"ok": False, "error": error, "kind": kind, "id": config_id}, 400
+        data, payload_error = self._coerce_config_payload(body)
+        if payload_error:
+            return {"ok": False, "error": payload_error, "kind": kind, "id": config_id}, 400
+        assert target is not None
+        target.parent.mkdir(parents=True, exist_ok=True)
+        text = json.dumps(data, ensure_ascii=False, indent=2) + "\n"
+        target.write_text(text, encoding="utf-8")
+        return {
+            "ok": True,
+            "kind": kind,
+            "id": config_id,
+            "text": text,
+            "data": data,
+            "saved": True,
+        }, 200
+
+    def _write_runtime_selection(self, body: dict) -> tuple[dict[str, Any], int]:
+        if not isinstance(body, dict):
+            return {"ok": False, "error": "invalid_payload"}, 400
+        updates: dict[str, str | None] = {}
+        for field, kind in (("preset_id", "preset"), ("graph_id", "graph")):
+            if field not in body:
+                continue
+            value = body.get(field)
+            if value in (None, ""):
+                updates[field] = None
+                continue
+            if not isinstance(value, str) or not CONFIG_ID_RE.fullmatch(value):
+                return {"ok": False, "error": "invalid_config_id", field: value}, 400
+            target, error = self._config_file_for(kind, value)
+            if error:
+                return {"ok": False, "error": error, field: value}, 400
+            if target is None or not target.is_file():
+                return {"ok": False, "error": "not_found", field: value}, 404
+            updates[field] = value
+        settings = self._read_settings()
+        runtime_cfg = settings.get("runtime") if isinstance(settings.get("runtime"), dict) else {}
+        runtime_cfg = dict(runtime_cfg)
+        runtime_cfg.update(updates)
+        settings["runtime"] = runtime_cfg
+        self._write_settings(settings)
+        return {
+            "ok": True,
+            "runtime": runtime_cfg,
+            "snapshot": self._snapshot_payload(),
+        }, 200
 
     def _read_style_profiles(self) -> list:
         if not self.static_root:
@@ -626,12 +873,19 @@ class SessionRuntimeServer:
         return False
 
     def _switch_opening(self, opening_id) -> bool:
-        """Switch the active opening (index 0). Delegates to handler.switch_opening."""
-        import handler  # local import; handler reads/writes the card + projection
+        """Switch the active opening and rebuild runtime-derived projections."""
+        import handler
         try:
-            return bool(handler.switch_opening(str(self.runtime.card_folder), int(opening_id or 0)))
+            ok = bool(handler.switch_opening(str(self.runtime.card_folder), int(opening_id or 0)))
         except Exception:
             return False
+        if ok:
+            try:
+                self.runtime.capture_opening_from_chat_log()
+                self.runtime.resume_projection()
+            except Exception:
+                return False
+        return ok
 
 
 def _content_type_for(name: str) -> str:

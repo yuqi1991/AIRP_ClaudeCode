@@ -190,6 +190,44 @@ body {
 .toggle-switch input:checked + .toggle-slider:before { transform: translateX(20px); }
 #settings-saved { font-size: 0.7em; color: var(--accent2); opacity: 0; transition: opacity 0.3s; }
 #settings-saved.show { opacity: 1; }
+.side-card textarea,
+.side-card .config-select {
+  width: 100%;
+  background: var(--input-bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 8px;
+  font-size: 0.78em;
+  font-family: var(--font-ui);
+  outline: none;
+}
+.side-card textarea {
+  min-height: 110px;
+  resize: vertical;
+  font-family: "SFMono-Regular", Consolas, Monaco, monospace;
+  line-height: 1.45;
+}
+.side-card textarea:focus,
+.side-card .config-select:focus { border-color: var(--accent2); }
+.side-buttons {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 6px;
+}
+.side-button {
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--input-bg);
+  color: var(--text);
+  font-size: 0.76em;
+  font-weight: 600;
+  cursor: pointer;
+}
+.side-button:hover { border-color: var(--accent); background: var(--surface); }
+.side-note { font-size: 0.72em; color: var(--muted); line-height: 1.45; margin-top: 4px; }
 
 /* ═══ INPUT ═══ */
 #input-panel {
@@ -869,6 +907,36 @@ body {
         </label>
       </div>
     </div>
+    <div class="side-card" id="runtime-config-card">
+      <h4>🧩 Runtime Config</h4>
+      <div class="side-note" id="runtime-config-status">运行时配置状态: 未连接</div>
+      <div class="side-note" id="runtime-task-status">任务: —</div>
+      <div class="side-note" id="runtime-task-id">Task ID: —</div>
+      <div class="setting-row" style="display:block;">
+        <span class="label">Active Preset</span>
+        <select id="runtime-preset-select" class="config-select" onchange="loadRuntimePresetEditor()"></select>
+      </div>
+      <div class="setting-row" style="display:block;">
+        <span class="label">Preset JSON</span>
+        <textarea id="runtime-preset-editor" placeholder="Preset JSON 未加载"></textarea>
+      </div>
+      <div class="side-buttons">
+        <button class="side-button" onclick="saveRuntimePreset()">保存 Preset</button>
+      </div>
+      <div class="setting-row" style="display:block; margin-top:6px;">
+        <span class="label">Active Graph</span>
+        <select id="runtime-graph-select" class="config-select" onchange="loadRuntimeGraphEditor()"></select>
+      </div>
+      <div class="setting-row" style="display:block;">
+        <span class="label">Graph JSON</span>
+        <textarea id="runtime-graph-editor" placeholder="Graph JSON 未加载"></textarea>
+      </div>
+      <div class="side-buttons">
+        <button class="side-button" onclick="applyRuntimeConfigSelection()">应用选择</button>
+        <button class="side-button" onclick="loadRuntimeConfigPanel()">刷新列表</button>
+        <button class="side-button" onclick="saveRuntimeGraph()">保存 Graph</button>
+      </div>
+    </div>
     <div class="side-card">
       <h4>📌 当前目标</h4>
       <div style="color:var(--accent2);" id="sb-quest">—</div>
@@ -916,7 +984,7 @@ body {
   </div>
 </div>
 
-<div id="toast">✓ 已复制到剪贴板，请粘贴到 Claude Code</div>
+<div id="toast">✓ 操作已发送</div>
 
 <!-- Portrait zoom modal -->
 <div id="beautify-modal" style="display:none;position:fixed;top:0;left:0;width:100vw;height:100vh;background:rgba(0,0,0,0.85);z-index:9999;justify-content:center;align-items:center;cursor:zoom-out;" onclick="this.style.display='none'">
@@ -1360,8 +1428,24 @@ function pickAction(action) {
   ta.focus();
 }
 
-const BRIDGE = 'http://localhost:8765';
+const API_BASE = '';
 let bridgeOk = false;
+let runtimeConfigState = { presets: [], graphs: [], selected: { preset_id: null, graph_id: null } };
+
+function apiUrl(path) {
+  return API_BASE + path;
+}
+
+function setRuntimeConfigStatus(msg) {
+  setText('runtime-config-status', msg || '运行时配置状态: —');
+}
+
+function setRuntimeTaskStatus(task) {
+  const status = task && task.status ? task.status : 'idle';
+  const taskId = task && task.task_id ? task.task_id : '—';
+  setText('runtime-task-status', '任务: ' + status);
+  setText('runtime-task-id', 'Task ID: ' + taskId);
+}
 
 // ═══ 酒馆桥接：卡脚本 → 我们前端 ═══
 // 卡内嵌脚本使用 SillyTavern 标准元素 ID:
@@ -1383,7 +1467,7 @@ async function doReroll() {
   const btn = document.querySelector('.btn-reroll');
   if (btn) { btn.disabled = true; btn.textContent = '⏳'; }
   try {
-    const r = await fetch(BRIDGE + '/api/reroll', { method: 'POST' });
+    const r = await fetch(apiUrl('/api/reroll'), { method: 'POST' });
     const data = await r.json();
     if (data.ok) {
       showToast('🔄 已触发重roll，等待重新生成...');
@@ -1406,7 +1490,7 @@ async function doReroll() {
 
 async function loadOpenings() {
   try {
-    const r = await fetch(BRIDGE + '/api/openings');
+    const r = await fetch(apiUrl('/api/openings'))
     if (!r.ok) return;
     const openings = await r.json();
     const sel = document.getElementById('set-opening');
@@ -1424,7 +1508,7 @@ async function doSwitchOpening() {
   const openingId = parseInt(sel.value);
   if (isNaN(openingId)) return;
   try {
-    const r = await fetch(BRIDGE + '/api/switch_opening', {
+    const r = await fetch(apiUrl('/api/switch_opening'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ opening_id: openingId })
@@ -1443,7 +1527,7 @@ async function doSwitchOpening() {
 
 async function doDeleteFrom(index) {
   try {
-    const r = await fetch(BRIDGE + '/api/delete_turns', {
+    const r = await fetch(apiUrl('/api/delete_turns'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ from_index: index })
@@ -1462,13 +1546,144 @@ async function doDeleteFrom(index) {
 
 async function checkBridge() {
   try {
-    const r = await fetch(BRIDGE + '/api/pending');
-    bridgeOk = r.ok;
+    const r = await fetch(apiUrl('/api/session_status'));
+    if (!r.ok) throw new Error('offline');
+    const data = await r.json();
+    bridgeOk = true;
+    const snapshot = data.snapshot || {};
+    setRuntimeConfigStatus('运行时配置状态: ' + (data.status || 'idle') + ' | Rev ' + (snapshot.active_revision || 0));
+    setRuntimeTaskStatus(snapshot.current_task || { status: data.status, task_id: data.task_id });
   } catch(e) {
     bridgeOk = false;
+    setRuntimeConfigStatus('运行时配置状态: 未连接');
+    setRuntimeTaskStatus(null);
   }
   document.getElementById('conn-dot').className = bridgeOk ? 'dot green' : 'dot red';
-  document.getElementById('conn-dot').title = bridgeOk ? '服务器已连接' : '服务器未连接 — 请运行 python skills/server.py';
+  document.getElementById('conn-dot').title = bridgeOk ? '服务器已连接' : '服务器未连接 — 请启动当前运行时服务';
+}
+
+function setSelectOptions(selectId, items, selectedId, emptyLabel) {
+  const sel = document.getElementById(selectId);
+  if (!sel) return;
+  const safeItems = items || [];
+  const options = ['<option value="">' + (emptyLabel || '未选择') + '</option>'];
+  safeItems.forEach(function(item) {
+    options.push('<option value="' + item.id + '">' + item.id + '</option>');
+  });
+  sel.innerHTML = options.join('');
+  sel.value = selectedId || '';
+}
+
+async function loadRuntimeConfigPanel() {
+  try {
+    const r = await fetch(apiUrl('/api/runtime/config'));
+    if (!r.ok) throw new Error('unavailable');
+    const data = await r.json();
+    runtimeConfigState = data;
+    setSelectOptions('runtime-preset-select', data.presets, data.selected && data.selected.preset_id, '未选择 Preset');
+    setSelectOptions('runtime-graph-select', data.graphs, data.selected && data.selected.graph_id, '未选择 Graph');
+    setRuntimeConfigStatus('运行时配置状态: 配置接口已就绪');
+    await loadRuntimePresetEditor();
+    await loadRuntimeGraphEditor();
+  } catch(e) {
+    runtimeConfigState = { presets: [], graphs: [], selected: { preset_id: null, graph_id: null } };
+    setSelectOptions('runtime-preset-select', [], '', 'Preset 接口不可用');
+    setSelectOptions('runtime-graph-select', [], '', 'Graph 接口不可用');
+    document.getElementById('runtime-preset-editor').value = '';
+    document.getElementById('runtime-graph-editor').value = '';
+    setRuntimeConfigStatus('运行时配置状态: 配置接口不可用');
+  }
+}
+
+async function loadRuntimePresetEditor() {
+  const sel = document.getElementById('runtime-preset-select');
+  const editor = document.getElementById('runtime-preset-editor');
+  const id = sel ? sel.value : '';
+  if (!id) { editor.value = ''; return; }
+  try {
+    const r = await fetch(apiUrl('/api/runtime/presets/' + encodeURIComponent(id)));
+    if (!r.ok) throw new Error('load failed');
+    const data = await r.json();
+    editor.value = data.text || JSON.stringify(data.data || {}, null, 2);
+  } catch(e) {
+    editor.value = '';
+    showError('加载 Preset 失败');
+  }
+}
+
+async function loadRuntimeGraphEditor() {
+  const sel = document.getElementById('runtime-graph-select');
+  const editor = document.getElementById('runtime-graph-editor');
+  const id = sel ? sel.value : '';
+  if (!id) { editor.value = ''; return; }
+  try {
+    const r = await fetch(apiUrl('/api/runtime/graphs/' + encodeURIComponent(id)));
+    if (!r.ok) throw new Error('load failed');
+    const data = await r.json();
+    editor.value = data.text || JSON.stringify(data.data || {}, null, 2);
+  } catch(e) {
+    editor.value = '';
+    showError('加载 Graph 失败');
+  }
+}
+
+async function saveRuntimePreset() {
+  const id = document.getElementById('runtime-preset-select').value;
+  const text = document.getElementById('runtime-preset-editor').value.trim();
+  if (!id || !text) return showError('请选择并填写 Preset JSON');
+  try {
+    const r = await fetch(apiUrl('/api/runtime/presets/' + encodeURIComponent(id)), {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: text })
+    });
+    const data = await r.json();
+    if (!r.ok || !data.ok) throw new Error(data.error || 'save failed');
+    document.getElementById('runtime-preset-editor').value = data.text || text;
+    showToast('✓ Preset 已保存');
+    await loadRuntimeConfigPanel();
+  } catch(e) {
+    showError('保存 Preset 失败: ' + (e.message || '未知错误'));
+  }
+}
+
+async function saveRuntimeGraph() {
+  const id = document.getElementById('runtime-graph-select').value;
+  const text = document.getElementById('runtime-graph-editor').value.trim();
+  if (!id || !text) return showError('请选择并填写 Graph JSON');
+  try {
+    const r = await fetch(apiUrl('/api/runtime/graphs/' + encodeURIComponent(id)), {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: text })
+    });
+    const data = await r.json();
+    if (!r.ok || !data.ok) throw new Error(data.error || 'save failed');
+    document.getElementById('runtime-graph-editor').value = data.text || text;
+    showToast('✓ Graph 已保存');
+    await loadRuntimeConfigPanel();
+  } catch(e) {
+    showError('保存 Graph 失败: ' + (e.message || '未知错误'));
+  }
+}
+
+async function applyRuntimeConfigSelection() {
+  const presetId = document.getElementById('runtime-preset-select').value || null;
+  const graphId = document.getElementById('runtime-graph-select').value || null;
+  try {
+    const r = await fetch(apiUrl('/api/runtime/config'), {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ preset_id: presetId, graph_id: graphId })
+    });
+    const data = await r.json();
+    if (!r.ok || !data.ok) throw new Error(data.error || 'save failed');
+    showToast('✓ Runtime 选择已保存');
+    setRuntimeTaskStatus((data.snapshot || {}).current_task || null);
+    await loadRuntimeConfigPanel();
+  } catch(e) {
+    showError('应用 Runtime 选择失败: ' + (e.message || '未知错误'));
+  }
 }
 
 async function doSubmit() {
@@ -1482,7 +1697,7 @@ async function doSubmit() {
   btn.disabled = true; btn.textContent = '...';
 
   try {
-    const r = await fetch(BRIDGE + '/api/submit', {
+    const r = await fetch(apiUrl('/api/submit'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ text: input, charName: charName })
@@ -1491,16 +1706,17 @@ async function doSubmit() {
     if (data.ok) {
       document.getElementById('user-input').value = '';
       const toast = document.getElementById('toast');
-      toast.textContent = '✓ 已发送，等待 Claude Code 回应...';
+      toast.textContent = '✓ 已发送，等待运行时回应...';
       toast.style.background = 'var(--accent2)';
       toast.classList.add('show');
       document.getElementById('last-action').textContent = '上次提交: ' + new Date().toLocaleTimeString();
+      setRuntimeTaskStatus({ status: data.status || 'queued', task_id: data.task_id || null });
       setTimeout(() => toast.classList.remove('show'), 2500);
     } else {
       showError('发送失败: ' + (data.error || '未知错误'));
     }
   } catch(e) {
-    showError('无法连接服务器 — 请确保已运行 python skills/server.py');
+    showError('无法连接服务器 — 请确保当前运行时服务已启动');
   }
   btn.disabled = false; btn.textContent = '▶ 提交';
 }
@@ -1535,7 +1751,7 @@ let styleProfiles = [];
 
 async function loadStyleProfiles() {
   try {
-    const r = await fetch(BRIDGE + '/api/style-profiles');
+    const r = await fetch(apiUrl('/api/style-profiles'))
     if (!r.ok) return;
     styleProfiles = await r.json();
     const sel = document.getElementById('set-style');
@@ -1558,7 +1774,7 @@ function updateStyleDescription() {
 
 async function loadSettings() {
   try {
-    const r = await fetch(BRIDGE + '/api/settings');
+    const r = await fetch(apiUrl('/api/settings'))
     if (!r.ok) return;
     const s = await r.json();
     await loadStyleProfiles();
@@ -1585,7 +1801,7 @@ async function saveSettings() {
     charName: document.getElementById('player-name-input').value.trim()
   };
   try {
-    await fetch(BRIDGE + '/api/settings', {
+    await fetch(apiUrl('/api/settings'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(data)
@@ -1996,9 +2212,11 @@ reloadData();
 checkBridge();
 loadSettings();
 loadOpenings();
+loadRuntimeConfigPanel();
 pollTimer = setInterval(reloadData, 3000);
 setInterval(checkBridge, 5000);
 setInterval(loadStyleProfiles, 15000);
+setInterval(loadRuntimeConfigPanel, 20000);
 
 // ═══ Dark Mode Toggle ═══
 (function() {

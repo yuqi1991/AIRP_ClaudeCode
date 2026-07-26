@@ -2,10 +2,11 @@
 
 Black-box tests over :class:`SessionRuntimeServer` extended with the frontend
 compat layer: static files from skills/styles/, POST /api/submit → runtime
-submit (FakeProvider fast path), GET /api/pending, POST /api/reroll, and the
-file-backed endpoints (openings/settings/style-profiles). The existing frontend
-polls content.js/state.js every 3s, so these tests assert that a submit causes
-the projection (content.js) to update within the poll window.
+submit (FakeProvider fast path), GET /api/pending, POST /api/reroll, CORS /
+OPTIONS compatibility, and file-backed endpoints including runtime preset /
+graph config CRUD. The existing frontend polls content.js/state.js every 3s,
+so these tests assert that a submit causes the projection (content.js) to
+update within the poll window.
 
 Real DeepSeek is opt-in (skip without DEEPSEEK_API_KEY); the fast suite uses a
 scripted director that emits final narrative text (ADR-0011 harness-commit).
@@ -126,6 +127,14 @@ def test_serves_static_index_html_and_content_js_from_styles(tmp_path):
             assert "CONTENT_HTML" in resp.read().decode("utf-8")
 
 
+def test_runtime_frontend_uses_same_origin_api_urls_and_runtime_config_ui():
+    index_html = (SKILLS / "styles" / "index.html").read_text(encoding="utf-8")
+    assert "http://localhost:8765" not in index_html
+    assert "Runtime Config" in index_html
+    assert "/api/runtime/config" in index_html
+    assert "python skills/server.py" not in index_html
+
+
 # ════════════════════════════════════════════════════════════════════
 # /api/submit → runtime submit, projection updates within poll window
 # ════════════════════════════════════════════════════════════════════
@@ -158,6 +167,27 @@ def test_api_submit_runs_runtime_and_projection_updates(tmp_path):
         assert runtime.active_revision() == 1
 
 
+def test_api_submit_returns_task_identity_and_snapshot(tmp_path):
+    styles = tmp_path / "styles"
+    styles.mkdir()
+    card = tmp_path / "card"
+    _write_card(card)
+    runtime = SessionTurnRuntime(
+        database_path=tmp_path / "r.sqlite3", card_folder=card,
+        projection_root=styles, executor=_scripted_director(),
+    )
+    with SessionRuntimeServer(runtime, static_root=styles) as server:
+        status, body = _http("POST", f"{server.base_url}/api/submit",
+                             {"text": "我走向海边", "charName": "玩家"})
+        assert status == 200
+        assert body["ok"] is True
+        assert body["task_id"]
+        assert body["status"] in {"queued", "running", "projection_pending", "succeeded"}
+        assert body["submitted_text"] == "【玩家】我走向海边"
+        assert body["snapshot"]["session_id"] == runtime.session_id
+        assert body["snapshot"]["status"] in {"queued", "running", "projection_pending", "succeeded"}
+
+
 def test_api_submit_rejects_empty_input(tmp_path):
     styles = tmp_path / "styles"; styles.mkdir()
     card = tmp_path / "card"; _write_card(card)
@@ -184,10 +214,53 @@ def test_api_pending_reports_running_then_idle(tmp_path):
         projection_root=styles, executor=_scripted_director(),
     )
     with SessionRuntimeServer(runtime, static_root=styles) as server:
-        # Idle before any submit.
         status, body = _http("GET", f"{server.base_url}/api/pending")
         assert status == 200
-        assert body.get("ok") is True
+        assert body == {
+            "ok": True,
+            "initialized": True,
+            "pending": False,
+            "status": "idle",
+            "task_id": None,
+            "snapshot": {
+                "session_id": runtime.session_id,
+                "active_revision": 0,
+                "last_event_sequence": 0,
+                "current_task": None,
+                "status": "idle",
+                "pending": False,
+            },
+        }
+
+
+def test_api_session_status_snapshot_and_options_are_consistent(tmp_path):
+    styles = tmp_path / "styles"; styles.mkdir()
+    card = tmp_path / "card"; _write_card(card)
+    runtime = SessionTurnRuntime(
+        database_path=tmp_path / "r.sqlite3", card_folder=card,
+        projection_root=styles, executor=_scripted_director(),
+    )
+    with SessionRuntimeServer(runtime, static_root=styles) as server:
+        _http("POST", f"{server.base_url}/api/submit", {"text": "我走向海边"})
+        assert _wait_for(lambda: runtime.active_revision() >= 1, timeout=10)
+
+        status, session_status = _http("GET", f"{server.base_url}/api/session_status")
+        assert status == 200
+        assert session_status["initialized"] is True
+        assert session_status["snapshot"]["active_revision"] == 1
+        assert session_status["snapshot"]["session_id"] == runtime.session_id
+        assert session_status["status"] == session_status["snapshot"]["status"]
+
+        status, snapshot = _http("GET", f"{server.base_url}/api/session_snapshot")
+        assert status == 200
+        assert snapshot["active_revision"] == session_status["snapshot"]["active_revision"]
+        assert snapshot["current_task"]["task_id"] == session_status["snapshot"]["current_task"]["task_id"]
+
+        req = Request(f"{server.base_url}/api/submit", method="OPTIONS")
+        with urlopen(req, timeout=5) as resp:
+            assert resp.status == 200
+            assert resp.headers["Access-Control-Allow-Origin"] == "*"
+            assert "PUT" in resp.headers["Access-Control-Allow-Methods"]
 
 
 def test_api_reroll_replaces_last_assistant_turn(tmp_path):
@@ -244,6 +317,142 @@ def test_api_openings_and_settings_served_from_styles(tmp_path):
         status, settings = _http("GET", f"{server.base_url}/api/settings")
         assert status == 200
         assert settings["style"] == "北棱特调"
+
+
+def test_api_runtime_config_crud_is_file_backed_and_validated(tmp_path):
+    styles = tmp_path / "styles"; styles.mkdir()
+    presets = styles / "presets"; presets.mkdir()
+    graphs = tmp_path / "graphs"; graphs.mkdir()
+    (styles / "settings.json").write_text(
+        json.dumps({"runtime": {"preset_id": "default", "graph_id": "main"}}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (presets / "default.json").write_text(json.dumps({"slots": ["a"]}, ensure_ascii=False, indent=2), encoding="utf-8")
+    (graphs / "main.json").write_text(json.dumps({"nodes": [{"id": "n1"}]}, ensure_ascii=False, indent=2), encoding="utf-8")
+    card = tmp_path / "card"; _write_card(card)
+    runtime = SessionTurnRuntime(
+        database_path=tmp_path / "r.sqlite3", card_folder=card,
+        projection_root=styles, executor=_scripted_director(),
+    )
+    with SessionRuntimeServer(runtime, static_root=styles, preset_root=presets, graph_root=graphs) as server:
+        status, config = _http("GET", f"{server.base_url}/api/runtime/config")
+        assert status == 200
+        assert config["selected"] == {"preset_id": "default", "graph_id": "main"}
+        assert config["presets"][0]["id"] == "default"
+        assert config["graphs"][0]["id"] == "main"
+
+        status, preset = _http("GET", f"{server.base_url}/api/runtime/presets/default")
+        assert status == 200
+        assert preset["data"] == {"slots": ["a"]}
+
+        status, graph = _http("GET", f"{server.base_url}/api/runtime/graphs/main")
+        assert status == 200
+        assert graph["data"] == {"nodes": [{"id": "n1"}]}
+
+        status, saved = _http("PUT", f"{server.base_url}/api/runtime/presets/default",
+                              {"text": '{"slots": ["a", "b"]}'})
+        assert status == 200
+        assert saved["saved"] is True
+        assert json.loads((presets / "default.json").read_text(encoding="utf-8")) == {"slots": ["a", "b"]}
+
+        status, selected = _http("PUT", f"{server.base_url}/api/runtime/config",
+                                 {"preset_id": "default", "graph_id": "main"})
+        assert status == 200
+        assert selected["runtime"] == {"preset_id": "default", "graph_id": "main"}
+
+        status, bad = _http("PUT", f"{server.base_url}/api/runtime/graphs/-bad",
+                            {"text": '{"nodes": []}'})
+        assert status == 400
+        assert bad["error"] == "invalid_config_id"
+
+def test_api_openings_fall_back_to_card_local_store_and_switch_opening(tmp_path):
+    styles = tmp_path / "styles"; styles.mkdir()
+    card = tmp_path / "card"; _write_card(card)
+    memory = card / "memory"
+    memory.mkdir()
+    openings = [
+        {"id": 0, "title": "默认", "content": "<p>晨雾还没散。</p>", "summary": "默认开场"},
+        {"id": 1, "title": "备用", "content": "<p>浪花拍上岸沿。</p>", "summary": "备用开场"},
+    ]
+    (memory / "openings.json").write_text(json.dumps(openings, ensure_ascii=False, indent=2), encoding="utf-8")
+    (card / "chat_log.json").write_text(
+        json.dumps([
+            {"index": 0, "ai": "<content>\n<p>晨雾还没散。</p>\n</content>\n\n<summary>默认开场</summary>", "summary": "默认开场"}
+        ], ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    runtime = SessionTurnRuntime(
+        database_path=tmp_path / "r.sqlite3", card_folder=card,
+        projection_root=styles, executor=_scripted_director(),
+    )
+    with SessionRuntimeServer(runtime, static_root=styles) as server:
+        status, payload = _http("GET", f"{server.base_url}/api/openings")
+        assert status == 200
+        assert [item["title"] for item in payload] == ["默认", "备用"]
+
+        status, body = _http("POST", f"{server.base_url}/api/switch_opening", {"opening_id": 1})
+        assert status == 200
+        assert body.get("ok") is True
+        log = json.loads((card / "chat_log.json").read_text(encoding="utf-8"))
+        assert "浪花拍上岸沿" in log[0]["ai"]
+
+def test_api_delete_turns_from_index_zero_rolls_back_to_opening_revision(tmp_path):
+    styles = tmp_path / "styles"; styles.mkdir()
+    card = tmp_path / "card"; _write_card(card)
+    (card / ".initvar.json").write_text(
+        json.dumps({"世界": {"时间": "1月1日 09:00", "地点": "港口"}}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (card / "chat_log.json").write_text(
+        json.dumps([
+            {"index": 0, "ai": "<content>\n<p>晨雾压着港口。</p>\n</content>\n\n<summary>开场</summary>", "summary": "开场"},
+            {"index": 1, "user": "我走向码头", "ai": "<p>木栈道在脚下轻响。</p>", "summary": "来到码头", "variables": {"stat_data": {"世界": {"时间": "1月1日 10:00", "地点": "码头"}}}}
+        ], ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    runtime = SessionTurnRuntime(
+        database_path=tmp_path / "r.sqlite3", card_folder=card,
+        projection_root=styles, executor=_scripted_director(),
+    )
+    with SessionRuntimeServer(runtime, static_root=styles) as server:
+        status, body = _http("POST", f"{server.base_url}/api/delete_turns", {"from_index": 0})
+        assert status == 200
+        assert body.get("ok") is True
+        assert runtime.active_revision() == 0
+        log = json.loads((card / "chat_log.json").read_text(encoding="utf-8"))
+        assert len(log) == 1
+        assert "晨雾压着港口" in log[0]["ai"]
+
+
+# ════════════════════════════════════════════════════════════════════
+# Opt-in real DeepSeek smoke (manual/browser)
+# ════════════════════════════════════════════════════════════════════
+
+
+@pytest.mark.skipif(not os.environ.get("DEEPSEEK_API_KEY"),
+                    reason="DEEPSEEK_API_KEY not set; real DeepSeek bridge smoke is opt-in")
+def test_real_deepseek_bridge_submit_updates_projection(tmp_path):
+    from engine.director import ProviderDrivenDirector
+    from engine.provider import RealProviderAdapter
+
+    styles = tmp_path / "styles"; styles.mkdir()
+    (styles / "content.js").write_text('window.CONTENT_HTML = "";', encoding="utf-8")
+    card = tmp_path / "card"; _write_card(card)
+    adapter = RealProviderAdapter(mock=False, model="deepseek-v4-flash",
+                                  base_url="https://api.deepseek.com")
+    director = ProviderDrivenDirector(adapter, max_tool_rounds=8, max_retries=2)
+    runtime = SessionTurnRuntime(
+        database_path=tmp_path / "r.sqlite3", card_folder=card,
+        projection_root=styles, executor=director,
+    )
+    with SessionRuntimeServer(runtime, static_root=styles) as server:
+        status, body = _http("POST", f"{server.base_url}/api/submit",
+                             {"text": "请用两三句中文描写清晨的海边，并用 <summary> 给一句摘要、<options> 给一个选项。"},
+                             timeout=60)
+        assert status == 200 and body.get("ok") is True
+        assert _wait_for(lambda: "CONTENT_HTML" in (styles / "content.js").read_text(encoding="utf-8")
+                         and len((styles / "content.js").read_text(encoding="utf-8")) > 50,
+                         timeout=90), "DeepSeek did not update projection"
 
 
 # ════════════════════════════════════════════════════════════════════

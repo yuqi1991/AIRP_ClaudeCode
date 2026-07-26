@@ -9,7 +9,7 @@ sys.path.insert(0, str(SKILLS))
 import handler
 
 from engine.mvu import generate_schema, validate_command, validate_command_strict
-from engine.runtime import FakeNarrativeExecutor, SessionTurnRuntime
+from engine.runtime import FakeNarrativeExecutor, MultiTurnFakeExecutor, SessionTurnRuntime
 
 
 def write_card_fixture(card_folder):
@@ -323,3 +323,127 @@ def test_concurrent_duplicate_submit_commits_one_turn(tmp_path):
     assert {result.task_id for result in results}
     assert len({result.task_id for result in results}) == 1
     assert len(json.loads((card_folder / "chat_log.json").read_text(encoding="utf-8"))) == 1
+
+def test_restart_bootstraps_legacy_chat_log_and_preserves_opening_lineage(tmp_path):
+    card_folder = tmp_path / "card"
+    card_folder.mkdir()
+    legacy_log = [
+        {
+            "index": 0,
+            "ai": "<content>\n<p>晨雾压着港口。</p>\n</content>\n\n<summary>开场</summary>",
+            "summary": "开场",
+            "variables": {"stat_data": {"世界": {"时间": "1月1日 09:00", "地点": "港口"}}},
+        },
+        {
+            "index": 1,
+            "user": "我走向码头",
+            "ai": "<p>木栈道在脚下轻响。</p>\n\n<summary>玩家来到码头</summary>",
+            "summary": "玩家来到码头",
+            "tokens": {"in": 12, "out": 18, "total": 30},
+            "variables": {"stat_data": {"世界": {"时间": "1月1日 10:00", "地点": "码头"}}},
+        },
+    ]
+    (card_folder / ".initvar.json").write_text(
+        json.dumps({"世界": {"时间": "1月1日 09:00", "地点": "港口"}}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (card_folder / "chat_log.json").write_text(
+        json.dumps(legacy_log, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+
+    runtime = SessionTurnRuntime(
+        database_path=tmp_path / "runtime.sqlite3",
+        card_folder=card_folder,
+        projection_root=tmp_path / "projection",
+        executor=FakeNarrativeExecutor(content="<p>重投结果。</p>"),
+    )
+
+    assert runtime.active_revision() == 1
+    assert [turn["user"] for turn in runtime.active_lineage_turns()] == ["我走向码头"]
+    assert runtime.commit_lineage(1)["parent_revision"] == 0
+
+    rolled = runtime.rollback(0, "rb-opening")
+    assert rolled.status == "rolled_back"
+    log_after_rollback = json.loads((card_folder / "chat_log.json").read_text(encoding="utf-8"))
+    assert len(log_after_rollback) == 1
+    assert "晨雾压着港口" in log_after_rollback[0]["ai"]
+
+    runtime.executor = FakeNarrativeExecutor(content="<p>重投后的码头更安静了。</p>")
+    rerolled = runtime.reroll(1, "reroll-bootstrap")
+    assert rerolled.status == "succeeded"
+    assert rerolled.revision == 2
+    assert runtime.active_revision() == 2
+    log_after_reroll = json.loads((card_folder / "chat_log.json").read_text(encoding="utf-8"))
+    assert len(log_after_reroll) == 2
+    assert log_after_reroll[1]["user"] == "我走向码头"
+    assert "重投后的码头更安静了" in log_after_reroll[1]["ai"]
+
+
+def test_restart_recovers_projection_pending_and_marks_abandoned_running(tmp_path):
+    card_folder = tmp_path / "card"
+    card_folder.mkdir()
+    write_card_fixture(card_folder)
+    broken_projection_root = tmp_path / "broken-projection"
+    broken_projection_root.write_text("not a directory", encoding="utf-8")
+
+    runtime = SessionTurnRuntime(
+        database_path=tmp_path / "runtime.sqlite3",
+        card_folder=card_folder,
+        projection_root=broken_projection_root,
+        executor=FakeNarrativeExecutor(content="<p>补投影。</p>"),
+    )
+
+    try:
+        runtime.submit(text="我等待", idempotency_key="submit-1")
+    except FileExistsError:
+        pass
+    else:
+        raise AssertionError("projection failure must stay visible before restart")
+
+    task_id = runtime.task_id_for_key("submit-1")
+    assert runtime.task(task_id).status == "projection_pending"
+
+    with runtime._connect() as connection:
+        connection.execute(
+            "INSERT INTO tasks (id, session_id, idempotency_key, text, status, revision, base_revision, source_snapshot) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            ("abandoned-running", runtime.session_id, "abandoned-key", "未完成", "running", 0, 0, "{}"),
+        )
+
+    recovered = SessionTurnRuntime(
+        database_path=tmp_path / "runtime.sqlite3",
+        card_folder=card_folder,
+        projection_root=tmp_path / "projection",
+        executor=FakeNarrativeExecutor(content="<p>不会再次生成。</p>"),
+    )
+
+    assert recovered.task(task_id).status == "succeeded"
+    assert recovered.task("abandoned-running").status == "abandoned_running"
+    log = json.loads((card_folder / "chat_log.json").read_text(encoding="utf-8"))
+    assert len(log) == 1
+    assert log[0]["user"] == "我等待"
+    assert recovered.projection_checkpoint(recovered.task(task_id).commit_id) == "applied"
+
+
+def test_multi_turn_fake_executor_supports_multiple_submits(tmp_path):
+    card_folder = tmp_path / "card"
+    card_folder.mkdir()
+    write_card_fixture(card_folder)
+
+    runtime = SessionTurnRuntime(
+        database_path=tmp_path / "runtime.sqlite3",
+        card_folder=card_folder,
+        projection_root=tmp_path / "projection",
+        executor=MultiTurnFakeExecutor(),
+    )
+
+    first = runtime.submit(text="我敲门", idempotency_key="submit-1")
+    second = runtime.submit(text="我进门", idempotency_key="submit-2")
+
+    assert first.status == "succeeded"
+    assert second.status == "succeeded"
+    assert second.revision == 2
+    log = json.loads((card_folder / "chat_log.json").read_text(encoding="utf-8"))
+    assert [turn["user"] for turn in log] == ["我敲门", "我进门"]
+    assert "Mock 回合 1" in log[0]["ai"]
+    assert "Mock 回合 2" in log[1]["ai"]
