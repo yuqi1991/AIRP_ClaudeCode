@@ -24,9 +24,13 @@ class QualityPolicy:
 
     min_chars: int = 1
     max_chars: int = 20000
-    min_ratio: float = 0.35
+    # Permissive floor: wordCount is a *target*, not a hard minimum. Real models
+    # legitimately produce shorter turns (brief exchanges, dialogue); a 0.35
+    # ratio rejected normal output. The gate still blocks empty/near-empty
+    # drafts via min_floor and caps runaway output via max_ratio.
+    min_ratio: float = 0.1
     max_ratio: float = 3.0
-    min_floor: int = 1
+    min_floor: int = 40
     max_ceiling: int = 20000
 
     def resolve(self, settings: dict | None) -> tuple[int, int]:

@@ -267,7 +267,7 @@ def test_quality_gate_rejection_allows_same_task_retry_then_commits_once(tmp_pat
     director = ScriptedDirector([
         ("final", final_text(content="<p>短</p>", mvu_commands="")),
         ("final", final_text(
-            content="<p>海风压低浪头，潮水一下一下拍着礁石边的湿沙。</p>",
+            content="<p>海风压低浪头，潮水一下一下拍着礁石边的湿沙，远处船笛低沉地响过，鸥鸟贴着水面滑向防波堤的另一侧。</p>",
             mvu_commands="",
         )),
     ])
@@ -276,7 +276,7 @@ def test_quality_gate_rejection_allows_same_task_retry_then_commits_once(tmp_pat
         card_folder=card_folder,
         projection_root=tmp_path / "projection",
         executor=director,
-        session_settings={"wordCount": 20},
+        session_settings={"wordCount": 100},
     )
 
     result = runtime.submit(text="我走向海边", idempotency_key="submit-1")

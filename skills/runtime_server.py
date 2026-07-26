@@ -60,6 +60,7 @@ import json
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
@@ -101,6 +102,7 @@ class SessionRuntimeServer:
         command_service: SessionCommandService | None = None,
         heartbeat_seconds: float = SSE_HEARTBEAT_SECONDS,
         poll_interval_seconds: float = SSE_POLL_INTERVAL_SECONDS,
+        static_root: str | None = None,
     ):
         self.runtime = runtime
         self.service = command_service or SessionCommandService(runtime)
@@ -108,6 +110,9 @@ class SessionRuntimeServer:
         self.port = port
         self.heartbeat_seconds = heartbeat_seconds
         self.poll_interval_seconds = poll_interval_seconds
+        # Frontend compat: serve static files (index.html/content.js/state.js/...)
+        # from styles dir, and adapt the legacy /api/* calls onto the runtime.
+        self.static_root = Path(static_root) if static_root else None
         self._httpd: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
         self._submit_threads: list[threading.Thread] = []
@@ -317,6 +322,30 @@ class SessionRuntimeServer:
                     )
                     return
 
+                # ── Frontend compat: file-backed /api/* reads ──────────────
+                if path == "/api/pending":
+                    snap = server_ref.service.snapshot()
+                    running = bool(snap.current_task and snap.current_task.status
+                                   in ("queued", "running", "projection_pending"))
+                    self._send_json(200, {"ok": True, "pending": running})
+                    return
+                if path == "/api/openings":
+                    self._send_json(200, server_ref._read_openings())
+                    return
+                if path == "/api/settings":
+                    self._send_json(200, server_ref._read_settings())
+                    return
+                if path == "/api/style-profiles":
+                    self._send_json(200, server_ref._read_style_profiles())
+                    return
+                if path == "/api/session_status":
+                    self._send_json(200, {"initialized": True})
+                    return
+
+                # ── Static files from styles dir (index.html/content.js/...) ──
+                if server_ref.static_root is not None and self._maybe_serve_static(path):
+                    return
+
                 self._send_json(404, {"ok": False, "error": "not_found"})
 
             def do_POST(self):  # noqa: N802
@@ -416,6 +445,63 @@ class SessionRuntimeServer:
                     self._send_json(code, result.to_dict())
                     return
 
+                # ── Frontend compat: legacy /api/* → runtime ───────────────
+                if path == "/api/submit":
+                    text = (body.get("text") or "").strip()
+                    if not text:
+                        self._send_json(400, {"ok": False, "error": "empty input"})
+                        return
+                    key = body.get("idempotency_key") or f"api-submit-{time.time_ns()}"
+                    server_ref.submit_async(text, key)
+                    # Acknowledge immediately; frontend polls content.js for the result.
+                    self._send_json(200, {"ok": True})
+                    return
+
+                if path == "/api/reroll":
+                    head = server_ref.runtime.active_revision()
+                    if head <= 0:
+                        self._send_json(400, {"ok": False, "error": "no turns to reroll"})
+                        return
+                    key = body.get("idempotency_key") or f"api-reroll-{time.time_ns()}"
+                    server_ref.reroll_async(head, key)
+                    self._send_json(200, {"ok": True})
+                    return
+
+                if path == "/api/delete_turns":
+                    # Map legacy delete_turns(from_index) onto rollback to the
+                    # parent of the deleted range. Tracer-bullet: roll back to
+                    # the revision at from_index-1 if resolvable, else reject.
+                    from_index = body.get("from_index")
+                    head = server_ref.runtime.active_revision()
+                    target = None
+                    if isinstance(from_index, int) and from_index > 0:
+                        lineage = server_ref.runtime.commit_lineage(head) if head else None
+                        # Best-effort: rollback to (from_index-1)-th committed ancestor.
+                        chain = server_ref.runtime.active_lineage_turns(limit=from_index)
+                        if len(chain) >= from_index:
+                            target = chain[from_index - 1]["revision"] if from_index - 1 < len(chain) else None
+                    if target is None:
+                        self._send_json(400, {"ok": False, "error": "cannot resolve rollback target"})
+                        return
+                    result = server_ref.service.rollback(revision=target, idempotency_key=f"api-delete-{time.time_ns()}")
+                    self._send_json(200 if result.ok else 400, result.to_dict())
+                    return
+
+                if path == "/api/settings":
+                    settings = server_ref._write_settings(body)
+                    self._send_json(200, {"ok": True, "settings": settings})
+                    return
+
+                if path == "/api/switch_opening":
+                    ok = server_ref._switch_opening(body.get("opening_id"))
+                    self._send_json(200 if ok else 400, {"ok": ok})
+                    return
+
+                if path == "/api/style-profiles/delete":
+                    name = (body.get("name") or "").strip()
+                    ok = server_ref._delete_style_profile(name)
+                    self._send_json(200 if ok else 404, {"ok": ok})
+
                 self._send_json(404, {"ok": False, "error": "not_found"})
 
             def _stream_sse(self, after: int) -> None:
@@ -451,7 +537,116 @@ class SessionRuntimeServer:
                 except OSError:
                     return
 
+            def _maybe_serve_static(self, path: str) -> bool:
+                """Serve a static file from styles dir. Returns True if handled."""
+                root = server_ref.static_root
+                if root is None:
+                    return False
+                rel = "index.html" if path in ("", "/") else path.lstrip("/")
+                target = (root / rel).resolve()
+                # Prevent path traversal outside static_root.
+                try:
+                    target.relative_to(root.resolve())
+                except ValueError:
+                    self._send_json(403, {"ok": False, "error": "forbidden"})
+                    return True
+                if not target.is_file():
+                    return False
+                data = target.read_bytes()
+                ctype = _content_type_for(target.name)
+                self.send_response(200)
+                self.send_header("Content-Type", ctype)
+                self.send_header("Content-Length", str(len(data)))
+                self.send_header("Cache-Control", "no-cache")
+                self.end_headers()
+                self.wfile.write(data)
+                return True
+
         return Handler
+
+    # ── Frontend-compat file helpers (read/write styles dir) ────────────
+
+    def _read_openings(self) -> list:
+        p = self.static_root / "openings.json" if self.static_root else None
+        if p and p.is_file():
+            try:
+                return json.loads(p.read_text(encoding="utf-8"))
+            except Exception:
+                return []
+        return []
+
+    def _read_settings(self) -> dict:
+        if not self.static_root:
+            return {}
+        p = self.static_root / "settings.json"
+        if p.is_file():
+            try:
+                return json.loads(p.read_text(encoding="utf-8"))
+            except Exception:
+                return {}
+        return {}
+
+    def _write_settings(self, updates: dict) -> dict:
+        current = self._read_settings()
+        if isinstance(updates, dict):
+            current.update(updates)
+        if self.static_root is not None:
+            (self.static_root / "settings.json").write_text(
+                json.dumps(current, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+        return current
+
+    def _read_style_profiles(self) -> list:
+        if not self.static_root:
+            return []
+        profiles_dir = self.static_root / "profiles"
+        out = []
+        if not profiles_dir.is_dir():
+            return out
+        for f in sorted(profiles_dir.glob("*.md")):
+            name = f.stem
+            content = f.read_text(encoding="utf-8")
+            title, desc = name, ""
+            for line in content.strip().split("\n"):
+                if line.startswith("# ") and not line.startswith("## "):
+                    title = line[2:].strip()
+                elif line.strip() and not line.startswith("#"):
+                    desc = line.strip()
+                    break
+            out.append({"name": name, "title": title, "description": desc})
+        return out
+
+    def _delete_style_profile(self, name: str) -> bool:
+        if not self.static_root or not name:
+            return False
+        target = self.static_root / "profiles" / f"{name}.md"
+        if target.is_file():
+            target.unlink()
+            return True
+        return False
+
+    def _switch_opening(self, opening_id) -> bool:
+        """Switch the active opening (index 0). Delegates to handler.switch_opening."""
+        import handler  # local import; handler reads/writes the card + projection
+        try:
+            return bool(handler.switch_opening(str(self.runtime.card_folder), int(opening_id or 0)))
+        except Exception:
+            return False
+
+
+def _content_type_for(name: str) -> str:
+    lower = name.lower()
+    if lower.endswith(".html"):
+        return "text/html; charset=utf-8"
+    if lower.endswith(".js"):
+        return "application/javascript; charset=utf-8"
+    if lower.endswith(".json"):
+        return "application/json; charset=utf-8"
+    if lower.endswith(".css"):
+        return "text/css; charset=utf-8"
+    if lower.endswith(".md"):
+        return "text/markdown; charset=utf-8"
+    return "application/octet-stream"
 
 
 def _parse_after(query: dict, headers) -> int:

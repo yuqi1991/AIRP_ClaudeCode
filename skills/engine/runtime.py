@@ -106,7 +106,7 @@ class LegacyProjectionAdapter:
         self.card_folder = Path(card_folder)
         self.projection_root = Path(projection_root)
 
-    def apply(self, text, draft):
+    def apply(self, text, draft, tokens=None):
         backups = self._backup()
         try:
             full_text = draft.content
@@ -119,6 +119,7 @@ class LegacyProjectionAdapter:
                 content=draft.content,
                 summary=draft.summary,
                 options=draft.options,
+                tokens=tokens,
                 full_text=full_text,
                 projection_root=self.projection_root,
             )
@@ -1587,10 +1588,14 @@ class SessionTurnRuntime:
         except OSError:
             pass
         for item in lineage:
-            self.projection.apply(item["text"], item["draft"])
+            self.projection.apply(item["text"], item["draft"], tokens=item.get("tokens"))
 
     def _lineage_commits(self, head_revision):
-        """Full parent-chain walk from head (oldest→newest), no limit."""
+        """Full parent-chain walk from head (oldest→newest), no limit.
+
+        Each item carries ``tokens`` (aggregated model_call usage for its task)
+        so projection can populate totalTokens without a separate query per turn.
+        """
         if head_revision is None or head_revision <= 0:
             return []
         with self._connect() as connection:
@@ -1600,19 +1605,25 @@ class SessionTurnRuntime:
             while current and current > 0 and current not in seen:
                 seen.add(current)
                 row = connection.execute(
-                    "SELECT commits.revision, commits.parent_revision, commits.draft, tasks.text "
+                    "SELECT commits.revision, commits.parent_revision, commits.draft, commits.task_id, tasks.text "
                     "FROM commits JOIN tasks ON tasks.id = commits.task_id "
                     "WHERE commits.session_id = ? AND commits.revision = ?",
                     (self.session_id, current),
                 ).fetchone()
                 if not row:
                     break
+                task_tokens = connection.execute(
+                    "SELECT COALESCE(SUM(total_tokens),0) AS t FROM model_calls "
+                    "WHERE session_id = ? AND task_id = ?",
+                    (self.session_id, row["task_id"]),
+                ).fetchone()["t"]
                 chain.append(
                     {
                         "revision": row["revision"],
                         "parent_revision": row["parent_revision"] if row["parent_revision"] is not None else 0,
                         "text": row["text"],
                         "draft": TurnDraft.from_json(row["draft"]),
+                        "tokens": {"in": 0, "out": 0, "total": int(task_tokens)} if task_tokens else None,
                     }
                 )
                 parent = row["parent_revision"]
