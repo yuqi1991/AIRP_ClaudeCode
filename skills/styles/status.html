@@ -18,38 +18,60 @@ body {
   background: var(--bg);
   color: var(--text);
   font-family: "Segoe UI", "PingFang SC", sans-serif;
-  padding: 16px;
-  display: flex; flex-direction: column; align-items: center; gap: 12px;
+  padding: 24px;
+  display: flex; flex-direction: column; align-items: center; gap: 16px;
 }
-.topbar {
+
+.header-card {
   width: 100%; max-width: 860px;
   background: var(--card);
   border: 1px solid #2a2a3e;
   border-radius: 10px;
-  padding: 10px 18px;
-  display: flex; flex-wrap: wrap; gap: 8px 20px;
-  font-size: 0.84em; align-items: center;
+  padding: 20px 24px;
 }
-.topbar .tag { padding: 2px 10px; border-radius: 10px; background: var(--accent); color: #fff; font-size: 0.78em; white-space: nowrap; }
-.topbar .dim { color: var(--muted); }
+.header-card .world-tag {
+  display: inline-block;
+  padding: 4px 14px; border-radius: 12px;
+  background: var(--accent); color: #fff;
+  font-size: 0.82em; font-weight: 600;
+  margin-bottom: 8px;
+}
+.header-card h1 {
+  font-size: 1.35em; font-weight: 700;
+  color: #f0f0f0; margin-bottom: 10px;
+  line-height: 1.4;
+}
+.header-card .meta-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 4px 16px;
+  font-size: 0.8em; color: var(--muted);
+}
+.header-card .meta-grid span b {
+  color: #c0c0c0; font-weight: 500;
+}
+
 .content-card {
   width: 100%; max-width: 860px;
-  background: #fff; color: #000;
+  background: #fff; color: #1a1a1a;
   border: 1px solid #2a2a3e; border-radius: 10px; overflow: hidden;
 }
 .content-card .bar {
-  background: var(--card); padding: 8px 16px;
+  background: var(--card);
+  padding: 14px 20px;
   border-bottom: 1px solid #2a2a3e;
-  display: flex; justify-content: space-between; align-items: center;
-  font-size: 0.85em;
 }
-.content-card .bar h3 { margin:0; color:var(--accent); }
-#doc { padding: 0; }
+.content-card .bar h2 {
+  margin: 0; color: var(--accent);
+  font-size: 1.05em; font-weight: 700;
+}
+#doc { padding: 20px 24px; }
 #doc > * { margin: 0; }
+
 .summary-card {
   width: 100%; max-width: 860px;
   background: var(--card); border: 1px solid #2a2a3e; border-radius: 10px;
-  padding: 12px 18px; font-size: 0.84em; color: var(--muted);
+  padding: 14px 20px; font-size: 0.82em; color: var(--muted);
 }
 .summary-card b { color: var(--accent); }
 </style>
@@ -68,7 +90,6 @@ const STATE = {
   generatedCount: 1,
   contentFile: "content.html"
 };
-// ═══════════════
 
 document.addEventListener("DOMContentLoaded", render);
 
@@ -79,25 +100,26 @@ function render() {
   const summaryText = window.SUMMARY_TEXT || '';
 
   document.body.innerHTML = `
-    <div class="topbar">
-      <span class="tag">${STATE.world}</span>
-      <span>${STATE.stage}</span>
-      <span class="dim">${STATE.time}</span>
-      <span class="dim">${STATE.location}</span>
-      <span class="dim" style="flex:1;text-align:right;">${STATE.env}</span>
-      <span style="font-size:0.78em;">已生成: ${STATE.generatedCount}</span>
+    <div class="header-card">
+      <div class="world-tag">${STATE.world}</div>
+      <h1>${STATE.stage}</h1>
+      <div class="meta-grid">
+        <span><b>时间</b> ${STATE.time}</span>
+        <span><b>地点</b> ${STATE.location}</span>
+        <span><b>已生成</b> ${STATE.generatedCount} 轮</span>
+        <span><b>环境</b> ${STATE.env}</span>
+      </div>
     </div>
 
     <div class="content-card">
       <div class="bar">
-        <h3>${STATE.quest}</h3>
-        <span class="dim">${STATE.time}</span>
+        <h2>${STATE.quest}</h2>
       </div>
       <div id="doc">${contentHtml}</div>
     </div>
 
     <div class="summary-card">
-      <b>📋 摘要：</b>${summaryText || '暂无'}
+      <b>摘要</b> ${summaryText || '暂无'}
     </div>
   `;
 }

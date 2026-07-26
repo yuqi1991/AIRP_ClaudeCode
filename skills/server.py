@@ -417,15 +417,23 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 if __name__ == "__main__":
     # --- Clean up stale mvu_server processes ---
     try:
-        raw = subprocess.check_output(
-            'powershell -Command "Get-Process node | Where-Object { $_.CommandLine -like \'*mvu_server*\' } | Select-Object -ExpandProperty Id"',
-            shell=True, timeout=10
+        result = subprocess.run(
+            ["pgrep", "-f", str(SKILLS / "mvu_server.js")],
+            capture_output=True, text=True, timeout=5
         )
-        out = _safe_decode(raw).strip()
-        if out:
-            for pid_str in out.split():
-                os.kill(int(pid_str), signal.SIGTERM)
-            print(f"[server] 清理残留 mvu_server 进程: {out}")
+        pids = []
+        for line in result.stdout.splitlines():
+            try:
+                pids.append(int(line.strip()))
+            except ValueError:
+                pass
+        for pid in pids:
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except (ProcessLookupError, PermissionError):
+                pass
+        if pids:
+            print(f"[server] 清理残留 mvu_server 进程: {' '.join(map(str, pids))}")
     except Exception:
         pass
 

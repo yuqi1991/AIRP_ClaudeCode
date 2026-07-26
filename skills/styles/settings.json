@@ -3,7 +3,7 @@
   "nsfw": "直白",
   "person": "第二人称",
   "antiImpersonation": true,
-  "bgNpc": false,
-  "charName": "猫子",
-  "wordCount": 2000
+  "bgNpc": true,
+  "charName": "kendrick",
+  "wordCount": 1200
 }

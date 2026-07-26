@@ -11,6 +11,7 @@ start_server.py — 桥接服务器启动器。
 
 import json
 import os
+import signal
 import subprocess
 import sys
 import time
@@ -38,44 +39,55 @@ def _server_responding():
     return False
 
 
-def _kill_stale():
-    """Kill any leftover Python server and Node mvu_server processes."""
-    # Python skills processes
-    cmd_py = (
-        "Get-Process python -ErrorAction SilentlyContinue | "
-        "Where-Object { $_.CommandLine -like '*skills*' } | "
-        "Select-Object -ExpandProperty Id"
-    )
+def _pgrep(pattern: str) -> set[int]:
     try:
         result = subprocess.run(
-            ["powershell", "-NoProfile", "-Command", cmd_py],
-            capture_output=True, text=True, timeout=10
+            ["pgrep", "-f", pattern],
+            capture_output=True, text=True, timeout=5
         )
-        if result.stdout.strip():
-            for pid_str in result.stdout.strip().split():
-                try:
-                    subprocess.run(
-                        ["taskkill", "/F", "/PID", pid_str],
-                        capture_output=True, timeout=5
-                    )
-                except (ValueError, subprocess.TimeoutExpired):
-                    pass
-    except subprocess.TimeoutExpired:
-        pass
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return set()
 
-    # Node mvu_server processes
-    cmd_node = (
-        "Get-Process node -ErrorAction SilentlyContinue | "
-        "Where-Object { $_.CommandLine -like '*mvu_server*' } | "
-        "Stop-Process -Force"
-    )
-    try:
-        subprocess.run(
-            ["powershell", "-NoProfile", "-Command", cmd_node],
-            capture_output=True, text=True, timeout=10
-        )
-    except subprocess.TimeoutExpired:
-        pass
+    pids = set()
+    for line in result.stdout.splitlines():
+        try:
+            pids.add(int(line.strip()))
+        except ValueError:
+            pass
+    return pids
+
+
+def _terminate_pids(pids: set[int]) -> None:
+    targets = [pid for pid in sorted(pids) if pid not in {os.getpid(), os.getppid()}]
+    for pid in targets:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except (ProcessLookupError, PermissionError):
+            pass
+
+    if targets:
+        time.sleep(0.3)
+
+    for pid in targets:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            continue
+        except PermissionError:
+            continue
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+
+
+def _kill_stale(root_dir: str):
+    """Kill leftover bridge server and MVU helper processes."""
+    skills_dir = Path(root_dir).resolve() / "skills"
+    pids = set()
+    pids.update(_pgrep(str(skills_dir / "server.py")))
+    pids.update(_pgrep(str(skills_dir / "mvu_server.js")))
+    _terminate_pids(pids)
 
 
 def _start_server(root_dir: str):
@@ -83,17 +95,11 @@ def _start_server(root_dir: str):
     server_py = str(Path(root_dir) / "skills" / "server.py")
     skills_dir = str(Path(root_dir) / "skills")
 
-    # On Windows, use DETACHED_PROCESS + CREATE_NEW_PROCESS_GROUP to background
-    flags = 0
-    if sys.platform == "win32":
-        flags = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
-
     subprocess.Popen(
         [sys.executable, server_py],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         cwd=skills_dir,
-        creationflags=flags if flags else 0,
-        start_new_session=True if not flags else None,
+        start_new_session=True,
     )
 
 
@@ -118,7 +124,7 @@ def main():
         return
 
     # 2. Kill stale processes and start fresh
-    _kill_stale()
+    _kill_stale(root_dir)
 
     # Brief wait for ports to release
     time.sleep(0.5)
