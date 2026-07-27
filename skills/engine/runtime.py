@@ -8,7 +8,14 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import handler
-from engine.context_compiler import CompiledContext, ContextCompileRequest, ContextPolicy, compile_context, replay_payload
+from engine.context_compiler import (
+    CompiledContext,
+    ContextCompileRequest,
+    ContextPolicy,
+    compile_context,
+    compile_sequential_handoff_context,
+    replay_payload,
+)
 from engine.director import DirectorHandle, NarrativeDirector
 from engine.mvu import execute_commands, extract_commands, generate_schema, validate_command_strict
 from engine.provider import AbortSignal, ProviderAborted, ProviderError
@@ -677,6 +684,50 @@ class SessionTurnRuntime:
                     worldbook_loads=tuple(loads),
                     preset=prompt_preset_from_snapshot(snapshot.get("runtime_config")),
                 ))
+                return self._persist_manifest_in_connection(connection, task, compiled)
+
+    def compile_sequential_handoff_manifest(self, task_id, parent_compiled, source_node, target_node, text):
+        """Compile and persist the next graph-node context from a prior manifest.
+
+        Sequential nodes may only receive an immutable, persisted handoff. This
+        prevents a payload/hash pair from being reused after the handoff changes.
+        """
+        with self._lock:
+            with self._connect() as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                task = connection.execute(
+                    "SELECT id, text, base_revision, source_snapshot FROM tasks WHERE id = ? AND session_id = ?",
+                    (task_id, self.session_id),
+                ).fetchone()
+                if not task:
+                    raise ValueError("unknown task")
+                parent_manifest = parent_compiled.manifest
+                parent_id = parent_manifest.get("id")
+                if not parent_id:
+                    raise ValueError("sequential handoff requires a persisted parent manifest")
+                call_ordinal = connection.execute(
+                    "SELECT COUNT(*) AS count FROM context_manifests WHERE session_id = ? AND task_id = ?",
+                    (self.session_id, task_id),
+                ).fetchone()["count"]
+                snapshot = json.loads(task["source_snapshot"])
+                loads = self._worldbook_loads_in_connection(connection, task_id, call_ordinal)
+                compiled = compile_sequential_handoff_context(
+                    ContextCompileRequest(
+                        session_id=self.session_id,
+                        task_id=task_id,
+                        base_revision=task["base_revision"],
+                        player_input=task["text"],
+                        snapshot=snapshot,
+                        policy=self._policy_for_snapshot(snapshot),
+                        call_ordinal=call_ordinal,
+                        worldbook_loads=tuple(loads),
+                        preset=prompt_preset_from_snapshot(snapshot.get("runtime_config")),
+                    ),
+                    parent_manifest,
+                    source_node,
+                    target_node,
+                    text,
+                )
                 return self._persist_manifest_in_connection(connection, task, compiled)
 
     def _worldbook_loads(self, task_id, before_call_ordinal):

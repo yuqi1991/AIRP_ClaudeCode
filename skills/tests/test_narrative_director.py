@@ -23,6 +23,7 @@ SKILLS = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SKILLS))
 
 from engine.context_compiler import ContextPolicy
+from engine.agent_graph import SequentialAgentGraph, SequentialGraphNode
 from engine.director import DirectorHandle, NarrativeDirector, ProviderDrivenDirector, ScriptedDirector
 from engine.provider import (
     AbortSignal,
@@ -768,6 +769,93 @@ def test_provider_tool_sequence_commits_from_final_text_after_readonly_tool(tmp_
     # preview delta arrived during round 2
     preview_events = [e for e in runtime.events_after(0) if e.type == "narrative.preview.delta"]
     assert any("海风掠过礁石" in e.payload["preview"] for e in preview_events)
+
+
+def test_sequential_graph_persists_replayable_handoff_manifests_with_provenance(tmp_path):
+    card_folder = tmp_path / "card"
+    card_folder.mkdir()
+    write_card_fixture(card_folder)
+
+    providers = [
+        FakeProvider(scripts=[[{"type": "text", "text": "planner output"}, {"type": "final"}]]),
+        FakeProvider(scripts=[[{"type": "text", "text": "editor output"}, {"type": "final"}]]),
+        FakeProvider(scripts=[[{"type": "text", "text": final_text()}, {"type": "final"}]]),
+    ]
+    graph = SequentialAgentGraph([
+        SequentialGraphNode("planner", "story_planner", ProviderDrivenDirector(providers[0])),
+        SequentialGraphNode("editor", "style_editor", ProviderDrivenDirector(providers[1])),
+        SequentialGraphNode("writer", "narrative_director", ProviderDrivenDirector(providers[2])),
+    ])
+    runtime = SessionTurnRuntime(
+        database_path=tmp_path / "runtime.sqlite3",
+        card_folder=card_folder,
+        projection_root=tmp_path / "projection",
+        executor=graph,
+    )
+
+    result = runtime.submit(text="我走向海边", idempotency_key="graph-1")
+
+    assert result.status == "succeeded"
+    manifests = runtime.manifests_for_task(result.task_id)
+    assert [manifest["call_ordinal"] for manifest in manifests] == [0, 1, 2]
+    first, editor, writer = manifests
+    assert runtime.replay_manifest(editor["id"]) == editor["payload"]
+    assert runtime.replay_manifest(writer["id"]) == writer["payload"]
+    assert "planner output" in editor["payload"][-1]["content"]
+    assert "editor output" in writer["payload"][-1]["content"]
+
+    editor_provenance = editor["graph_provenance"]
+    assert editor_provenance["node"] == {"id": "editor", "role": "style_editor"}
+    assert editor_provenance["parent_manifest_id"] == first["id"]
+    assert editor_provenance["parent_payload_hash"] == first["payload_hash"]
+    assert editor_provenance["parent_handoff_hash"] is None
+    assert editor_provenance["handoff"]["source"] == {"id": "planner", "role": "story_planner"}
+
+    writer_provenance = writer["graph_provenance"]
+    assert writer_provenance["node"] == {"id": "writer", "role": "narrative_director"}
+    assert writer_provenance["parent_manifest_id"] == editor["id"]
+    assert writer_provenance["parent_payload_hash"] == editor["payload_hash"]
+    assert writer_provenance["parent_handoff_hash"] == editor_provenance["handoff"]["hash"]
+    assert writer_provenance["handoff"]["source"] == {"id": "editor", "role": "style_editor"}
+
+    calls = runtime.model_calls_for_task(result.task_id)
+    assert [call["call_ordinal"] for call in calls] == [1, 2, 3]
+    assert [call["manifest_id"] for call in calls] == [manifest["id"] for manifest in manifests]
+
+
+def test_graph_tool_followups_keep_manifest_and_model_call_ordinals_unique(tmp_path):
+    card_folder = tmp_path / "card"
+    card_folder.mkdir()
+    write_card_fixture(card_folder)
+
+    planner_provider = FakeProvider(scripts=[
+        [
+            {"type": "tool_call", "id": "snapshot", "name": "get_session_snapshot", "args": {}},
+            {"type": "final", "stop_reason": "tool_calls"},
+        ],
+        [{"type": "text", "text": "planner output"}, {"type": "final"}],
+    ])
+    writer_provider = FakeProvider(scripts=[[{"type": "text", "text": final_text()}, {"type": "final"}]])
+    graph = SequentialAgentGraph([
+        SequentialGraphNode("planner", "story_planner", ProviderDrivenDirector(planner_provider)),
+        SequentialGraphNode("writer", "narrative_director", ProviderDrivenDirector(writer_provider)),
+    ])
+    runtime = SessionTurnRuntime(
+        database_path=tmp_path / "runtime.sqlite3",
+        card_folder=card_folder,
+        projection_root=tmp_path / "projection",
+        executor=graph,
+    )
+
+    result = runtime.submit(text="我走向海边", idempotency_key="graph-tools-1")
+
+    assert result.status == "succeeded"
+    manifests = runtime.manifests_for_task(result.task_id)
+    calls = runtime.model_calls_for_task(result.task_id)
+    assert [manifest["call_ordinal"] for manifest in manifests] == [0, 1, 2]
+    assert [call["call_ordinal"] for call in calls] == [1, 2, 3]
+    assert len({call["call_ordinal"] for call in calls}) == len(calls)
+    assert [call["manifest_id"] for call in calls] == [manifest["id"] for manifest in manifests]
 
 
 def test_multi_round_tool_loop_replays_assistant_tool_calls_with_ids(tmp_path):

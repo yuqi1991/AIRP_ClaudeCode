@@ -59,6 +59,16 @@ class _Handle:
     def compile_follow_up(self):
         raise AssertionError("not used")
 
+    def compile_sequential_handoff(self, compiled, source_node, target_node, text):
+        payload = list(compiled.payload)
+        payload.append(
+            {
+                "role": "user",
+                "content": f"[sequential graph handoff from {source_node.id}/{source_node.role}]\n{text}",
+            }
+        )
+        return CompiledContext(payload, {}, "handoff", "stable")
+
     def report_model_call_started(self, meta):
         pass
 

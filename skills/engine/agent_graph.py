@@ -27,7 +27,7 @@ class SequentialAgentGraph(NarrativeDirector):
             node.director.direct(node_handle, current)
             previous_text = node_handle.take_final_text() or previous_text
             if index < len(self.nodes) - 1:
-                current = _with_handoff(current, node, previous_text)
+                current = node_handle.compile_sequential_handoff(current, node, self.nodes[index + 1], previous_text)
         handle.set_final_text(previous_text)
 
 
@@ -87,22 +87,11 @@ class _GraphNodeHandle:
     def compile_follow_up(self):
         return self._parent.compile_follow_up()
 
+    def compile_sequential_handoff(self, compiled, source_node, target_node, text):
+        return self._parent.compile_sequential_handoff(compiled, source_node, target_node, text)
+
     def report_model_call_started(self, meta):
         self._parent.report_model_call_started({**meta, "agent_node_id": self.node.id, "agent_role": self.node.role})
 
     def report_model_call_finished(self, meta):
         self._parent.report_model_call_finished({**meta, "agent_node_id": self.node.id, "agent_role": self.node.role})
-
-
-def _with_handoff(compiled, node, text):
-    payload = list(compiled.payload)
-    payload.append(
-        {
-            "role": "user",
-            "content": (
-                f"[sequential graph handoff from {node.id}/{node.role}]\n"
-                f"{text}"
-            ),
-        }
-    )
-    return type(compiled)(payload, compiled.manifest, compiled.payload_hash, compiled.stable_payload_hash)

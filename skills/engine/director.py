@@ -123,6 +123,12 @@ class DirectorHandle:
         """
         return self._runtime.compile_follow_up_manifest(self.task_id, self._task_text)
 
+    def compile_sequential_handoff(self, compiled, source_node, target_node, text):
+        """Persist a graph handoff manifest before its receiving node runs."""
+        return self._runtime.compile_sequential_handoff_manifest(
+            self.task_id, compiled, source_node, target_node, text
+        )
+
     def report_model_call_started(self, meta: dict) -> None:
         self._runtime._emit_model_call_started(self.task_id, meta)
 
@@ -286,7 +292,7 @@ class ProviderDrivenDirector(NarrativeDirector):
                 return
             if round_index > 0:
                 current_manifest = handle.compile_follow_up()
-            call_ordinal = round_index + 1
+            call_ordinal = current_manifest.manifest["call_ordinal"] + 1
             deltas, _usage, stop_reason = self._invoke_model(
                 handle, messages, tools, model, current_manifest, call_ordinal, rates
             )
