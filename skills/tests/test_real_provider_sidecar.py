@@ -8,6 +8,7 @@ MUST stay in the fast suite. Real DeepSeek lives in test_real_deepseek_e2e.py.
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import sys
 import threading
@@ -174,6 +175,91 @@ def test_mock_sidecar_retryable_error_category(require_node_sidecar):
         list(adapter.stream(request, signal))
     assert ei.value.retryable is True
     assert ei.value.category == "provider_unavailable"
+
+
+
+def test_sidecar_deadline_terminates_hung_process_as_retryable_timeout(
+    require_node_sidecar,
+):
+    adapter = RealProviderAdapter(mock=True, request_timeout=0.05)
+    request = ProviderRequest(
+        messages=[{"role": "user", "content": "hang"}],
+        tools=[],
+        model="deepseek-v4-flash",
+        metadata={"mock_script": "hang_forever"},
+    )
+
+    started = time.monotonic()
+    with pytest.raises(ProviderError) as ei:
+        list(adapter.stream(request, AbortSignal()))
+
+    assert time.monotonic() - started < 1.0
+    assert ei.value.category == "provider_unavailable"
+    assert ei.value.retryable is True
+    assert str(ei.value) == "provider request timed out"
+
+
+def test_sidecar_child_env_is_allowlisted(monkeypatch, require_node_sidecar):
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "deepseek-key")
+    monkeypatch.setenv("HOME", "/private/home")
+    monkeypatch.setenv("UNRELATED_SECRET", "do-not-forward")
+    monkeypatch.setenv("NODE_OPTIONS", "--enable-source-maps")
+    adapter = RealProviderAdapter(mock=True)
+
+    env = adapter._spawn_env()
+
+    assert env["DEEPSEEK_API_KEY"] == "deepseek-key"
+    assert env["NODE_OPTIONS"] == "--enable-source-maps"
+    assert env["PI_SIDECAR_MOCK"] == "1"
+    assert env["NODE_PATH"].split(os.pathsep)[0] == str(REPO / "node_modules")
+    assert "HOME" not in env
+    assert "UNRELATED_SECRET" not in env
+
+
+def test_sidecar_stderr_credentials_are_redacted(tmp_path, require_node_sidecar):
+    secret = "sk-sidecar-stderr-secret-47c9"
+    script = tmp_path / "stderr_then_exit.py"
+    script.write_text(
+        "import sys\n"
+        f"sys.stderr.write('request failed Authorization: Bearer {secret}\\n')\n"
+        "sys.exit(9)\n",
+        encoding="utf-8",
+    )
+    adapter = RealProviderAdapter(sidecar_command=[sys.executable, str(script)])
+    request = ProviderRequest(
+        messages=[{"role": "user", "content": "fail"}],
+        tools=[],
+        model="deepseek-v4-flash",
+        metadata={},
+    )
+
+    with pytest.raises(ProviderError) as ei:
+        list(adapter.stream(request, AbortSignal()))
+
+    assert secret not in str(ei.value)
+    assert "[REDACTED]" in str(ei.value)
+
+
+def test_mock_sidecar_replays_assistant_tool_calls_with_requested_provider_and_model(
+    require_node_sidecar,
+):
+    adapter = RealProviderAdapter(mock=True, provider="custom-provider", model="configured-model")
+    request = ProviderRequest(
+        messages=[
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [{"id": "call_1", "name": "lookup", "args": {}}],
+            }
+        ],
+        tools=[],
+        model="requested-model",
+        metadata={"mock_script": "validate_replay_model"},
+    )
+
+    items = list(adapter.stream(request, AbortSignal()))
+
+    assert any(isinstance(item, ProviderResult) for item in items)
 
 
 def test_real_adapter_credentials_never_enter_ipc_or_durables(tmp_path, require_node_sidecar):

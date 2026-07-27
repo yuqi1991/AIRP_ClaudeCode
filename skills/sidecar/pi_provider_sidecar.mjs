@@ -76,9 +76,11 @@ function classifyError(err) {
  * Convert AIRP ProviderRequest messages into pi-ai Context messages.
  * AIRP messages are role-based dicts; tools are AIRP tool schemas.
  */
-function toPiContext(messages, tools) {
+function toPiContext(messages, tools, provider = DEFAULT_PROVIDER, model = DEFAULT_MODEL) {
   const piMessages = [];
   let systemPrompt = "";
+  const msgProvider = provider;
+  const msgModel = model;
 
   for (const msg of messages || []) {
     const role = msg?.role;
@@ -125,8 +127,8 @@ function toPiContext(messages, tools) {
         role: "assistant",
         content,
         api: "openai-completions",
-        provider: DEFAULT_PROVIDER,
-        model: DEFAULT_MODEL,
+        provider: msgProvider,
+        model: msgModel,
         usage: {
           input: 0,
           output: 0,
@@ -269,6 +271,38 @@ async function handleStreamMock(msg) {
       emit({ type: "aborted", request_id: requestId });
       return;
     }
+    if (script === "hang_forever") {
+      await new Promise(() => {});
+      return;
+    }
+    if (script === "validate_replay_model") {
+      const replay = toPiContext(
+        msg.messages,
+        msg.tools,
+        msg.metadata?.provider || DEFAULT_PROVIDER,
+        msg.model || DEFAULT_MODEL,
+      );
+      const assistant = replay.messages.find((entry) => entry.role === "assistant");
+      if (assistant?.provider !== (msg.metadata?.provider || DEFAULT_PROVIDER) ||
+          assistant?.model !== (msg.model || DEFAULT_MODEL)) {
+        emit({
+          type: "error",
+          request_id: requestId,
+          category: "terminal_internal",
+          retryable: false,
+          message: "assistant replay lost requested provider or model",
+        });
+        return;
+      }
+      emit({
+        type: "result",
+        request_id: requestId,
+        usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+        stop_reason: "stop",
+        cost_estimate: { amount: 0, currency: "USD", rate_version: "mock-rates-v0" },
+      });
+      return;
+    }
     if (script === "crash") {
       process.stderr.write("mock sidecar intentional crash\n");
       process.exit(97);
@@ -403,7 +437,12 @@ async function handleStreamReal(msg) {
       return;
     }
 
-    const context = toPiContext(msg.messages, msg.tools);
+    const context = toPiContext(
+      msg.messages,
+      msg.tools,
+      msg.metadata?.provider || DEFAULT_PROVIDER,
+      modelId,
+    );
     const stream = models.stream(model, context, {
       signal: controller.signal,
       // Keep thinking off for the narrative flash path unless requested.

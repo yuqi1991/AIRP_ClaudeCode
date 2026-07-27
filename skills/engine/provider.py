@@ -23,6 +23,7 @@ import hashlib
 import json
 import os
 import queue
+import re
 import subprocess
 import threading
 import time
@@ -296,17 +297,18 @@ class RealProviderAdapter(ProviderAdapter):
     :class:`ProviderResult` and raises :class:`ProviderError` /
     :class:`ProviderAborted`.
 
-    Credentials: the sidecar reads ``DEEPSEEK_API_KEY`` from its own process
-    env. Python passes ``os.environ`` through at spawn and NEVER puts the key
-    into IPC request bodies, metadata, events, manifests, or logs.
-    ``credentials`` is accepted for API symmetry with :class:`FakeProvider`
-    but is **not** forwarded into the sidecar env or request payloads.
+    Credentials: the sidecar reads ``DEEPSEEK_API_KEY`` from a minimal,
+    allowlisted child environment. Python NEVER puts the key into IPC request
+    bodies, metadata, events, manifests, or logs. ``credentials`` is accepted
+    for API symmetry with :class:`FakeProvider` but is **not** forwarded into
+    the sidecar env or request payloads.
     """
 
     DEFAULT_MODEL = "deepseek-v4-flash"
     DEFAULT_BASE_URL = "https://api.deepseek.com"
     DEFAULT_PROVIDER = "deepseek"
     RATE_VERSION = "pi-catalog-0.82.1"
+    DEFAULT_REQUEST_TIMEOUT = 120.0
 
     def __init__(
         self,
@@ -320,6 +322,7 @@ class RealProviderAdapter(ProviderAdapter):
         node_binary: str | None = None,
         cwd: str | Path | None = None,
         rates: CostEstimate | None = None,
+        request_timeout: float | None = None,
     ) -> None:
         self._sidecar_command = list(sidecar_command) if sidecar_command else None
         # Accepted for symmetry with FakeProvider; NEVER forwarded to the
@@ -336,6 +339,11 @@ class RealProviderAdapter(ProviderAdapter):
         self._rates = rates or CostEstimate(
             amount=0.0, currency="USD", rate_version=self.RATE_VERSION
         )
+        self._request_timeout = (
+            self.DEFAULT_REQUEST_TIMEOUT if request_timeout is None else request_timeout
+        )
+        if self._request_timeout <= 0:
+            raise ValueError("request_timeout must be positive")
 
     def model_id(self, role: str) -> str:
         return self._model
@@ -450,7 +458,7 @@ class RealProviderAdapter(ProviderAdapter):
                 proc.stdin.write(json.dumps(payload, ensure_ascii=False) + "\n")
                 proc.stdin.flush()
             except (BrokenPipeError, OSError) as exc:
-                stderr_text = "".join(stderr_chunks).strip()
+                stderr_text = _redact_sidecar_stderr("".join(stderr_chunks).strip())
                 raise ProviderError(
                     f"sidecar stdin write failed: {exc}"
                     + (f"; stderr={stderr_text[:500]}" if stderr_text else ""),
@@ -458,18 +466,25 @@ class RealProviderAdapter(ProviderAdapter):
                     False,
                 ) from exc
 
+            deadline = time.monotonic() + self._request_timeout
             while True:
                 if signal.cancelled and not abort_sent:
                     _send_abort()
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    _terminate_process(proc)
+                    raise ProviderError(
+                        "provider request timed out", "provider_unavailable", True
+                    )
                 try:
-                    kind, data = line_queue.get(timeout=0.1)
+                    kind, data = line_queue.get(timeout=min(0.1, remaining))
                 except queue.Empty:
                     if proc.poll() is not None:
                         # Process exited; drain remaining lines briefly.
                         try:
                             kind, data = line_queue.get(timeout=0.2)
                         except queue.Empty:
-                            stderr_text = "".join(stderr_chunks).strip()
+                            stderr_text = _redact_sidecar_stderr("".join(stderr_chunks).strip())
                             raise ProviderError(
                                 "sidecar exited unexpectedly"
                                 + (f"; stderr={stderr_text[:500]}" if stderr_text else ""),
@@ -486,7 +501,7 @@ class RealProviderAdapter(ProviderAdapter):
                             proc.kill()
                         except OSError:
                             pass
-                    stderr_text = "".join(stderr_chunks).strip()
+                    stderr_text = _redact_sidecar_stderr("".join(stderr_chunks).strip())
                     if signal.cancelled:
                         raise ProviderAborted("aborted (sidecar eof)")
                     raise ProviderError(
@@ -579,15 +594,7 @@ class RealProviderAdapter(ProviderAdapter):
             except OSError:
                 pass
             if proc.poll() is None:
-                try:
-                    proc.terminate()
-                    try:
-                        proc.wait(timeout=1.0)
-                    except subprocess.TimeoutExpired:
-                        proc.kill()
-                        proc.wait(timeout=1.0)
-                except OSError:
-                    pass
+                _terminate_process(proc)
 
     def _build_command(self) -> list[str]:
         if self._sidecar_command:
@@ -599,20 +606,61 @@ class RealProviderAdapter(ProviderAdapter):
         return cmd
 
     def _spawn_env(self) -> dict:
-        # Pass through the process environment so DEEPSEEK_API_KEY reaches the
-        # sidecar when present. Do NOT inject self._credentials — those exist
-        # only for FakeProvider-style secret-isolation tests and must never
-        # become real env values or IPC content.
-        env = dict(os.environ)
+        # The child needs only its provider credential, Node resolution/config,
+        # and platform loader settings. Deliberately do not inherit unrelated
+        # parent-process secrets such as home-directory, CI, or service tokens.
+        allowed = {
+            "DEEPSEEK_API_KEY",
+            "NODE_OPTIONS",
+            "NODE_EXTRA_CA_CERTS",
+            "NODE_NO_WARNINGS",
+            "SSL_CERT_FILE",
+            "SSL_CERT_DIR",
+            "PATH",
+            "SYSTEMROOT",
+            "WINDIR",
+            "COMSPEC",
+        }
+        env = {key: os.environ[key] for key in allowed if key in os.environ}
         if self._mock:
             env["PI_SIDECAR_MOCK"] = "1"
         # Ensure node can resolve the root node_modules even if cwd drifts.
-        node_path = env.get("NODE_PATH", "")
+        inherited_node_path = os.environ.get("NODE_PATH", "")
         root_modules = str(self._cwd / "node_modules")
         env["NODE_PATH"] = (
-            root_modules if not node_path else f"{root_modules}{os.pathsep}{node_path}"
+            root_modules
+            if not inherited_node_path
+            else f"{root_modules}{os.pathsep}{inherited_node_path}"
         )
         return env
+
+
+def _terminate_process(proc: subprocess.Popen) -> None:
+    """Stop a sidecar promptly after a deadline or stream failure."""
+    if proc.poll() is not None:
+        return
+    try:
+        proc.terminate()
+        proc.wait(timeout=1.0)
+    except (OSError, subprocess.TimeoutExpired):
+        try:
+            proc.kill()
+            proc.wait(timeout=1.0)
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+
+
+_CREDENTIAL_VALUE_PATTERNS = (
+    re.compile(r"(?i)(authorization\s*[:=]\s*bearer\s+)([^\s,;]+)"),
+    re.compile(r"(?i)((?:api[_ -]?key|token|secret|password)\s*[:=]\s*)([^\s,;]+)"),
+)
+
+
+def _redact_sidecar_stderr(stderr: str) -> str:
+    """Remove likely credential values before attaching sidecar stderr to errors."""
+    for pattern in _CREDENTIAL_VALUE_PATTERNS:
+        stderr = pattern.sub(r"\1[REDACTED]", stderr)
+    return stderr
 
 
 _SECRET_KEY_NAMES = {
