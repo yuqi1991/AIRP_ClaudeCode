@@ -228,10 +228,22 @@ class ProviderDrivenDirector(NarrativeDirector):
     runtime after :meth:`direct` returns (ADR-0011).
     """
 
-    def __init__(self, provider, max_tool_rounds: int = 8, max_retries: int = 3):
+    def __init__(
+        self,
+        provider,
+        max_tool_rounds: int = 8,
+        max_retries: int = 3,
+        *,
+        role: str = "narrative_director",
+        model: str | None = None,
+        instruction: str = "",
+    ):
         self._provider = provider
         self._max_tool_rounds = max_tool_rounds
         self._max_retries = max_retries
+        self._role = role
+        self._model = model
+        self._instruction = instruction
         self.last_final_text: str | None = None
 
     def direct(self, handle: DirectorHandle, compiled) -> None:
@@ -251,7 +263,16 @@ class ProviderDrivenDirector(NarrativeDirector):
                 }
             )
         tools = handle.tool_schemas()
-        model = self._provider.model_id("narrative_director")
+        graph = ((compiled.manifest.get("runtime_config") or {}).get("graph_nodes") or [])
+        active_node = graph[0] if graph else None
+        instruction = self._instruction or ((active_node or {}).get("instruction"))
+        if instruction:
+            messages.append({"role": "system", "content": instruction})
+        model = (
+            self._model
+            or ((active_node or {}).get("model"))
+            or self._provider.model_id(((active_node or {}).get("role")) or self._role)
+        )
         current_manifest = compiled
         rates = getattr(self._provider, "_rates", CostEstimate())
         accumulated_text = ""

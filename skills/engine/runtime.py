@@ -13,6 +13,7 @@ from engine.director import DirectorHandle, NarrativeDirector
 from engine.mvu import execute_commands, extract_commands, generate_schema, validate_command_strict
 from engine.provider import AbortSignal, ProviderAborted, ProviderError
 from engine.quality import DefaultQualityGate, QualityContext, QualityGate, QualityPolicy
+from engine.runtime_config import prompt_preset_from_snapshot, runtime_config_manifest
 from engine.tools import ToolResult, ToolRegistry, validate_draft_dict
 from engine.turn_parser import parse_turn_text
 from engine.worldbook import load_worldbook_entry_from_texts
@@ -184,6 +185,7 @@ class SessionTurnRuntime:
         quality_gate: QualityGate | None = None,
         quality_policy: QualityPolicy | None = None,
         max_commit_validation_retries: int = 3,
+        runtime_config_store=None,
     ):
         self.database_path = Path(database_path)
         self.card_folder = Path(card_folder)
@@ -191,6 +193,7 @@ class SessionTurnRuntime:
         self.session_id = session_id
         self.manifest_policy = manifest_policy or ContextPolicy(version="runtime-v1", token_budget=8000)
         self.session_settings = json.loads(self._canonical(session_settings or {}))
+        self.runtime_config_store = runtime_config_store
         self.quality_policy = quality_policy or QualityPolicy()
         self.quality_gate = quality_gate or DefaultQualityGate(self.quality_policy)
         self.max_commit_validation_retries = max(1, int(max_commit_validation_retries))
@@ -658,15 +661,17 @@ class SessionTurnRuntime:
                 ).fetchone()["count"]
                 snapshot = json.loads(task["source_snapshot"])
                 loads = self._worldbook_loads_in_connection(connection, task_id, call_ordinal)
+                policy = self._policy_for_snapshot(snapshot)
                 compiled = compile_context(ContextCompileRequest(
                     session_id=self.session_id,
                     task_id=task_id,
                     base_revision=task["base_revision"],
                     player_input=player_input,
                     snapshot=snapshot,
-                    policy=self.manifest_policy,
+                    policy=policy,
                     call_ordinal=call_ordinal,
                     worldbook_loads=tuple(loads),
+                    preset=prompt_preset_from_snapshot(snapshot.get("runtime_config")),
                 ))
                 return self._persist_manifest_in_connection(connection, task, compiled)
 
@@ -704,7 +709,7 @@ class SessionTurnRuntime:
             (
                 manifest_id, self.session_id, task["id"], task["base_revision"], manifest["call_ordinal"],
                 self._canonical(manifest), self._canonical(compiled.payload), compiled.payload_hash,
-                compiled.stable_payload_hash, self.manifest_policy.version, self.manifest_policy.token_budget,
+                compiled.stable_payload_hash, manifest["policy_version"], manifest["token_budget"],
                 manifest["estimated_tokens"],
             ),
         )
@@ -728,8 +733,9 @@ class SessionTurnRuntime:
             base_revision=task["base_revision"],
             player_input=task["text"],
             snapshot=snapshot,
-            policy=self.manifest_policy,
+            policy=self._policy_for_snapshot(snapshot),
             worldbook_loads=tuple(loads),
+            preset=prompt_preset_from_snapshot(snapshot.get("runtime_config")),
         )
         compiled = compile_context(request)
         compiled = self._persist_manifest(task, compiled)
@@ -1048,7 +1054,9 @@ class SessionTurnRuntime:
         # Harness-owned commit (ADR-0011): the director produces narrative text;
         # this loop parses → validates → commits. Bounded re-entry on quality/MVU
         # rejection so a bad first draft can be corrected within the same task.
-        max_attempts = self.max_commit_validation_retries
+        snapshot = json.loads(task["source_snapshot"]) if task["source_snapshot"] else {}
+        graph = ((snapshot.get("runtime_config") or {}).get("graph") or {})
+        max_attempts = max(1, int(graph.get("commit_validation_retries") or self.max_commit_validation_retries))
         for attempt in range(max_attempts):
             if signal.cancelled or self._task_status(task["id"]) == "cancelled":
                 return self._finalize_cancelled(task["id"])
@@ -1455,9 +1463,14 @@ class SessionTurnRuntime:
         initvar = self._read_json(initvar_path, {})
         runtime_turns = self._runtime_turns(base_revision)
         current_state = self._state_at_revision(base_revision)
+        runtime_config = None
+        settings = self.session_settings
+        if self.runtime_config_store is not None:
+            runtime_config = self.runtime_config_store.freeze().data
+            settings = runtime_config.get("settings") or settings
         return {
             "card_facts": self._read_json(card_data_path, {}),
-            "settings": self.session_settings,
+            "settings": settings,
             "worldbook_catalog": self._read_json(catalog_path, []),
             "worldbook_reference": self._read_text(reference_path),
             "worldbook_user": self._read_text(user_path),
@@ -1466,9 +1479,11 @@ class SessionTurnRuntime:
             "current_state": current_state,
             "recent_memory": self._recent_memory(project_path),
             "recent_turns": runtime_turns,
+            "runtime_config": runtime_config,
+            "runtime_config_manifest": runtime_config_manifest(runtime_config),
             "sources": {
                 "card_facts": self._file_source(card_data_path),
-                "settings": {"id": "session_settings", "version": self._hash_bytes(self._canonical(self.session_settings).encode("utf-8"))},
+                "settings": {"id": "runtime_settings" if runtime_config is not None else "session_settings", "version": self._hash_bytes(self._canonical(settings).encode("utf-8"))},
                 "worldbook_catalog": self._file_source(catalog_path),
                 "card_structure": self._file_source(structure_path),
                 "initvar": self._file_source(initvar_path),
@@ -1477,6 +1492,19 @@ class SessionTurnRuntime:
                 "recent_turns": {"id": "active_lineage", "version": str(base_revision)},
             },
         }
+
+    def _policy_for_snapshot(self, snapshot):
+        runtime_config = snapshot.get("runtime_config") if isinstance(snapshot, dict) else None
+        preset = runtime_config.get("preset") if isinstance(runtime_config, dict) else None
+        budget = preset.get("token_budget") if isinstance(preset, dict) else None
+        if not isinstance(budget, int) or budget <= 0:
+            return self.manifest_policy
+        return ContextPolicy(
+            version=f"{self.manifest_policy.version}:{runtime_config.get('preset_id', 'default')}",
+            token_budget=budget,
+            narrative_policy=self.manifest_policy.narrative_policy,
+            max_worldbook_loads=self.manifest_policy.max_worldbook_loads,
+        )
 
     def _state_at_revision(self, revision):
         if revision == 0:

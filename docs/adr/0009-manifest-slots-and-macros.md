@@ -36,12 +36,15 @@ Ticket 02 的 Context Manifest 以固定 11 个 section 硬编码在 `context_co
    - `compose_preset(base, disable_kinds=..., slot_overrides=..., append_slots=...)` 在 preset 层启停/替换 slot，**不改** `compile_context`。
    - `static_slot(...)` 便于挂固定指令文本（可带宏）。
 
-5. **Runtime 接线**
-   - 本票只交付 seam。真实回合仍走 `DEFAULT_PRESET`；runtime 无需选非默认 preset（gameplay 接线后续）。
+5. **Runtime 接线（2026-07-27 续接）**
+   - `skills/styles/presets/*.json` 是 prompt preset 文件事实源；`settings.json.runtime.preset_id` 选择当前 preset。
+   - entry 使用稳定 `id`、`role`、`enabled`、`placement`、`depth`、`order`，正文可内联或引用 `skills/styles/` 内 Markdown。
+   - preset 在 task 创建时连同 source hash 与展开 provenance 冻结到 `source_snapshot`；前端编辑仅影响后续 task。
+   - `skills/styles/graphs/*.json` 提供受限顺序写作职能 graph；不支持任意条件 DSL。
 
 ## Consequences
 
 - 切文风 / 关 NSFW / 注入临时指令可在 Manifest 层声明式组合，E2E prompt 调优不必再改 compiler。
 - 既有 Ticket 02 契约（确定性、replay、tamper、worldbook catalog-only、budget 截断、settings freeze）保持绿；`test_default_preset_is_byte_identical_to_legacy_inline_behavior` 用固定 hash 锁 default payload。
-- 不引入 JSON preset 文件加载或 autoActivate（pi-rp 范围蔓延）。
+- 已接入 JSON preset/受限顺序 graph，但不实现 autoActivate、任意条件 DSL 或非确定性宏。
 - 真实 DeepSeek E2E / recall / generation lease 仍属后续票。

@@ -203,9 +203,17 @@ def main() -> None:
 
     # 4. Construct runtime with a real (or mock) DeepSeek director
     from engine.context_compiler import ContextPolicy
+    from engine.runtime_config import RuntimeConfigStore
+    config_store = RuntimeConfigStore(styles)
+    frozen_config = config_store.freeze().data
+    graph = frozen_config["graph"]
+    enabled_nodes = [node for node in graph["nodes"] if node.get("enabled", True)]
     # Real cards exceed the 8k default (large card_facts/worldbook/variables);
-    # DeepSeek-v4-flash has ample context. Budget fits recent_memory first.
-    manifest_policy = ContextPolicy(version="runtime-v1", token_budget=32000)
+    # the active preset owns the token budget for each frozen task snapshot.
+    manifest_policy = ContextPolicy(
+        version=f"runtime-v1:{frozen_config['preset_id']}",
+        token_budget=frozen_config["preset"]["token_budget"],
+    )
     if mock:
         from engine.runtime import MultiTurnFakeExecutor, SessionTurnRuntime
         executor = MultiTurnFakeExecutor()
@@ -213,26 +221,45 @@ def main() -> None:
             database_path=card_folder / ".runtime.sqlite3",
             card_folder=str(card_folder), projection_root=styles,
             executor=executor, manifest_policy=manifest_policy,
+            runtime_config_store=config_store,
+            max_commit_validation_retries=graph["commit_validation_retries"],
         )
     else:
+        from engine.agent_graph import SequentialAgentGraph, SequentialGraphNode
         from engine.director import ProviderDrivenDirector
         from engine.provider import RealProviderAdapter
         from engine.runtime import SessionTurnRuntime
-        adapter = RealProviderAdapter(mock=False, model="deepseek-v4-flash",
-                                      base_url="https://api.deepseek.com")
-        executor = ProviderDrivenDirector(adapter, max_tool_rounds=8, max_retries=2)
-        settings = {}
-        sfile = styles / "settings.json"
-        if sfile.is_file():
-            try:
-                settings = json.loads(sfile.read_text(encoding="utf-8"))
-            except Exception:
-                pass
+        graph_nodes = []
+        for graph_node in enabled_nodes:
+            adapter = RealProviderAdapter(
+                mock=False,
+                model=graph_node["model"],
+                base_url="https://api.deepseek.com",
+            )
+            director = ProviderDrivenDirector(
+                adapter,
+                max_tool_rounds=graph_node["max_tool_rounds"],
+                max_retries=graph_node["max_retries"],
+                role=graph_node["role"],
+                model=graph_node["model"],
+                instruction=graph_node.get("instruction", ""),
+            )
+            graph_nodes.append(
+                SequentialGraphNode(
+                    graph_node["id"],
+                    graph_node["role"],
+                    director,
+                )
+            )
+        executor = graph_nodes[0].director if len(graph_nodes) == 1 else SequentialAgentGraph(graph_nodes)
+        settings = frozen_config["settings"]
         runtime = SessionTurnRuntime(
             database_path=card_folder / ".runtime.sqlite3",
             card_folder=str(card_folder), projection_root=styles,
             executor=executor, session_settings=settings,
             manifest_policy=manifest_policy,
+            runtime_config_store=config_store,
+            max_commit_validation_retries=graph["commit_validation_retries"],
         )
 
     # 5. Deliver opening (only if chat_log is empty — no turn 0 yet) OR rebuild
@@ -256,7 +283,14 @@ def main() -> None:
 
     # 6. Start unified server on :8765
     from runtime_server import SessionRuntimeServer
-    server = SessionRuntimeServer(runtime, host="127.0.0.1", port=PORT, static_root=styles)
+    server = SessionRuntimeServer(
+        runtime,
+        host="127.0.0.1",
+        port=PORT,
+        static_root=styles,
+        preset_root=config_store.preset_root,
+        graph_root=config_store.graph_root,
+    )
     server.start()
     url = f"http://localhost:{PORT}"
     if not _wait_server_ready(url):

@@ -256,20 +256,14 @@ def test_flow_completes_when_model_only_emits_text_and_never_calls_any_tool(tmp_
     assert json.loads(row[0])["世界"]["时间"] == "1月1日 10:00"
 
 
-def test_quality_gate_rejection_allows_same_task_retry_then_commits_once(tmp_path):
+def test_word_count_target_does_not_trigger_quality_retry(tmp_path):
     card_folder = tmp_path / "card"
     card_folder.mkdir()
     write_card_fixture(card_folder)
 
-    # First final text too short → harness quality-rejects → re-enters director
-    # → second final text long enough → commits once. Retries are invisible in
-    # committed history (one turn, one commit).
+    # A user word-count target is prompt strategy, not a runtime commit gate.
     director = ScriptedDirector([
         ("final", final_text(content="<p>短</p>", mvu_commands="")),
-        ("final", final_text(
-            content="<p>海风压低浪头，潮水一下一下拍着礁石边的湿沙，远处船笛低沉地响过，鸥鸟贴着水面滑向防波堤的另一侧。</p>",
-            mvu_commands="",
-        )),
     ])
     runtime = SessionTurnRuntime(
         database_path=tmp_path / "runtime.sqlite3",
@@ -283,13 +277,13 @@ def test_quality_gate_rejection_allows_same_task_retry_then_commits_once(tmp_pat
 
     assert result.status == "succeeded"
     assert result.revision == 1
-    # The director was entered twice (short then long), but only one commit.
-    assert len(director.final_texts) == 2
+    # The short draft commits once despite settings.wordCount.
+    assert len(director.final_texts) == 1
     assert runtime.active_revision() == 1
     assert event_types(runtime).count("turn.committed") == 1
     log = json.loads((card_folder / "chat_log.json").read_text(encoding="utf-8"))
     assert len(log) == 1
-    assert "海风压低浪头" in log[0]["ai"]
+    assert "<p>短</p>" in log[0]["ai"]
 
 
 

@@ -53,6 +53,13 @@ node_modules/
 !skills/
 !skills/engine/
 !skills/engine/*.py
+!skills/styles/
+!skills/styles/presets/
+!skills/styles/presets/*.json
+!skills/styles/graphs/
+!skills/styles/graphs/*.json
+!skills/styles/prompt_fragments/
+!skills/styles/prompt_fragments/*.md
 !skills/sidecar/
 !skills/sidecar/**
 !skills/tests/

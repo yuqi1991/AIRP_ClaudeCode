@@ -120,7 +120,7 @@ class SessionRuntimeServer:
         self.static_root = Path(static_root).resolve() if static_root else None
         repo_root = Path(__file__).resolve().parents[1]
         self.preset_root = Path(preset_root).resolve() if preset_root else ((self.static_root / "presets").resolve() if self.static_root else None)
-        self.graph_root = Path(graph_root).resolve() if graph_root else (repo_root / "graphs").resolve()
+        self.graph_root = Path(graph_root).resolve() if graph_root else ((self.static_root / "graphs").resolve() if self.static_root else (repo_root / "graphs").resolve())
         self._httpd: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
         self._submit_threads: list[threading.Thread] = []

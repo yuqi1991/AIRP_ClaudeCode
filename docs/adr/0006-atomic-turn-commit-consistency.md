@@ -19,7 +19,7 @@ Ticket 05 的目标：无论质量重试、MVU/schema 拒绝、provider 错误�
 
 在 Ticket 03 的单一写入边界之上，补齐提交门禁与一致性保证，全部在提交事务内、写盘前完成：
 
-- **质量门禁 seam**（`engine/quality.py`）：`QualityGate.validate(draft, context) → QualityVerdict`。默认 `DefaultQualityGate` 以 `draft.content` 的可见字符长度对照 `settings.wordCount`（冻结快照中）做宽松的上下限带，无则放行；不复制 `round_deliver.py` 的硬编码交付阈值——这是库层 seam，不是交付层规则。
+- **技术门禁 seam**（`engine/quality.py`）：`QualityGate.validate(draft, context) → QualityVerdict`。自 2026-07-27 起，默认 `DefaultQualityGate` 只要求 `draft.content` 含非空可见正文；`settings.wordCount`、文风、人称、NSFW、摘要和选项等均由可编辑 preset 表达，不再阻止 commit。嵌入方仍可显式传入 `QualityPolicy(min_chars/max_chars)` 增加技术长度边界。
 - **严格 MVU/schema 校验**（提交时，写盘前）：对 `draft.mvu_commands or content` 抽命令，用 `generate_schema(base_state, strict_template=True)`（非可扩展）逐条 `validate_command_strict`，再 dry-run `execute_commands`。任一不过返回稳定错误码，**不写 commit/revision/snapshot/投影**。基线读自 `_state_at_revision(task["base_revision"])`，不碰可变的 `state.js`/`chat_log.json`。
 - **同 task 有界修订**：被拒 draft 回传稳定错误给 director，同 task 内可重产修正稿；`validation_failures` 计数，达 `max_commit_validation_retries`（默认 3）落 `quality_exhausted` 终态，不推进 revision。修订在提交历史里不可见（无部分 commit、无重复 chat 行）。
 - **失败表面不冒充成功**：质量/MVU/stale/provider-terminal/abort/投影失败一律落非提交终态（`commit_id is None`、revision 不变、`chat_log.json` 不变、无 `turn.committed` 事件）。

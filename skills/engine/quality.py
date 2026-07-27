@@ -13,37 +13,19 @@ class QualityVerdict:
 
 @dataclass(frozen=True)
 class QualityPolicy:
-    """Minimal library-side length policy for committed narrative content.
+    """Technical gate for a commit-capable narrative payload.
 
-    The policy is intentionally generic: it does not copy gameplay delivery
-    thresholds. If the session snapshot exposes ``settings.wordCount``, we derive
-    a visible-text character band around that target. Otherwise we fall back to a
-    permissive default band so existing non-gameplay tests and library callers do
-    not unexpectedly fail.
+    User-authored writing preferences such as target length, style, person,
+    summaries and options belong in editable prompt presets. The runtime only
+    rejects an empty visible payload here; upper/lower length bounds are retained
+    as explicit opt-in constructor knobs for tests and embedders.
     """
 
     min_chars: int = 1
-    max_chars: int = 20000
-    # Permissive floor: wordCount is a *target*, not a hard minimum. Real models
-    # legitimately produce shorter turns (brief exchanges, dialogue); a 0.35
-    # ratio rejected normal output. The gate still blocks empty/near-empty
-    # drafts via min_floor and caps runaway output via max_ratio.
-    min_ratio: float = 0.1
-    max_ratio: float = 3.0
-    min_floor: int = 40
-    max_ceiling: int = 20000
+    max_chars: int | None = None
 
-    def resolve(self, settings: dict | None) -> tuple[int, int]:
-        target = None
-        if isinstance(settings, dict):
-            raw = settings.get("wordCount")
-            if isinstance(raw, (int, float)) and raw > 0:
-                target = int(raw)
-        if target is None:
-            return self.min_chars, self.max_chars
-        minimum = max(self.min_floor, int(target * self.min_ratio))
-        maximum = min(self.max_ceiling, max(minimum, int(target * self.max_ratio)))
-        return minimum, maximum
+    def bounds(self) -> tuple[int, int | None]:
+        return self.min_chars, self.max_chars
 
 
 @dataclass(frozen=True)
@@ -64,11 +46,11 @@ class DefaultQualityGate(QualityGate):
 
     def validate(self, draft, context: QualityContext) -> QualityVerdict:
         visible = visible_text_length(draft.content)
-        minimum, maximum = self._policy.resolve(context.settings)
+        minimum, maximum = self._policy.bounds()
         reasons: list[str] = []
         if visible < minimum:
             reasons.append("content_too_short")
-        if visible > maximum:
+        if maximum is not None and visible > maximum:
             reasons.append("content_too_long")
         return QualityVerdict(
             ok=not reasons,

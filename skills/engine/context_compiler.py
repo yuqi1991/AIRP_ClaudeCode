@@ -64,6 +64,8 @@ class ManifestSlot:
     enabled: bool = True
     include_when: Optional[IncludeWhen] = None
     expand_macros: bool = False
+    role: str | None = None
+    prompt_entry: dict | None = None
 
 
 @dataclass(frozen=True)
@@ -268,7 +270,16 @@ def compile_context(request):
                 source = {**source, "version": f"{source.get('version', '')}|{MACROS_VERSION}"}
             else:
                 source = {"id": slot.kind, "version": MACROS_VERSION}
-        _add(sections, slot.kind, slot.stability, content, slot.inclusion_reason, source)
+        _add(
+            sections,
+            slot.kind,
+            slot.stability,
+            content,
+            slot.inclusion_reason,
+            source,
+            role=slot.role,
+            prompt_entry=slot.prompt_entry,
+        )
     budget_decisions = _fit_budget(sections, request.policy.token_budget)
     payload = _payload(sections)
     _fit_payload_budget(sections, request.policy.token_budget, budget_decisions)
@@ -297,6 +308,7 @@ def compile_context(request):
         "preset_id": preset.id,
         "preset_version": preset.version,
         "macros_version": MACROS_VERSION,
+        "runtime_config": request.snapshot.get("runtime_config_manifest"),
     }
     return CompiledContext(payload, manifest, payload_hash, stable_payload_hash)
 
@@ -304,7 +316,7 @@ def compile_context(request):
 def replay_payload(manifest):
     return [
         {
-            "role": "system" if section["kind"] == "narrative_policy" else "user",
+            "role": section.get("role") or ("system" if section["kind"] == "narrative_policy" else "user"),
             "content": _canonical_json({"kind": section["kind"], "content": section["content"]}),
         }
         for section in manifest["sections"]
@@ -314,7 +326,7 @@ def replay_payload(manifest):
 def _payload(sections):
     return [
         {
-            "role": "system" if section["kind"] == "narrative_policy" else "user",
+            "role": section.get("role") or ("system" if section["kind"] == "narrative_policy" else "user"),
             "content": _canonical_json({"kind": section["kind"], "content": section["content"]}),
         }
         for section in sections
@@ -370,23 +382,27 @@ def _fit_budget(sections, token_budget):
     return decisions
 
 
-def _add(sections, kind, stability, content, reason, source=None):
+def _add(sections, kind, stability, content, reason, source=None, *, role=None, prompt_entry=None):
     canonical = _canonical_json(content)
-    source = source or {"id": kind, "version": _hash(content)}
-    sections.append(
-        {
-            "order": len(sections) + 1,
-            "kind": kind,
-            "stability": stability,
-            "content": content,
-            "source": {**source, "hash": _hash(content)},
-            "content_hash": _hash(content),
-            "inclusion_reason": reason,
-            "bytes": len(canonical.encode("utf-8")),
-            "estimated_tokens": _estimate_tokens(canonical),
-            "disposition": "included",
-        }
-    )
+    content_hash = _hash(content)
+    source = source or {"id": kind, "version": content_hash}
+    section = {
+        "order": len(sections) + 1,
+        "kind": kind,
+        "stability": stability,
+        "content": content,
+        "source": {**source, "hash": content_hash},
+        "content_hash": content_hash,
+        "inclusion_reason": reason,
+        "bytes": len(canonical.encode("utf-8")),
+        "estimated_tokens": _estimate_tokens(canonical),
+        "disposition": "included",
+    }
+    if role is not None:
+        section["role"] = role
+    if prompt_entry is not None:
+        section["prompt_entry"] = prompt_entry
+    sections.append(section)
 
 
 def _estimate_tokens(content):
