@@ -327,8 +327,37 @@ def test_api_runtime_config_crud_is_file_backed_and_validated(tmp_path):
         json.dumps({"runtime": {"preset_id": "default", "graph_id": "main"}}, ensure_ascii=False),
         encoding="utf-8",
     )
-    (presets / "default.json").write_text(json.dumps({"slots": ["a"]}, ensure_ascii=False, indent=2), encoding="utf-8")
-    (graphs / "main.json").write_text(json.dumps({"nodes": [{"id": "n1"}]}, ensure_ascii=False, indent=2), encoding="utf-8")
+    preset_data = {
+        "id": "default",
+        "entries": [
+            {
+                "id": "policy",
+                "kind": "narrative_policy",
+                "role": "system",
+                "content": "policy",
+            },
+            {
+                "id": "input",
+                "kind": "player_input",
+                "role": "user",
+                "content": "{{player_input}}",
+            },
+        ],
+    }
+    graph_data = {
+        "id": "main",
+        "mode": "sequential",
+        "nodes": [
+            {
+                "id": "director",
+                "role": "narrative_director",
+                "provider": "deepseek",
+                "model": "deepseek-v4-flash",
+            }
+        ],
+    }
+    (presets / "default.json").write_text(json.dumps(preset_data, ensure_ascii=False, indent=2), encoding="utf-8")
+    (graphs / "main.json").write_text(json.dumps(graph_data, ensure_ascii=False, indent=2), encoding="utf-8")
     card = tmp_path / "card"; _write_card(card)
     runtime = SessionTurnRuntime(
         database_path=tmp_path / "r.sqlite3", card_folder=card,
@@ -343,17 +372,28 @@ def test_api_runtime_config_crud_is_file_backed_and_validated(tmp_path):
 
         status, preset = _http("GET", f"{server.base_url}/api/runtime/presets/default")
         assert status == 200
-        assert preset["data"] == {"slots": ["a"]}
+        assert preset["data"] == preset_data
 
         status, graph = _http("GET", f"{server.base_url}/api/runtime/graphs/main")
         assert status == 200
-        assert graph["data"] == {"nodes": [{"id": "n1"}]}
+        assert graph["data"] == graph_data
 
+        updated_preset = {**preset_data, "version": "2"}
         status, saved = _http("PUT", f"{server.base_url}/api/runtime/presets/default",
-                              {"text": '{"slots": ["a", "b"]}'})
+                              {"data": updated_preset})
         assert status == 200
         assert saved["saved"] is True
-        assert json.loads((presets / "default.json").read_text(encoding="utf-8")) == {"slots": ["a", "b"]}
+        assert json.loads((presets / "default.json").read_text(encoding="utf-8")) == updated_preset
+
+        status, rejected = _http(
+            "PUT",
+            f"{server.base_url}/api/runtime/presets/default",
+            {"data": {**updated_preset, "entries": [{"id": "bad", "enabled": "false", "content": "x"}]}},
+        )
+        assert status == 400
+        assert rejected["error"] == "invalid_runtime_config"
+        assert rejected["path"] == "entries.0.enabled"
+        assert json.loads((presets / "default.json").read_text(encoding="utf-8")) == updated_preset
 
         status, selected = _http("PUT", f"{server.base_url}/api/runtime/config",
                                  {"preset_id": "default", "graph_id": "main"})

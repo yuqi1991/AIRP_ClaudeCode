@@ -57,7 +57,6 @@ Thread model
 from __future__ import annotations
 
 import json
-import re
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -67,12 +66,12 @@ from urllib.parse import parse_qs, urlparse
 
 from engine.commands import SessionCommandService
 from engine.runtime import RuntimeEvent, SessionTurnRuntime
+from engine.runtime_config import CONFIG_ID_RE, RuntimeConfigError, RuntimeConfigStore
 
 SSE_HEARTBEAT_SECONDS = 15.0
 SSE_POLL_INTERVAL_SECONDS = 0.05
 SUBMIT_ACCEPT_WAIT_SECONDS = 2.0
 RUNNING_TASK_STATUSES = frozenset({"queued", "running", "projection_pending"})
-CONFIG_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
 
 
 def _event_to_dict(event: RuntimeEvent) -> dict:
@@ -121,6 +120,15 @@ class SessionRuntimeServer:
         repo_root = Path(__file__).resolve().parents[1]
         self.preset_root = Path(preset_root).resolve() if preset_root else ((self.static_root / "presets").resolve() if self.static_root else None)
         self.graph_root = Path(graph_root).resolve() if graph_root else ((self.static_root / "graphs").resolve() if self.static_root else (repo_root / "graphs").resolve())
+        self.config_store = (
+            RuntimeConfigStore(
+                self.static_root,
+                preset_root=self.preset_root,
+                graph_root=self.graph_root,
+            )
+            if self.static_root
+            else None
+        )
         self._httpd: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
         self._submit_threads: list[threading.Thread] = []
@@ -291,14 +299,12 @@ class SessionRuntimeServer:
         }
 
     def _runtime_selection(self) -> dict[str, str | None]:
-        settings = self._read_settings()
-        runtime_cfg = settings.get("runtime") if isinstance(settings, dict) else {}
-        if not isinstance(runtime_cfg, dict):
-            runtime_cfg = {}
-        return {
-            "preset_id": runtime_cfg.get("preset_id"),
-            "graph_id": runtime_cfg.get("graph_id"),
-        }
+        if self.config_store is None:
+            return {"preset_id": None, "graph_id": None}
+        try:
+            return self.config_store.selection()
+        except RuntimeConfigError:
+            return {"preset_id": None, "graph_id": None}
 
     def _config_collection_payload(self, kind: str) -> dict[str, Any]:
         selection = self._runtime_selection()
@@ -578,7 +584,11 @@ class SessionRuntimeServer:
                     return
 
                 if path == "/api/settings":
-                    settings = server_ref._write_settings(body)
+                    try:
+                        settings = server_ref._write_settings(body)
+                    except RuntimeConfigError as exc:
+                        self._send_json(400, {"ok": False, **exc.to_dict()})
+                        return
                     self._send_json(200, {"ok": True, "settings": settings})
                     return
 
@@ -712,6 +722,9 @@ class SessionRuntimeServer:
         current = self._read_settings()
         if isinstance(updates, dict):
             current.update(updates)
+        runtime_cfg = current.get("runtime") if isinstance(current, dict) else None
+        if self.config_store is not None and isinstance(runtime_cfg, dict):
+            return self.config_store.update_settings(updates)
         if self.static_root is not None:
             (self.static_root / "settings.json").write_text(
                 json.dumps(current, ensure_ascii=False, indent=2), encoding="utf-8"
@@ -740,31 +753,22 @@ class SessionRuntimeServer:
         return target, None
 
     def _list_json_configs(self, kind: str) -> list[dict[str, Any]]:
-        root = self._config_root_for(kind)
-        if root is None or not root.is_dir():
+        if self.config_store is None:
             return []
-        items = []
-        for path in sorted(root.glob("*.json")):
-            items.append(
-                {
-                    "id": path.stem,
-                    "path": str(path.relative_to(root.parent)),
-                    "updated_at": int(path.stat().st_mtime),
-                }
-            )
-        return items
+        try:
+            return self.config_store.list_configs(kind)
+        except RuntimeConfigError:
+            return []
 
     def _read_json_config(self, kind: str, config_id: str) -> tuple[dict[str, Any], int]:
-        target, error = self._config_file_for(kind, config_id)
-        if error:
-            return {"ok": False, "error": error, "kind": kind, "id": config_id}, 400
-        if target is None or not target.is_file():
-            return {"ok": False, "error": "not_found", "kind": kind, "id": config_id}, 404
+        if self.config_store is None:
+            return {"ok": False, "error": "config_root_unavailable", "kind": kind, "id": config_id}, 400
         try:
-            text = target.read_text(encoding="utf-8")
-            data = json.loads(text)
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-            return {"ok": False, "error": "invalid_json_file", "kind": kind, "id": config_id, "message": str(exc)}, 500
+            data = self.config_store.read_config(kind, config_id)
+        except RuntimeConfigError as exc:
+            return {"ok": False, "kind": kind, "id": config_id, **exc.to_dict()}, 400
+        except OSError:
+            return {"ok": False, "error": "not_found", "kind": kind, "id": config_id}, 404
         return {
             "ok": True,
             "kind": kind,
@@ -793,16 +797,16 @@ class SessionRuntimeServer:
         return data, None
 
     def _write_json_config(self, kind: str, config_id: str, body: dict) -> tuple[dict[str, Any], int]:
-        target, error = self._config_file_for(kind, config_id)
-        if error:
-            return {"ok": False, "error": error, "kind": kind, "id": config_id}, 400
         data, payload_error = self._coerce_config_payload(body)
         if payload_error:
             return {"ok": False, "error": payload_error, "kind": kind, "id": config_id}, 400
-        assert target is not None
-        target.parent.mkdir(parents=True, exist_ok=True)
+        if self.config_store is None:
+            return {"ok": False, "error": "config_root_unavailable", "kind": kind, "id": config_id}, 400
+        try:
+            self.config_store.write_config(kind, config_id, data)
+        except RuntimeConfigError as exc:
+            return {"ok": False, "kind": kind, "id": config_id, **exc.to_dict()}, 400
         text = json.dumps(data, ensure_ascii=False, indent=2) + "\n"
-        target.write_text(text, encoding="utf-8")
         return {
             "ok": True,
             "kind": kind,
@@ -815,28 +819,21 @@ class SessionRuntimeServer:
     def _write_runtime_selection(self, body: dict) -> tuple[dict[str, Any], int]:
         if not isinstance(body, dict):
             return {"ok": False, "error": "invalid_payload"}, 400
-        updates: dict[str, str | None] = {}
-        for field, kind in (("preset_id", "preset"), ("graph_id", "graph")):
-            if field not in body:
-                continue
-            value = body.get(field)
-            if value in (None, ""):
-                updates[field] = None
-                continue
-            if not isinstance(value, str) or not CONFIG_ID_RE.fullmatch(value):
-                return {"ok": False, "error": "invalid_config_id", field: value}, 400
-            target, error = self._config_file_for(kind, value)
-            if error:
-                return {"ok": False, "error": error, field: value}, 400
-            if target is None or not target.is_file():
-                return {"ok": False, "error": "not_found", field: value}, 404
-            updates[field] = value
-        settings = self._read_settings()
-        runtime_cfg = settings.get("runtime") if isinstance(settings.get("runtime"), dict) else {}
-        runtime_cfg = dict(runtime_cfg)
-        runtime_cfg.update(updates)
-        settings["runtime"] = runtime_cfg
-        self._write_settings(settings)
+        if self.config_store is None:
+            return {"ok": False, "error": "config_root_unavailable"}, 400
+        current = self._runtime_selection()
+        preset_id = body.get("preset_id", current.get("preset_id") or "default")
+        graph_id = body.get("graph_id", current.get("graph_id") or "default")
+        if preset_id in (None, ""):
+            preset_id = "default"
+        if graph_id in (None, ""):
+            graph_id = "default"
+        try:
+            runtime_cfg = self.config_store.write_selection(preset_id, graph_id)
+        except RuntimeConfigError as exc:
+            return {"ok": False, **exc.to_dict()}, 400
+        except OSError as exc:
+            return {"ok": False, "error": "not_found", "message": str(exc)}, 404
         return {
             "ok": True,
             "runtime": runtime_cfg,
@@ -864,9 +861,14 @@ class SessionRuntimeServer:
         return out
 
     def _delete_style_profile(self, name: str) -> bool:
-        if not self.static_root or not name:
+        if not self.static_root or not name or not CONFIG_ID_RE.fullmatch(name):
             return False
-        target = self.static_root / "profiles" / f"{name}.md"
+        root = (self.static_root / "profiles").resolve()
+        target = (root / f"{name}.md").resolve()
+        try:
+            target.relative_to(root)
+        except ValueError:
+            return False
         if target.is_file():
             target.unlink()
             return True

@@ -48,6 +48,10 @@ class _GraphNodeHandle:
     def task_id(self):
         return self._parent.task_id
 
+    @property
+    def task_text(self):
+        return self._parent.task_text
+
     def call_tool(self, name, args):
         return self._parent.call_tool(name, args)
 

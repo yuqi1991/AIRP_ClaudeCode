@@ -169,7 +169,64 @@ def test_runtime_freezes_selected_files_per_submit_and_records_provenance(tmp_pa
     assert snapshots[1]["runtime_config"]["preset"]["entries"][0]["raw_content"] == "Changed {{charName}}"
 
 
-def test_word_count_does_not_block_commit_but_empty_visible_content_does():
+
+
+def test_runtime_uses_each_task_frozen_graph_after_selection_changes(tmp_path):
+    styles = tmp_path / "styles"
+    styles.mkdir()
+    _write_config(styles)
+    alternate_graph = {
+        "id": "alternate",
+        "mode": "sequential",
+        "nodes": [
+            {
+                "id": "director-two",
+                "role": "narrative_director",
+                "provider": "deepseek",
+                "model": "deepseek-test-two",
+            }
+        ],
+    }
+    (styles / "graphs" / "alternate.json").write_text(
+        json.dumps(alternate_graph, ensure_ascii=False), encoding="utf-8"
+    )
+    card = tmp_path / "card"
+    _write_card(card)
+    store = RuntimeConfigStore(styles)
+    observed_graphs = []
+
+    class GraphExecutor:
+        def __init__(self, graph_id):
+            self.graph_id = graph_id
+
+        def run(self, text, compiled_context):
+            return FakeNarrativeExecutor(content=f"<p>{self.graph_id}:{text}</p>").run(text)
+
+    def executor_factory(runtime_config):
+        graph_id = runtime_config["graph_id"]
+        observed_graphs.append(graph_id)
+        return GraphExecutor(graph_id)
+
+    runtime = SessionTurnRuntime(
+        database_path=tmp_path / "runtime.sqlite3",
+        card_folder=card,
+        projection_root=styles,
+        executor=FakeNarrativeExecutor(content="<p>fallback</p>"),
+        runtime_config_store=store,
+        executor_factory=executor_factory,
+    )
+
+    first = runtime.submit("第一轮", "first")
+    store.write_selection("custom", "alternate")
+    duplicate = runtime.submit("不应重新执行", "first")
+    second = runtime.submit("第二轮", "second")
+
+    assert first.status == second.status == "succeeded"
+    assert duplicate.task_id == first.task_id
+    assert observed_graphs == ["main", "alternate"]
+    log = json.loads((card / "chat_log.json").read_text(encoding="utf-8"))
+    assert "main:第一轮" in log[0]["ai"]
+    assert "alternate:第二轮" in log[1]["ai"]
     gate = DefaultQualityGate()
     short = type("Draft", (), {"content": "<p>短</p>"})()
     empty = type("Draft", (), {"content": "<p>  </p>"})()

@@ -186,6 +186,7 @@ class SessionTurnRuntime:
         quality_policy: QualityPolicy | None = None,
         max_commit_validation_retries: int = 3,
         runtime_config_store=None,
+        executor_factory=None,
     ):
         self.database_path = Path(database_path)
         self.card_folder = Path(card_folder)
@@ -194,6 +195,7 @@ class SessionTurnRuntime:
         self.manifest_policy = manifest_policy or ContextPolicy(version="runtime-v1", token_budget=8000)
         self.session_settings = json.loads(self._canonical(session_settings or {}))
         self.runtime_config_store = runtime_config_store
+        self.executor_factory = executor_factory
         self.quality_policy = quality_policy or QualityPolicy()
         self.quality_gate = quality_gate or DefaultQualityGate(self.quality_policy)
         self.max_commit_validation_retries = max(1, int(max_commit_validation_retries))
@@ -218,7 +220,8 @@ class SessionTurnRuntime:
             if result.status == "succeeded":
                 return result
 
-            is_director = isinstance(self.executor, NarrativeDirector)
+            executor = self._executor_for_task(task)
+            is_director = isinstance(executor, NarrativeDirector)
             signal = None
             if is_director:
                 # Register the abort signal BEFORE the task flips to "running".
@@ -234,7 +237,7 @@ class SessionTurnRuntime:
             else:
                 try:
                     compiled = self._compile_and_persist(task)
-                    draft = self._execute(text, compiled)
+                    draft = self._execute(executor, text, compiled)
                     result = self._commit_draft(task, draft)
                     return self._project(result)
                 finally:
@@ -243,7 +246,7 @@ class SessionTurnRuntime:
         # Director path — lock released so rollback/stop can interleave.
         try:
             compiled = self._compile_and_persist(task)
-            return self._run_director(task, text, compiled, signal)
+            return self._run_director(task, text, compiled, signal, executor)
         finally:
             if signal is not None:
                 self._abort_signals.pop(task["id"], None)
@@ -430,20 +433,21 @@ class SessionTurnRuntime:
             if result.status == "succeeded":
                 return result
 
-            is_director = isinstance(self.executor, NarrativeDirector)
+            executor = self._executor_for_task(task)
+            is_director = isinstance(executor, NarrativeDirector)
             if is_director:
                 signal = AbortSignal()
                 self._abort_signals[task["id"]] = signal
             else:
                 compiled = self._compile_and_persist(task)
-                draft = self._execute(text, compiled)
+                draft = self._execute(executor, text, compiled)
                 result = self._commit_draft(task, draft)
                 return self._project(result)
 
         # Director path — lock released so concurrent commands can interleave.
         try:
             compiled = self._compile_and_persist(task)
-            return self._run_director(task, text, compiled, signal)
+            return self._run_director(task, text, compiled, signal, executor)
         finally:
             if signal is not None:
                 self._abort_signals.pop(task["id"], None)
@@ -750,8 +754,15 @@ class SessionTurnRuntime:
                 self._event(connection, "task.running", {"task_id": task["id"]})
         return compiled
 
-    def _execute(self, text, compiled):
-        return self.executor.run(text, compiled)
+    def _executor_for_task(self, task):
+        if self.executor_factory is None:
+            return self.executor
+        snapshot = json.loads(task["source_snapshot"]) if task["source_snapshot"] else {}
+        return self.executor_factory(snapshot.get("runtime_config"))
+
+    @staticmethod
+    def _execute(executor, text, compiled):
+        return executor.run(text, compiled)
 
     def _commit_draft(self, task, draft):
         stale = False
@@ -1042,7 +1053,7 @@ class SessionTurnRuntime:
 
     # ═══ Narrative-director execution (Ticket 03) ═══
 
-    def _run_director(self, task, text, compiled, signal):
+    def _run_director(self, task, text, compiled, signal, executor):
         # If a concurrent stop() cancelled this task during context compilation
         # (or before the director body started), finalize as cancelled without
         # running the director — no commit, no preview promotion.
@@ -1065,7 +1076,7 @@ class SessionTurnRuntime:
             if existing and existing.commit_id:
                 return self._project(existing)
             try:
-                self.executor.direct(handle, compiled)
+                executor.direct(handle, compiled)
             except ProviderAborted:
                 terminal_status = "cancelled"
                 break

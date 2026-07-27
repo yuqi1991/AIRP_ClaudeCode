@@ -201,66 +201,34 @@ def main() -> None:
         if r.returncode != 0:
             _die(f"import_prepare 失败: {r.stderr[:500]}")
 
-    # 4. Construct runtime with a real (or mock) DeepSeek director
+    # 4. Construct runtime. Each task resolves its executor from the graph frozen
+    # in its source snapshot, so config edits affect only later tasks.
     from engine.context_compiler import ContextPolicy
+    from engine.executor_factory import RuntimeExecutorFactory
+    from engine.runtime import MultiTurnFakeExecutor, SessionTurnRuntime
     from engine.runtime_config import RuntimeConfigStore
+
     config_store = RuntimeConfigStore(styles)
     frozen_config = config_store.freeze().data
     graph = frozen_config["graph"]
-    enabled_nodes = [node for node in graph["nodes"] if node.get("enabled", True)]
-    # Real cards exceed the 8k default (large card_facts/worldbook/variables);
-    # the active preset owns the token budget for each frozen task snapshot.
     manifest_policy = ContextPolicy(
         version=f"runtime-v1:{frozen_config['preset_id']}",
         token_budget=frozen_config["preset"]["token_budget"],
     )
-    if mock:
-        from engine.runtime import MultiTurnFakeExecutor, SessionTurnRuntime
-        executor = MultiTurnFakeExecutor()
-        runtime = SessionTurnRuntime(
-            database_path=card_folder / ".runtime.sqlite3",
-            card_folder=str(card_folder), projection_root=styles,
-            executor=executor, manifest_policy=manifest_policy,
-            runtime_config_store=config_store,
-            max_commit_validation_retries=graph["commit_validation_retries"],
-        )
-    else:
-        from engine.agent_graph import SequentialAgentGraph, SequentialGraphNode
-        from engine.director import ProviderDrivenDirector
-        from engine.provider import RealProviderAdapter
-        from engine.runtime import SessionTurnRuntime
-        graph_nodes = []
-        for graph_node in enabled_nodes:
-            adapter = RealProviderAdapter(
-                mock=False,
-                model=graph_node["model"],
-                base_url="https://api.deepseek.com",
-            )
-            director = ProviderDrivenDirector(
-                adapter,
-                max_tool_rounds=graph_node["max_tool_rounds"],
-                max_retries=graph_node["max_retries"],
-                role=graph_node["role"],
-                model=graph_node["model"],
-                instruction=graph_node.get("instruction", ""),
-            )
-            graph_nodes.append(
-                SequentialGraphNode(
-                    graph_node["id"],
-                    graph_node["role"],
-                    director,
-                )
-            )
-        executor = graph_nodes[0].director if len(graph_nodes) == 1 else SequentialAgentGraph(graph_nodes)
-        settings = frozen_config["settings"]
-        runtime = SessionTurnRuntime(
-            database_path=card_folder / ".runtime.sqlite3",
-            card_folder=str(card_folder), projection_root=styles,
-            executor=executor, session_settings=settings,
-            manifest_policy=manifest_policy,
-            runtime_config_store=config_store,
-            max_commit_validation_retries=graph["commit_validation_retries"],
-        )
+    executor_factory = RuntimeExecutorFactory(mock=mock, base_url="https://api.deepseek.com")
+    runtime = SessionTurnRuntime(
+        database_path=card_folder / ".runtime.sqlite3",
+        card_folder=str(card_folder),
+        projection_root=styles,
+        # The factory is authoritative for every task; retain this fallback for
+        # callers and legacy test helpers that inspect or swap runtime.executor.
+        executor=MultiTurnFakeExecutor(),
+        session_settings=frozen_config["settings"],
+        manifest_policy=manifest_policy,
+        runtime_config_store=config_store,
+        executor_factory=executor_factory,
+        max_commit_validation_retries=graph["commit_validation_retries"],
+    )
 
     # 5. Deliver opening (only if chat_log is empty — no turn 0 yet) OR rebuild
     # projection from an existing save so the browser reflects the save instead

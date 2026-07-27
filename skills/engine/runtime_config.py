@@ -3,7 +3,9 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import os
 import re
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -19,7 +21,16 @@ _ALLOWED_PROVIDERS = frozenset({"deepseek"})
 
 
 class RuntimeConfigError(ValueError):
-    pass
+    def __init__(self, message: str, *, code="invalid_runtime_config", path=None):
+        super().__init__(message)
+        self.code = code
+        self.path = path
+
+    def to_dict(self) -> dict:
+        payload = {"error": self.code, "message": str(self)}
+        if self.path:
+            payload["path"] = self.path
+        return payload
 
 
 @dataclass(frozen=True)
@@ -44,8 +55,8 @@ class RuntimeConfigStore:
         self.graph_root = Path(graph_root).resolve() if graph_root else self.styles_root / "graphs"
         self.settings_path = self.styles_root / "settings.json"
 
-    def selection(self) -> dict[str, str]:
-        settings = self._read_json(self.settings_path)
+    def selection(self, settings=None) -> dict[str, str]:
+        settings = self._read_json(self.settings_path) if settings is None else settings
         runtime = settings.get("runtime") if isinstance(settings, dict) else {}
         if not isinstance(runtime, dict):
             runtime = {}
@@ -55,8 +66,10 @@ class RuntimeConfigStore:
         self._validate_id(graph_id, "graph")
         return {"preset_id": preset_id, "graph_id": graph_id}
 
-    def freeze(self) -> FrozenRuntimeConfig:
-        selected = self.selection()
+    def freeze(self, selection=None) -> FrozenRuntimeConfig:
+        selected = selection or self.selection()
+        self._validate_id(selected.get("preset_id"), "preset")
+        self._validate_id(selected.get("graph_id"), "graph")
         preset_path = self.preset_root / f"{selected['preset_id']}.json"
         graph_path = self.graph_root / f"{selected['graph_id']}.json"
         preset = self._normalize_preset(self._read_json(preset_path), selected["preset_id"], preset_path)
@@ -73,6 +86,78 @@ class RuntimeConfigStore:
             },
         }
         return FrozenRuntimeConfig(copy.deepcopy(data))
+
+    def list_configs(self, kind: str) -> list[dict]:
+        root = self._root_for(kind)
+        if not root.is_dir():
+            return []
+        return [
+            {
+                "id": path.stem,
+                "path": self._display_path(path, root),
+                "updated_at": int(path.stat().st_mtime),
+            }
+            for path in sorted(root.glob("*.json"))
+        ]
+
+    def read_config(self, kind: str, config_id: str) -> dict:
+        path = self._file_for(kind, config_id)
+        data = self._read_json(path)
+        self.validate_config(kind, config_id, data, path=path)
+        return data
+
+    def validate_config(self, kind: str, config_id: str, data: Any, *, path=None) -> dict:
+        self._validate_id(config_id, kind)
+        source_path = Path(path) if path else self._file_for(kind, config_id)
+        if kind == "preset":
+            return self._normalize_preset(data, config_id, source_path)
+        if kind == "graph":
+            return self._normalize_graph(data, config_id, source_path)
+        raise RuntimeConfigError(f"unsupported config kind: {kind}", path="kind")
+
+    def write_config(self, kind: str, config_id: str, data: Any) -> dict:
+        path = self._file_for(kind, config_id)
+        self.validate_config(kind, config_id, data, path=path)
+        self._atomic_write_json(path, data)
+        return data
+
+    def write_selection(self, preset_id: str, graph_id: str) -> dict:
+        selected = {"preset_id": preset_id, "graph_id": graph_id}
+        self.freeze(selected)
+        settings = self._read_json(self.settings_path)
+        if not isinstance(settings, dict):
+            raise RuntimeConfigError("settings must be an object", path="settings")
+        settings["runtime"] = dict(selected)
+        self._atomic_write_json(self.settings_path, settings)
+        return dict(selected)
+
+    def update_settings(self, updates: dict) -> dict:
+        settings = self._read_json(self.settings_path)
+        if not isinstance(settings, dict):
+            raise RuntimeConfigError("settings must be an object", path="settings")
+        settings.update(updates)
+        selected = self.selection(settings)
+        self.freeze(selected)
+        settings["runtime"] = selected
+        self._atomic_write_json(self.settings_path, settings)
+        return settings
+
+    def _root_for(self, kind: str) -> Path:
+        if kind == "preset":
+            return self.preset_root
+        if kind == "graph":
+            return self.graph_root
+        raise RuntimeConfigError(f"unsupported config kind: {kind}", path="kind")
+
+    def _file_for(self, kind: str, config_id: str) -> Path:
+        self._validate_id(config_id, kind)
+        root = self._root_for(kind).resolve()
+        target = (root / f"{config_id}.json").resolve()
+        try:
+            target.relative_to(root)
+        except ValueError as exc:
+            raise RuntimeConfigError("config path escapes root", code="invalid_config_id") from exc
+        return target
 
     def _normalize_preset(self, raw: Any, expected_id: str, path: Path) -> dict:
         if not isinstance(raw, dict):
@@ -98,14 +183,38 @@ class RuntimeConfigStore:
             placement = entry.get("placement", "relative")
             depth = entry.get("depth", 0)
             order = entry.get("order", index)
+            enabled = entry.get("enabled", True)
+            stability = entry.get("stability", "stable")
+            condition = entry.get("condition")
+            if not isinstance(enabled, bool):
+                raise RuntimeConfigError(
+                    f"enabled for {entry_id} must be boolean",
+                    path=f"entries.{index}.enabled",
+                )
             if role not in _ALLOWED_ROLES:
-                raise RuntimeConfigError(f"invalid role for {entry_id}: {role}")
+                raise RuntimeConfigError(
+                    f"invalid role for {entry_id}: {role}",
+                    path=f"entries.{index}.role",
+                )
             if placement not in _ALLOWED_PLACEMENTS:
-                raise RuntimeConfigError(f"invalid placement for {entry_id}: {placement}")
+                raise RuntimeConfigError(
+                    f"invalid placement for {entry_id}: {placement}",
+                    path=f"entries.{index}.placement",
+                )
             if not isinstance(depth, int) or depth < 0:
-                raise RuntimeConfigError(f"invalid depth for {entry_id}")
+                raise RuntimeConfigError(f"invalid depth for {entry_id}", path=f"entries.{index}.depth")
             if not isinstance(order, int):
-                raise RuntimeConfigError(f"invalid order for {entry_id}")
+                raise RuntimeConfigError(f"invalid order for {entry_id}", path=f"entries.{index}.order")
+            if stability not in {"stable", "dynamic"}:
+                raise RuntimeConfigError(
+                    f"invalid stability for {entry_id}: {stability}",
+                    path=f"entries.{index}.stability",
+                )
+            if condition not in {None, "always", "nonempty"}:
+                raise RuntimeConfigError(
+                    f"invalid condition for {entry_id}: {condition}",
+                    path=f"entries.{index}.condition",
+                )
             raw_content, source = self._entry_source(entry, entry_id)
             placeholders = tuple(dict.fromkeys(_TEMPLATE_RE.findall(raw_content)))
             self._validate_placeholders(placeholders, entry_id)
@@ -114,14 +223,14 @@ class RuntimeConfigStore:
                     "id": entry_id,
                     "name": str(entry.get("name") or entry_id),
                     "kind": str(entry.get("kind") or entry_id),
-                    "enabled": bool(entry.get("enabled", True)),
+                    "enabled": enabled,
                     "role": role,
                     "placement": placement,
                     "depth": depth,
                     "order": order,
-                    "stability": entry.get("stability", "stable"),
+                    "stability": stability,
                     "inclusion_reason": str(entry.get("inclusion_reason") or "configured prompt entry"),
-                    "condition": entry.get("condition"),
+                    "condition": condition,
                     "raw_content": raw_content,
                     "placeholders": list(placeholders),
                     "source": source,
@@ -141,6 +250,8 @@ class RuntimeConfigStore:
         graph_id = raw.get("id") or expected_id
         if graph_id != expected_id:
             raise RuntimeConfigError(f"graph id mismatch: expected {expected_id!r}")
+        if raw.get("mode", "sequential") != "sequential":
+            raise RuntimeConfigError("only sequential graph mode is supported", path="mode")
         nodes = raw.get("nodes")
         if not isinstance(nodes, list) or not nodes:
             raise RuntimeConfigError("graph nodes must be a non-empty array")
@@ -155,13 +266,22 @@ class RuntimeConfigStore:
                 raise RuntimeConfigError(f"duplicate graph node id: {node_id}")
             seen.add(node_id)
             provider = node.get("provider", "deepseek")
+            enabled = node.get("enabled", True)
+            if not isinstance(enabled, bool):
+                raise RuntimeConfigError(
+                    f"enabled for {node_id} must be boolean",
+                    path=f"nodes.{index}.enabled",
+                )
             if provider not in _ALLOWED_PROVIDERS:
-                raise RuntimeConfigError(f"unsupported graph provider: {provider}")
+                raise RuntimeConfigError(
+                    f"unsupported graph provider: {provider}",
+                    path=f"nodes.{index}.provider",
+                )
             normalized.append(
                 {
                     "id": node_id,
                     "role": str(node.get("role") or "narrative_director"),
-                    "enabled": bool(node.get("enabled", True)),
+                    "enabled": enabled,
                     "order": node.get("order", index),
                     "provider": provider,
                     "model": str(node.get("model") or "deepseek-v4-flash"),
@@ -237,7 +357,11 @@ class RuntimeConfigStore:
     @staticmethod
     def _validate_id(value: Any, label: str) -> None:
         if not isinstance(value, str) or not CONFIG_ID_RE.fullmatch(value):
-            raise RuntimeConfigError(f"invalid {label} id: {value!r}")
+            raise RuntimeConfigError(
+                f"invalid {label} id: {value!r}",
+                code="invalid_config_id",
+                path=f"{label}_id",
+            )
 
     @staticmethod
     def _read_json(path: Path) -> Any:
@@ -249,12 +373,42 @@ class RuntimeConfigStore:
             raise RuntimeConfigError(f"runtime config is invalid JSON: {path}: {exc}") from exc
 
     @staticmethod
+    def _display_path(path: Path, root: Path) -> str:
+        try:
+            return str(path.relative_to(root.parent))
+        except ValueError:
+            return path.name
+
+    @staticmethod
     def _source(path: Path) -> dict:
         try:
             raw = path.read_bytes()
         except OSError:
             raw = b""
         return {"id": str(path.name), "path": str(path), "version": hashlib.sha256(raw).hexdigest()}
+
+    @staticmethod
+    def _atomic_write_json(path: Path, data: Any) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        text = json.dumps(data, ensure_ascii=False, indent=2) + "\n"
+        descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+        try:
+            with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+                stream.write(text)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, path)
+            directory_fd = os.open(path.parent, os.O_RDONLY)
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+        except Exception:
+            try:
+                os.unlink(temporary)
+            except OSError:
+                pass
+            raise
 
 
 def prompt_preset_from_snapshot(runtime_config: dict | None) -> PromptPreset | None:

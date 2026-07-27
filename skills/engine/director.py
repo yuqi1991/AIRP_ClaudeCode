@@ -75,6 +75,10 @@ class DirectorHandle:
     def tool_schemas(self) -> list:
         return self._tools.schemas()
 
+    @property
+    def task_text(self) -> str:
+        return self._task_text
+
     # --- narrative output (harness commit source) ---
 
     def set_final_text(self, text: str) -> None:
