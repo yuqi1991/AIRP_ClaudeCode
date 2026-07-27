@@ -228,6 +228,9 @@ body {
 }
 .side-button:hover { border-color: var(--accent); background: var(--surface); }
 .side-note { font-size: 0.72em; color: var(--muted); line-height: 1.45; margin-top: 4px; }
+#runtime-task-meta { color: var(--muted); line-height: 1.45; white-space: pre-wrap; }
+#runtime-cancel-button { margin-top: 6px; }
+#runtime-cancel-button[hidden] { display: none; }
 
 /* ═══ INPUT ═══ */
 #input-panel {
@@ -912,6 +915,8 @@ body {
       <div class="side-note" id="runtime-config-status">运行时配置状态: 未连接</div>
       <div class="side-note" id="runtime-task-status">任务: —</div>
       <div class="side-note" id="runtime-task-id">Task ID: —</div>
+      <div class="side-note" id="runtime-task-meta"></div>
+      <button class="side-button" id="runtime-cancel-button" onclick="cancelRuntimeTask()" hidden>取消当前任务</button>
       <div class="setting-row" style="display:block;">
         <span class="label">Active Preset</span>
         <select id="runtime-preset-select" class="config-select" onchange="loadRuntimePresetEditor()"></select>
@@ -1431,6 +1436,26 @@ function pickAction(action) {
 const API_BASE = '';
 let bridgeOk = false;
 let runtimeConfigState = { presets: [], graphs: [], selected: { preset_id: null, graph_id: null } };
+const RUNTIME_ACTIVE_STATUSES = new Set(['queued', 'leased', 'running', 'projection_pending']);
+const RUNTIME_TERMINAL_EVENT_TYPES = new Set([
+  'task.succeeded', 'task.cancelled', 'task.failed_terminal', 'task.failed_retryable',
+  'task.stale_revision', 'task.quality_exhausted', 'task.quality_gate_failed',
+  'task.mvu_validation_failed', 'task.rolled_back', 'task.cannot_reroll_opening',
+  'task.unknown_revision'
+]);
+const RUNTIME_EVENT_TYPES = [
+  'player_message.submitted', 'task.queued', 'task.reroll_requested', 'task.leased',
+  'task.running', 'task.succeeded', 'task.cancelled', 'task.failed_terminal',
+  'task.failed_retryable', 'task.stale_revision', 'task.quality_exhausted',
+  'task.quality_gate_failed', 'task.mvu_validation_failed', 'task.rolled_back',
+  'task.cannot_reroll_opening', 'task.unknown_revision', 'turn.committed',
+  'session.head_moved', 'session.rolled_back', 'narrative.preview.delta'
+];
+const RUNTIME_AFTER_KEY = 'rp-runtime-last-event-sequence';
+let runtimeEventSource = null;
+let runtimeEventReconnectTimer = null;
+let runtimeLastSequence = parseInt(sessionStorage.getItem(RUNTIME_AFTER_KEY) || '0', 10) || 0;
+let runtimeTask = null;
 
 function apiUrl(path) {
   return API_BASE + path;
@@ -1441,10 +1466,109 @@ function setRuntimeConfigStatus(msg) {
 }
 
 function setRuntimeTaskStatus(task) {
+  runtimeTask = task && (task.task_id || (task.status && RUNTIME_ACTIVE_STATUSES.has(task.status))) ? task : null;
   const status = task && task.status ? task.status : 'idle';
   const taskId = task && task.task_id ? task.task_id : '—';
+  const meta = [];
+  if (task && task.error) meta.push('错误: ' + task.error);
+  if (task && task.message) meta.push('说明: ' + task.message);
+  if (task && typeof task.retryable === 'boolean') meta.push(task.retryable ? '可重试' : '不可重试');
   setText('runtime-task-status', '任务: ' + status);
   setText('runtime-task-id', 'Task ID: ' + taskId);
+  setText('runtime-task-meta', meta.join(' · '));
+  const cancel = document.getElementById('runtime-cancel-button');
+  if (cancel) {
+    cancel.hidden = !task || !task.task_id || !RUNTIME_ACTIVE_STATUSES.has(status);
+    cancel.disabled = false;
+  }
+  updateRuntimeControls();
+}
+
+function updateRuntimeControls() {
+  const busy = runtimeTask && RUNTIME_ACTIVE_STATUSES.has(runtimeTask.status);
+  document.querySelectorAll('.btn-submit, .btn-reroll').forEach(function(btn) {
+    btn.disabled = !!busy;
+  });
+}
+
+function runtimeEventPayload(event) {
+  try { return JSON.parse(event.data || '{}'); } catch (e) { return {}; }
+}
+
+function applyRuntimeEvent(event) {
+  const payload = runtimeEventPayload(event);
+  const sequence = Number(payload.sequence || event.lastEventId || 0);
+  if (sequence && sequence <= runtimeLastSequence) return;
+  if (sequence) {
+    runtimeLastSequence = sequence;
+    sessionStorage.setItem(RUNTIME_AFTER_KEY, String(sequence));
+  }
+  if (payload.task_id && (!runtimeTask || runtimeTask.task_id === payload.task_id || RUNTIME_TERMINAL_EVENT_TYPES.has(event.type))) {
+    const next = Object.assign({}, runtimeTask || {}, payload, { status: payload.status || event.type.replace(/^task\./, '') });
+    setRuntimeTaskStatus(next);
+  }
+  if (RUNTIME_TERMINAL_EVENT_TYPES.has(event.type)) {
+    reloadData();
+    checkBridge();
+  }
+}
+
+function scheduleRuntimeReconnect() {
+  if (runtimeEventReconnectTimer) return;
+  runtimeEventReconnectTimer = setTimeout(function() {
+    runtimeEventReconnectTimer = null;
+    connectRuntimeEvents();
+  }, 1000);
+}
+
+function connectRuntimeEvents() {
+  if (!window.EventSource) return;
+  if (runtimeEventSource) runtimeEventSource.close();
+  const url = apiUrl('/v1/session/events/stream?after=' + encodeURIComponent(runtimeLastSequence));
+  runtimeEventSource = new EventSource(url);
+  RUNTIME_EVENT_TYPES.forEach(function(type) {
+    runtimeEventSource.addEventListener(type, applyRuntimeEvent);
+  });
+  runtimeEventSource.onerror = function() {
+    runtimeEventSource.close();
+    runtimeEventSource = null;
+    scheduleRuntimeReconnect();
+  };
+}
+
+async function hydrateRuntimeSnapshot() {
+  try {
+    const r = await fetch(apiUrl('/v1/session/snapshot'), { cache: 'no-store' });
+    if (!r.ok) throw new Error('snapshot unavailable');
+    const snapshot = await r.json();
+    const seq = Number(snapshot.last_event_sequence || 0);
+    if (seq > runtimeLastSequence) {
+      runtimeLastSequence = seq;
+      sessionStorage.setItem(RUNTIME_AFTER_KEY, String(seq));
+    }
+    setRuntimeTaskStatus(snapshot.current_task || null);
+  } catch (e) {
+    // Legacy /api/session_status polling remains the projection fallback.
+  }
+}
+
+async function cancelRuntimeTask() {
+  if (!runtimeTask || !runtimeTask.task_id) return;
+  const button = document.getElementById('runtime-cancel-button');
+  if (button) button.disabled = true;
+  try {
+    const r = await fetch(apiUrl('/v1/session/commands/cancel'), {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ task_id: runtimeTask.task_id })
+    });
+    const data = await r.json();
+    if (!r.ok || !data.ok) throw new Error(data.message || data.error || '取消失败');
+    setRuntimeTaskStatus(Object.assign({}, runtimeTask, data));
+    showToast('已请求取消当前任务');
+  } catch (e) {
+    if (button) button.disabled = false;
+    showError('取消任务失败: ' + (e.message || '未知错误'));
+  }
 }
 
 // ═══ 酒馆桥接：卡脚本 → 我们前端 ═══
@@ -1485,7 +1609,9 @@ async function doReroll() {
   } catch(e) {
     showError('无法连接服务器');
   }
-  if (btn) { btn.disabled = false; btn.textContent = '🔄'; }
+  if (!runtimeTask || !RUNTIME_ACTIVE_STATUSES.has(runtimeTask.status)) {
+    if (btn) { btn.disabled = false; btn.textContent = '🔄'; }
+  }
 }
 
 async function loadOpenings() {
@@ -1638,12 +1764,12 @@ async function saveRuntimePreset() {
       body: JSON.stringify({ text: text })
     });
     const data = await r.json();
-    if (!r.ok || !data.ok) throw new Error(data.error || 'save failed');
+    if (!r.ok || !data.ok) throw Object.assign(new Error(data.message || data.error || 'save failed'), { serverData: data });
     document.getElementById('runtime-preset-editor').value = data.text || text;
-    showToast('✓ Preset 已保存');
+    showToast('✓ Preset 已保存，改动将应用于下一任务');
     await loadRuntimeConfigPanel();
   } catch(e) {
-    showError('保存 Preset 失败: ' + (e.message || '未知错误'));
+    showError('保存 Preset 失败: ' + (e.message || '未知错误') + (e.serverData && e.serverData.path ? ' [' + e.serverData.path + ']' : ''));
   }
 }
 
@@ -1658,12 +1784,12 @@ async function saveRuntimeGraph() {
       body: JSON.stringify({ text: text })
     });
     const data = await r.json();
-    if (!r.ok || !data.ok) throw new Error(data.error || 'save failed');
+    if (!r.ok || !data.ok) throw Object.assign(new Error(data.message || data.error || 'save failed'), { serverData: data });
     document.getElementById('runtime-graph-editor').value = data.text || text;
-    showToast('✓ Graph 已保存');
+    showToast('✓ Graph 已保存，改动将应用于下一任务');
     await loadRuntimeConfigPanel();
   } catch(e) {
-    showError('保存 Graph 失败: ' + (e.message || '未知错误'));
+    showError('保存 Graph 失败: ' + (e.message || '未知错误') + (e.serverData && e.serverData.path ? ' [' + e.serverData.path + ']' : ''));
   }
 }
 
@@ -1677,12 +1803,12 @@ async function applyRuntimeConfigSelection() {
       body: JSON.stringify({ preset_id: presetId, graph_id: graphId })
     });
     const data = await r.json();
-    if (!r.ok || !data.ok) throw new Error(data.error || 'save failed');
-    showToast('✓ Runtime 选择已保存');
+    if (!r.ok || !data.ok) throw Object.assign(new Error(data.message || data.error || 'save failed'), { serverData: data });
+    showToast('✓ Runtime 选择已保存，改动将应用于下一任务');
     setRuntimeTaskStatus((data.snapshot || {}).current_task || null);
     await loadRuntimeConfigPanel();
   } catch(e) {
-    showError('应用 Runtime 选择失败: ' + (e.message || '未知错误'));
+    showError('应用 Runtime 选择失败: ' + (e.message || '未知错误') + (e.serverData && e.serverData.path ? ' [' + e.serverData.path + ']' : ''));
   }
 }
 
@@ -1710,7 +1836,7 @@ async function doSubmit() {
       toast.style.background = 'var(--accent2)';
       toast.classList.add('show');
       document.getElementById('last-action').textContent = '上次提交: ' + new Date().toLocaleTimeString();
-      setRuntimeTaskStatus({ status: data.status || 'queued', task_id: data.task_id || null });
+      setRuntimeTaskStatus({ status: data.status || 'queued', task_id: data.task_id || null, error: data.error, retryable: data.retryable, message: data.message });
       setTimeout(() => toast.classList.remove('show'), 2500);
     } else {
       showError('发送失败: ' + (data.error || '未知错误'));
@@ -1718,7 +1844,9 @@ async function doSubmit() {
   } catch(e) {
     showError('无法连接服务器 — 请确保当前运行时服务已启动');
   }
-  btn.disabled = false; btn.textContent = '▶ 提交';
+  if (!runtimeTask || !RUNTIME_ACTIVE_STATUSES.has(runtimeTask.status)) {
+    btn.disabled = false; btn.textContent = '▶ 提交';
+  }
 }
 
 function showError(msg) {
@@ -2210,6 +2338,8 @@ function escHtml(s) {
 // No page flash: use dynamic script reloading instead of meta refresh
 reloadData();
 checkBridge();
+hydrateRuntimeSnapshot();
+connectRuntimeEvents();
 loadSettings();
 loadOpenings();
 loadRuntimeConfigPanel();

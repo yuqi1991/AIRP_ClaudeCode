@@ -132,6 +132,10 @@ def test_runtime_frontend_uses_same_origin_api_urls_and_runtime_config_ui():
     assert "http://localhost:8765" not in index_html
     assert "Runtime Config" in index_html
     assert "/api/runtime/config" in index_html
+    assert "EventSource" in index_html
+    assert "/v1/session/events/stream" in index_html
+    assert "sessionStorage" in index_html
+    assert "cancelRuntimeTask" in index_html
     assert "python skills/server.py" not in index_html
 
 
