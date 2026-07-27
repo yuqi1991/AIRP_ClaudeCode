@@ -88,6 +88,7 @@ def test_submit_commits_one_turn_and_writes_compatible_projection(tmp_path):
     assert [event.type for event in events] == [
         "player_message.submitted",
         "task.queued",
+        "task.leased",
         "context.compiled",
         "task.running",
         "turn.committed",

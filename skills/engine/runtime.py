@@ -214,49 +214,123 @@ class SessionTurnRuntime:
     def submit(self, text, idempotency_key):
         if not text.strip():
             raise ValueError("empty input")
-        # Create/lookup under the session lock. For NarrativeDirector runs we
-        # release the lock before the long-running body so concurrent rollback
-        # can move the active head (Ticket 06 branch-stale). Fake/deterministic
-        # executors stay serialized under the lock so duplicate concurrent
-        # submits with the same key still collapse to one commit.
         with self._lock:
             task = self._create_or_get_task(text, idempotency_key)
-            result = self._result(task)
-            if result.commit_id:
-                return self._project(result)
-            if result.status == "succeeded":
-                return result
+        return self._submit_queued_task(task)
 
-            executor = self._executor_for_task(task)
-            is_director = isinstance(executor, NarrativeDirector)
-            signal = None
-            if is_director:
-                # Register the abort signal BEFORE the task flips to "running".
-                # stop() deliberately does not take self._lock (it must be able to
-                # interrupt a blocked director), so cancellation correctness rests
-                # on the signal being visible for the task's entire live window —
-                # including the I/O-performing context compilation that precedes
-                # the director. Without this, a stop() during compile finds no
-                # signal and a non-"queued" status and is silently lost. Full
-                # lease/recovery semantics land in Tickets 04/07.
-                signal = AbortSignal()
-                self._abort_signals[task["id"]] = signal
-            else:
-                try:
-                    compiled = self._compile_and_persist(task)
-                    draft = self._execute(executor, text, compiled)
-                    result = self._commit_draft(task, draft)
-                    return self._project(result)
-                finally:
-                    pass
+    def _submit_queued_task(self, task):
+        """Return promptly unless this caller atomically acquires the generation lease.
 
-        # Director path — lock released so rollback/stop can interleave.
+        A session owns one durable generation lease. The owner drains FIFO work;
+        all other callers merely observe their durable task row. This deliberately
+        keeps HTTP's background submit contract intact while making direct library
+        calls safe during a blocked NarrativeDirector run.
+        """
+        result = self._result(task)
+        if result.commit_id:
+            return self._project(result)
+        if result.status not in ("queued", "leased", "running"):
+            return result
+        claimed = self._claim_next_generation()
+        if claimed is None or claimed["id"] != task["id"]:
+            return self.task(task["id"]) or result
+        return self._drain_generation(claimed, task["id"])
+
+    def _drain_generation(self, task, requested_task_id):
+        """Run the leased task and synchronously drain later FIFO work."""
+        requested_result = None
+        current = task
+        while current is not None:
+            try:
+                result = self._run_leased_task(current)
+            finally:
+                self._release_generation(current)
+            if current["id"] == requested_task_id:
+                requested_result = result
+            current = self._claim_next_generation()
+        return requested_result or self.task(requested_task_id)
+
+    def _run_leased_task(self, task):
+        executor = self._executor_for_task(task)
+        signal = AbortSignal() if isinstance(executor, NarrativeDirector) else None
+        if signal is not None:
+            self._abort_signals[task["id"]] = signal
         try:
             compiled = self._compile_and_persist(task)
-            return self._run_director(task, text, compiled, signal, executor)
+            if compiled is None:
+                return self.task(task["id"]) or self._result(task)
+            if signal is None:
+                draft = self._execute(executor, task["text"], compiled)
+                return self._project(self._commit_draft(task, draft))
+            return self._run_director(task, task["text"], compiled, signal, executor)
         finally:
             if signal is not None:
                 self._abort_signals.pop(task["id"], None)
+
+    def _claim_next_generation(self):
+        """Lease the oldest eligible task, incrementing the durable generation fence."""
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            session = connection.execute(
+                "SELECT active_generation_task_id, generation_fence FROM sessions WHERE id = ?",
+                (self.session_id,),
+            ).fetchone()
+            if session is None or session["active_generation_task_id"]:
+                return None
+            task = connection.execute(
+                "SELECT id, commit_id, revision, status, text, base_revision, source_snapshot, queue_sequence, lease_fence "
+                "FROM tasks WHERE session_id = ? AND status = 'queued' "
+                "ORDER BY queue_sequence, rowid LIMIT 1",
+                (self.session_id,),
+            ).fetchone()
+            if task is None:
+                return None
+            fence = int(session["generation_fence"] or 0) + 1
+            connection.execute(
+                "UPDATE sessions SET active_generation_task_id = ?, generation_fence = ? WHERE id = ? "
+                "AND active_generation_task_id IS NULL",
+                (task["id"], fence, self.session_id),
+            )
+            connection.execute(
+                "UPDATE tasks SET status = ?, lease_fence = ? WHERE id = ? AND status = 'queued'",
+                ("leased", fence, task["id"]),
+            )
+            connection.execute(
+                "INSERT INTO task_attempts (id, session_id, task_id, lease_fence, status) VALUES (?, ?, ?, ?, ?)",
+                (self._id(), self.session_id, task["id"], fence, "leased"),
+            )
+            self._event(connection, "task.leased", {"task_id": task["id"], "lease_fence": fence})
+            return connection.execute(
+                "SELECT id, commit_id, revision, status, text, base_revision, source_snapshot, queue_sequence, lease_fence "
+                "FROM tasks WHERE id = ?", (task["id"],)
+            ).fetchone()
+
+    def _release_generation(self, task):
+        """Release only the lease instance that acquired this exact fence."""
+        fence = task["lease_fence"]
+        if fence is None:
+            return
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute(
+                "UPDATE sessions SET active_generation_task_id = NULL WHERE id = ? "
+                "AND active_generation_task_id = ? AND generation_fence = ?",
+                (self.session_id, task["id"], fence),
+            )
+            connection.execute(
+                "UPDATE task_attempts SET status = ? WHERE task_id = ? AND lease_fence = ? AND status = ?",
+                ("finished", task["id"], fence, "leased"),
+            )
+
+    def _lease_is_authoritative(self, connection, task):
+        # Legacy/direct reroll paths predate the lease columns on their selected
+        # row. Command-service generation always supplies a fenced row.
+        if "lease_fence" not in task.keys():
+            return True
+        return bool(connection.execute(
+            "SELECT 1 FROM sessions WHERE id = ? AND active_generation_task_id = ? AND generation_fence = ?",
+            (self.session_id, task["id"], task["lease_fence"]),
+        ).fetchone())
 
     def stop(self, task_id):
         """Cancel a running or queued narrative-director task.
@@ -298,6 +372,14 @@ class SessionTurnRuntime:
             return connection.execute(
                 "SELECT active_revision FROM sessions WHERE id = ?", (self.session_id,)
             ).fetchone()["active_revision"]
+
+    def generation_active(self):
+        """Whether this session currently has a durable generation lease."""
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT active_generation_task_id FROM sessions WHERE id = ?", (self.session_id,)
+            ).fetchone()
+        return bool(row and row["active_generation_task_id"])
 
     def task(self, task_id):
         with self._connect() as connection:
@@ -350,6 +432,8 @@ class SessionTurnRuntime:
         """
         if not isinstance(idempotency_key, str) or not idempotency_key.strip():
             raise ValueError("missing idempotency_key")
+        if self.generation_active():
+            return RuntimeResult("", None, self.active_revision(), "generation_busy")
         if revision is None or not isinstance(revision, int) or revision < 0:
             raise ValueError("invalid revision")
         if revision == 0:
@@ -639,8 +723,8 @@ class SessionTurnRuntime:
                     continue
                 task_id = self._id()
                 connection.execute(
-                    "INSERT INTO tasks (id, session_id, idempotency_key, text, status, revision, base_revision, source_snapshot) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    "INSERT INTO tasks (id, session_id, idempotency_key, text, status, revision, base_revision, source_snapshot, queue_sequence) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (
                         task_id,
                         self.session_id,
@@ -650,6 +734,11 @@ class SessionTurnRuntime:
                         0,
                         base_revision,
                         self._canonical(source_snapshot),
+                        connection.execute(
+                            "SELECT COALESCE(MAX(queue_sequence), 0) + 1 AS next_sequence "
+                            "FROM tasks WHERE session_id = ?",
+                            (self.session_id,),
+                        ).fetchone()["next_sequence"],
                     ),
                 )
                 self._event(connection, "player_message.submitted", {"task_id": task_id, "text": text})
@@ -745,6 +834,8 @@ class SessionTurnRuntime:
     def _persist_manifest(self, task, compiled):
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
+            if not self._lease_is_authoritative(connection, task):
+                return None
             return self._persist_manifest_in_connection(connection, task, compiled)
 
     def _persist_manifest_in_connection(self, connection, task, compiled):
@@ -795,14 +886,26 @@ class SessionTurnRuntime:
         compiled = compile_context(request)
         compiled = self._persist_manifest(task, compiled)
         with self._connect() as connection:
-            # Guard the transition so a concurrent stop() that already marked this
-            # queued task "cancelled" is not silently overwritten to "running".
-            cur = connection.execute(
-                "UPDATE tasks SET status = ? WHERE id = ? AND status = ?",
-                ("running", task["id"], "queued"),
-            )
+            connection.execute("BEGIN IMMEDIATE")
+            # A stale worker may still hold an in-memory task after restart. The
+            # session lease/fence is the authority for every generation mutation.
+            if not self._lease_is_authoritative(connection, task):
+                return None
+            if "lease_fence" not in task.keys():
+                cur = connection.execute(
+                    "UPDATE tasks SET status = ? WHERE id = ? AND status = ?",
+                    ("running", task["id"], "queued"),
+                )
+            else:
+                cur = connection.execute(
+                    "UPDATE tasks SET status = ? WHERE id = ? AND status = ? AND lease_fence = ?",
+                    ("running", task["id"], "leased", task["lease_fence"]),
+                )
             if cur.rowcount:
-                self._event(connection, "task.running", {"task_id": task["id"]})
+                payload = {"task_id": task["id"]}
+                if "lease_fence" in task.keys():
+                    payload["lease_fence"] = task["lease_fence"]
+                self._event(connection, "task.running", payload)
         return compiled
 
     def _executor_for_task(self, task):
@@ -826,6 +929,11 @@ class SessionTurnRuntime:
         projected_state = self._projected_state_from_base(base_state, draft)
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
+            if not self._lease_is_authoritative(connection, task):
+                row = connection.execute(
+                    "SELECT id, commit_id, revision, status FROM tasks WHERE id = ?", (task["id"],)
+                ).fetchone()
+                return self._result(row) if row else RuntimeResult(task["id"], None, 0, "abandoned_running")
             # Idempotent: a concurrent duplicate for the same task may already
             # have committed while we were outside the session lock.
             existing = connection.execute(
@@ -1008,6 +1116,8 @@ class SessionTurnRuntime:
                     "SELECT status, validation_failures, validation_exhausted FROM tasks WHERE id = ?",
                     (task["id"],),
                 ).fetchone()
+                if not self._lease_is_authoritative(connection, task):
+                    return ToolResult(ok=False, error="generation_lease_lost")
                 existing = connection.execute(
                     "SELECT id, revision FROM commits WHERE task_id = ?", (task["id"],)
                 ).fetchone()
@@ -1161,7 +1271,7 @@ class SessionTurnRuntime:
 
             error = commit_result.error or "commit_failed"
             # Stale / exhausted / hard failures are not retriable via re-generation.
-            if error in ("stale_revision", "quality_exhausted", "commit_failed"):
+            if error in ("stale_revision", "generation_lease_lost", "quality_exhausted", "commit_failed"):
                 break
             if error in ("quality_gate_failed", "mvu_validation_failed"):
                 # Feed rejection back; re-enter director for a corrected draft.
@@ -2044,19 +2154,30 @@ class SessionTurnRuntime:
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             rows = connection.execute(
-                "SELECT id, commit_id, revision, status FROM tasks WHERE session_id = ? AND status IN ('projection_pending', 'running', 'queued')",
+                "SELECT id, commit_id, revision, status, lease_fence FROM tasks WHERE session_id = ? "
+                "AND status IN ('projection_pending', 'running', 'leased', 'queued')",
                 (self.session_id,),
             ).fetchall()
             for row in rows:
                 if row["status"] == "projection_pending" and row["commit_id"]:
                     pending.append(RuntimeResult(row["id"], row["commit_id"], row["revision"], "projection_pending"))
-                elif row["status"] in ("running", "queued") and not row["commit_id"]:
+                elif row["status"] in ("running", "leased") and not row["commit_id"]:
                     recovered_status = f'abandoned_{row["status"]}'
                     connection.execute(
                         "UPDATE tasks SET status = ? WHERE id = ?",
                         (recovered_status, row["id"]),
                     )
-                    self._event(connection, recovered_status, {"task_id": row["id"], "recovered_on_startup": True})
+                    connection.execute(
+                        "UPDATE task_attempts SET status = ? WHERE task_id = ? AND lease_fence = ? AND status = ?",
+                        ("abandoned", row["id"], row["lease_fence"], "leased"),
+                    )
+                    self._event(connection, f"task.{recovered_status}", {"task_id": row["id"], "recovered_on_startup": True})
+            # Queued work remains durable and eligible. Clearing the active holder
+            # makes the next submit atomically acquire a fresh (higher) fence.
+            connection.execute(
+                "UPDATE sessions SET active_generation_task_id = NULL WHERE id = ?",
+                (self.session_id,),
+            )
         for result in pending:
             try:
                 self._project(result)
@@ -2110,12 +2231,12 @@ class SessionTurnRuntime:
             connection.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY);
-                CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, active_revision INTEGER NOT NULL);
+                CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, active_revision INTEGER NOT NULL, active_generation_task_id TEXT, generation_fence INTEGER NOT NULL DEFAULT 0);
                 CREATE TABLE IF NOT EXISTS tasks (
                     id TEXT PRIMARY KEY, session_id TEXT NOT NULL, idempotency_key TEXT NOT NULL UNIQUE,
                     text TEXT NOT NULL, status TEXT NOT NULL, commit_id TEXT, revision INTEGER NOT NULL,
                     base_revision INTEGER, source_snapshot TEXT, validation_failures INTEGER NOT NULL DEFAULT 0,
-                    validation_exhausted INTEGER NOT NULL DEFAULT 0
+                    validation_exhausted INTEGER NOT NULL DEFAULT 0, queue_sequence INTEGER, lease_fence INTEGER
                 );
                 CREATE TABLE IF NOT EXISTS commits (
                     id TEXT PRIMARY KEY, session_id TEXT NOT NULL, revision INTEGER NOT NULL,
@@ -2124,6 +2245,10 @@ class SessionTurnRuntime:
                 CREATE TABLE IF NOT EXISTS projection_checkpoints (commit_id TEXT PRIMARY KEY, state TEXT NOT NULL, applied_marker TEXT);
                 CREATE TABLE IF NOT EXISTS state_snapshots (session_id TEXT NOT NULL, revision INTEGER NOT NULL, state_json TEXT NOT NULL, PRIMARY KEY (session_id, revision));
                 CREATE TABLE IF NOT EXISTS events (sequence INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, type TEXT NOT NULL, payload TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS task_attempts (
+                    id TEXT PRIMARY KEY, session_id TEXT NOT NULL, task_id TEXT NOT NULL,
+                    lease_fence INTEGER NOT NULL, status TEXT NOT NULL
+                );
                 CREATE TABLE IF NOT EXISTS context_manifests (
                     id TEXT PRIMARY KEY, session_id TEXT NOT NULL, task_id TEXT NOT NULL, base_revision INTEGER NOT NULL,
                     call_ordinal INTEGER NOT NULL, manifest_json TEXT NOT NULL, payload_json TEXT NOT NULL,
@@ -2163,6 +2288,18 @@ class SessionTurnRuntime:
             session_columns = {row["name"] for row in connection.execute("PRAGMA table_info(sessions)")}
             if "opening_turn_json" not in session_columns:
                 connection.execute("ALTER TABLE sessions ADD COLUMN opening_turn_json TEXT")
+            if "generation_fence" not in session_columns:
+                connection.execute("ALTER TABLE sessions ADD COLUMN generation_fence INTEGER NOT NULL DEFAULT 0")
+            if "active_generation_task_id" not in session_columns:
+                connection.execute("ALTER TABLE sessions ADD COLUMN active_generation_task_id TEXT")
+            task_columns = {row["name"] for row in connection.execute("PRAGMA table_info(tasks)")}
+            if "queue_sequence" not in task_columns:
+                connection.execute("ALTER TABLE tasks ADD COLUMN queue_sequence INTEGER")
+            if "lease_fence" not in task_columns:
+                connection.execute("ALTER TABLE tasks ADD COLUMN lease_fence INTEGER")
+            connection.execute(
+                "UPDATE tasks SET queue_sequence = rowid WHERE queue_sequence IS NULL"
+            )
             # Backfill linear history: parent = revision - 1 (rev 1 → 0).
             # Only fill rows still at the DEFAULT 0 that are not the first commit.
             # For a pure linear DB this is correct; branched DBs already set parents.
@@ -2182,6 +2319,7 @@ class SessionTurnRuntime:
             connection.execute("UPDATE tasks SET validation_exhausted = 0 WHERE validation_exhausted IS NULL")
             connection.execute("INSERT OR IGNORE INTO schema_migrations (version) VALUES (2)")
             connection.execute("INSERT OR IGNORE INTO schema_migrations (version) VALUES (3)")
+            connection.execute("INSERT OR IGNORE INTO schema_migrations (version) VALUES (4)")
             connection.execute("INSERT OR IGNORE INTO sessions (id, active_revision) VALUES (?, 0)", (self.session_id,))
         self._bootstrap_legacy_history_if_needed()
         self._recover_startup_state()

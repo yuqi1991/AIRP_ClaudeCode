@@ -265,6 +265,205 @@ def test_command_duplicate_submit_same_idempotency_key_is_one_turn(tmp_path):
     assert_no_legacy_pending(card_folder, projection_root)
 
 
+def test_command_duplicate_blocked_generation_returns_its_existing_task_promptly(tmp_path):
+    """An idempotent replay observes the live lease; it never starts another director."""
+    started = threading.Event()
+    release = threading.Event()
+
+    class BlockingDirector(NarrativeDirector):
+        def __init__(self):
+            self.calls = 0
+
+        def direct(self, handle, compiled):
+            self.calls += 1
+            started.set()
+            release.wait(timeout=5)
+            handle.set_final_text(final_text(content="<p>门后有人应声。</p>"))
+
+    director = BlockingDirector()
+    runtime, _, _, _ = make_runtime(tmp_path, executor=director)
+    service = SessionCommandService(runtime)
+    first_box = {}
+
+    thread = threading.Thread(
+        target=lambda: first_box.setdefault(
+            "result", service.submit("我敲门", "blocked-duplicate-1")
+        ),
+        daemon=True,
+    )
+    thread.start()
+    assert started.wait(timeout=2)
+
+    began = time.monotonic()
+    duplicate = service.submit("我敲门", "blocked-duplicate-1")
+    elapsed = time.monotonic() - began
+
+    release.set()
+    thread.join(timeout=5)
+    first = first_box["result"]
+    assert elapsed < 0.25
+    assert duplicate.ok is True
+    assert duplicate.task_id == first.task_id
+    assert duplicate.status in {"leased", "running"}
+    assert director.calls == 1
+
+
+def test_command_queues_generations_fifo_with_a_lease_event_before_running(tmp_path):
+    started = threading.Event()
+    release_first = threading.Event()
+
+    class OrderedDirector(NarrativeDirector):
+        def __init__(self):
+            self.inputs = []
+
+        def direct(self, handle, compiled):
+            self.inputs.append(handle.task_text)
+            if handle.task_text == "A":
+                started.set()
+                release_first.wait(timeout=5)
+            handle.set_final_text(final_text(content=f"<p>{handle.task_text}</p>"))
+
+    director = OrderedDirector()
+    runtime, _, _, _ = make_runtime(tmp_path, executor=director)
+    service = SessionCommandService(runtime)
+    first_box = {}
+    first_thread = threading.Thread(
+        target=lambda: first_box.setdefault("result", service.submit("A", "fifo-a")),
+        daemon=True,
+    )
+    first_thread.start()
+    assert started.wait(timeout=2)
+
+    second = service.submit("B", "fifo-b")
+    third = service.submit("C", "fifo-c")
+    assert second.status == third.status == "queued"
+
+    release_first.set()
+    first_thread.join(timeout=5)
+    assert director.inputs == ["A", "B", "C"]
+    events = service.events_after(0)
+    lease_ids = [event.payload["task_id"] for event in events if event.type == "task.leased"]
+    running_ids = [event.payload["task_id"] for event in events if event.type == "task.running"]
+    assert lease_ids == [first_box["result"].task_id, second.task_id, third.task_id]
+    assert running_ids == lease_ids
+    for task_id in lease_ids:
+        types = [event.type for event in events if event.payload.get("task_id") == task_id]
+        assert types.index("task.queued") < types.index("task.leased") < types.index("task.running")
+
+
+def test_restart_abandons_running_lease_and_stale_worker_cannot_commit(tmp_path):
+    started = threading.Event()
+    release = threading.Event()
+
+    class BlockingDirector(NarrativeDirector):
+        def direct(self, handle, compiled):
+            started.set()
+            release.wait(timeout=5)
+            handle.set_final_text(final_text(content="<p>旧进程的结果。</p>"))
+
+    first_runtime, card_folder, projection_root, database_path = make_runtime(
+        tmp_path, executor=BlockingDirector()
+    )
+    first_service = SessionCommandService(first_runtime)
+    first_box = {}
+    worker = threading.Thread(
+        target=lambda: first_box.setdefault("result", first_service.submit("A", "restart-a")),
+        daemon=True,
+    )
+    worker.start()
+    assert started.wait(timeout=2)
+
+    restarted = SessionTurnRuntime(
+        database_path=database_path,
+        card_folder=card_folder,
+        projection_root=projection_root,
+        executor=FakeNarrativeExecutor(content="<p>新进程。</p>"),
+    )
+    recovered = SessionCommandService(restarted)
+    abandoned = recovered.snapshot().current_task
+    assert abandoned is not None
+    assert abandoned.status == "abandoned_running"
+    assert "task.abandoned_running" in event_types(recovered.events_after(0))
+
+    release.set()
+    worker.join(timeout=5)
+    assert first_box["result"].status == "abandoned_running"
+    assert recovered.snapshot().active_revision == 0
+    assert json.loads((card_folder / "chat_log.json").read_text(encoding="utf-8")) == []
+
+
+def test_restart_preserves_queued_work_as_eligible_fifo_work(tmp_path):
+    started = threading.Event()
+    release = threading.Event()
+
+    class BlockingDirector(NarrativeDirector):
+        def direct(self, handle, compiled):
+            started.set()
+            release.wait(timeout=5)
+            handle.set_final_text(final_text(content="<p>不应提交。</p>"))
+
+    first_runtime, card_folder, projection_root, database_path = make_runtime(
+        tmp_path, executor=BlockingDirector()
+    )
+    first_service = SessionCommandService(first_runtime)
+    worker = threading.Thread(
+        target=lambda: first_service.submit("A", "queued-a"), daemon=True
+    )
+    worker.start()
+    assert started.wait(timeout=2)
+    queued = first_service.submit("B", "queued-b")
+    assert queued.status == "queued"
+
+    restarted = SessionTurnRuntime(
+        database_path=database_path,
+        card_folder=card_folder,
+        projection_root=projection_root,
+        executor=FakeNarrativeExecutor(content="<p>新进程继续。</p>"),
+    )
+    recovered = SessionCommandService(restarted)
+    assert recovered.snapshot().current_task is not None
+    assert recovered.snapshot().current_task.task_id == queued.task_id
+    assert recovered.snapshot().current_task.status == "queued"
+
+    release.set()
+    worker.join(timeout=5)
+    follow_up = recovered.submit("C", "queued-c")
+    assert follow_up.status == "succeeded"
+    events = recovered.events_after(0)
+    queued_types = [
+        event.type for event in events if event.payload.get("task_id") == queued.task_id
+    ]
+    assert queued_types[-1] == "task.succeeded"
+    assert "task.abandoned_running" in event_types(events)
+
+
+def test_command_reroll_returns_retryable_generation_busy_while_leased(tmp_path):
+    started = threading.Event()
+    release = threading.Event()
+
+    class BlockingDirector(NarrativeDirector):
+        def direct(self, handle, compiled):
+            started.set()
+            release.wait(timeout=5)
+            handle.set_final_text(final_text(content="<p>仍在生成。</p>"))
+
+    runtime, _, _, _ = make_runtime(tmp_path, executor=BlockingDirector())
+    service = SessionCommandService(runtime)
+    worker = threading.Thread(
+        target=lambda: service.submit("A", "reroll-busy-submit"), daemon=True
+    )
+    worker.start()
+    assert started.wait(timeout=2)
+
+    busy = service.reroll(revision=1, idempotency_key="reroll-busy")
+    assert busy.ok is False
+    assert busy.error == "generation_busy"
+    assert busy.retryable is True
+
+    release.set()
+    worker.join(timeout=5)
+
+
 def test_command_cancel_running_task_leaves_preview_uncommitted(tmp_path):
     started = threading.Event()
 
@@ -597,6 +796,7 @@ def test_http_path_never_touches_legacy_pending_files(tmp_path):
             None,
             "unknown_revision",
             "cannot_reroll_opening",
+            "generation_busy",
         )
 
     assert_no_legacy_pending(card_folder, projection_root)

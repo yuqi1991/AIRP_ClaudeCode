@@ -40,6 +40,7 @@ ERROR_DEFERRED_TICKET_06 = "deferred_to_ticket_06"  # historical; reroll/rollbac
 ERROR_CANCELLED = "cancelled"
 ERROR_STALE_REVISION = "stale_revision"
 ERROR_TERMINAL_INTERNAL = "terminal_internal_failure"
+ERROR_GENERATION_BUSY = "generation_busy"
 
 # Task statuses treated as already finished for cancel no-ops.
 _TERMINAL_TASK_STATUSES = frozenset(
@@ -58,7 +59,7 @@ _TERMINAL_TASK_STATUSES = frozenset(
     }
 )
 
-_SUCCESS_TASK_STATUSES = frozenset({"succeeded", "projection_pending", "rolled_back"})
+_SUCCESS_TASK_STATUSES = frozenset({"queued", "leased", "running", "succeeded", "projection_pending", "rolled_back"})
 
 
 @dataclass(frozen=True)
@@ -237,6 +238,13 @@ class SessionCommandService:
                 retryable=False,
                 message="revision required",
             )
+        if self.runtime.generation_active():
+            return CommandResult(
+                ok=False,
+                error=ERROR_GENERATION_BUSY,
+                retryable=True,
+                message="a generation lease is active",
+            )
         try:
             result = self.runtime.reroll(revision, idempotency_key)
         except ValueError as exc:
@@ -330,8 +338,8 @@ class SessionCommandService:
             error = ERROR_CANNOT_REROLL_OPENING
         elif result.status == "unknown_revision":
             error = ERROR_UNKNOWN_REVISION
-        elif result.status == "stale_revision":
-            error = ERROR_STALE_REVISION
+        elif result.status == "generation_busy":
+            error = ERROR_GENERATION_BUSY
         return CommandResult(
             ok=False,
             task_id=result.task_id or None,
@@ -339,7 +347,7 @@ class SessionCommandService:
             revision=result.revision,
             status=result.status,
             error=error,
-            retryable=result.status == "failed_retryable",
+            retryable=result.status in {"failed_retryable", "generation_busy"},
         )
 
     def _from_runtime_error(self, exc: RuntimeError, idempotency_key: str) -> CommandResult:

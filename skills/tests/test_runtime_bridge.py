@@ -277,9 +277,14 @@ def test_api_reroll_replaces_last_assistant_turn(tmp_path):
         projection_root=styles, executor=directors[0],
     )
     with SessionRuntimeServer(runtime, static_root=styles) as server:
-        # First turn.
-        _http("POST", f"{server.base_url}/api/submit", {"text": "我走向海边"})
-        assert _wait_for(lambda: runtime.active_revision() >= 1, timeout=10)
+        # First turn must finish projection and release its generation lease
+        # before reroll is admissible.
+        _, submitted = _http("POST", f"{server.base_url}/api/submit", {"text": "我走向海边"})
+        task_id = submitted["task_id"]
+        assert _wait_for(
+            lambda: (runtime.task(task_id) or type("Task", (), {"status": None})()).status == "succeeded",
+            timeout=10,
+        )
 
         # Reroll with a fresh director producing different text.
         runtime.executor = ScriptedDirector([("final", _final_text(content="<p>浪头退去，礁石裸露。</p>"))])
