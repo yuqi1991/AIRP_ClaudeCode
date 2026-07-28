@@ -2824,7 +2824,7 @@ class SessionTurnRuntime:
         structure_path = memory / ".card_structure.json"
         project_path = memory / "project.md"
         initvar = self._read_json(initvar_path, {})
-        runtime_turns = self._runtime_turns(base_revision)
+        runtime_turns = self._source_recent_turns(base_revision)
         current_state = self._state_at_revision(base_revision)
         runtime_config = None
         settings = self.session_settings
@@ -2960,6 +2960,33 @@ class SessionTurnRuntime:
                 current = parent if parent is not None else 0
         chain.reverse()
         return chain
+
+    def _source_recent_turns(self, base_revision, limit=3):
+        """Build prompt history with the durable AI-only opening as its anchor.
+
+        The opening is persisted separately from commits and therefore does not
+        appear in ``_runtime_turns(0)``.  Prompt snapshots must still carry it,
+        otherwise the first player input starts a conversation with no opening
+        context.  Keep the opening out of the public commit-lineage API and
+        reserve one recent-turn slot for it in provider-facing snapshots.
+        """
+        opening = self._opening_recent_turn()
+        commit_limit = max(0, int(limit) - (1 if opening is not None else 0))
+        turns = self._runtime_turns(base_revision, limit=max(1, commit_limit)) if commit_limit else []
+        return ([opening] if opening is not None else []) + turns
+
+    def _opening_recent_turn(self):
+        opening = self._opening_entry()
+        if not isinstance(opening, dict):
+            return None
+        content = opening.get("ai")
+        if content is None:
+            content = opening.get("assistant")
+        if content is None:
+            content = opening.get("content")
+        if not isinstance(content, str) or not content:
+            return None
+        return {"revision": 0, "user": "", "assistant": content}
 
     def _projected_state(self, base_revision, draft):
         base_state = self._state_at_revision(base_revision)

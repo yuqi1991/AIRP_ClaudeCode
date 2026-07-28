@@ -720,6 +720,51 @@ def test_provider_adapter_is_a_clean_interface_and_real_adapter_is_callable():
     assert callable(real.stream)
 
 
+def test_first_turn_provider_receives_persisted_opening_context(tmp_path):
+    card_folder = tmp_path / "card"
+    card_folder.mkdir()
+    write_card_fixture(card_folder)
+    provider = FakeProvider(
+        [
+            [
+                {"type": "text", "text": final_text()},
+                {"type": "final", "stop_reason": "stop"},
+            ],
+            [
+                {"type": "text", "text": final_text(content="<p>第二回合。</p>")},
+                {"type": "final", "stop_reason": "stop"},
+            ],
+        ],
+        model="opening-context-model",
+    )
+    runtime = SessionTurnRuntime(
+        database_path=tmp_path / "runtime.sqlite3",
+        card_folder=card_folder,
+        projection_root=tmp_path / "projection",
+        executor=ProviderDrivenDirector(provider, model="opening-context-model"),
+    )
+    runtime.set_opening_turn({
+        "index": 0,
+        "ai": "OPENING_CONTEXT: 刻晴在璃月港等候旅行者。",
+        "summary": "开场上下文",
+    })
+
+    result = runtime.submit("FIRST_PLAYER_INPUT", idempotency_key="opening-context")
+
+    assert result.status == "succeeded"
+    request_text = json.dumps(provider.requests[0].messages, ensure_ascii=False)
+    assert "OPENING_CONTEXT: 刻晴在璃月港等候旅行者。" in request_text
+    assert "FIRST_PLAYER_INPUT" in request_text
+
+    second = runtime.submit("SECOND_PLAYER_INPUT", idempotency_key="opening-context-2")
+
+    assert second.status == "succeeded"
+    second_request_text = json.dumps(provider.requests[1].messages, ensure_ascii=False)
+    assert second_request_text.count("OPENING_CONTEXT: 刻晴在璃月港等候旅行者。") == 1
+    assert "FIRST_PLAYER_INPUT" in second_request_text
+    assert "SECOND_PLAYER_INPUT" in second_request_text
+
+
 def test_provider_tool_sequence_commits_from_final_text_after_readonly_tool(tmp_path):
     card_folder = tmp_path / "card"
     card_folder.mkdir()
