@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import threading
 import time
 from pathlib import Path
 from urllib.error import HTTPError
@@ -28,8 +29,13 @@ SKILLS = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SKILLS))
 
 from engine.director import ScriptedDirector  # noqa: E402
+from engine.commands import SessionCommandService  # noqa: E402
+from engine.provider import FakeProvider  # noqa: E402
 from engine.runtime import SessionTurnRuntime  # noqa: E402
+from engine.runtime_config import RuntimeConfigStore  # noqa: E402
 from runtime_server import SessionRuntimeServer  # noqa: E402
+import runtime_server  # noqa: E402
+from start_runtime import _deliver_opening  # noqa: E402
 
 
 def _write_card(card_folder, *, with_opening=False):
@@ -72,6 +78,66 @@ def _scripted_director():
     ])
 
 
+def _write_runtime_config(styles: Path):
+    (styles / "presets").mkdir()
+    (styles / "graphs").mkdir()
+    (styles / "settings.json").write_text(
+        json.dumps(
+            {"runtime": {"preset_id": "opening-test", "graph_id": "opening-test"}},
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (styles / "presets" / "opening-test.json").write_text(
+        json.dumps(
+            {
+                "id": "opening-test",
+                "entries": [
+                    {
+                        "id": "opening-policy",
+                        "kind": "narrative_policy",
+                        "role": "system",
+                        "content": "OPENING_PRESET_MARKER",
+                    },
+                    {
+                        "id": "opening-input",
+                        "kind": "player_input",
+                        "role": "user",
+                        "content": "{{player_input}}",
+                    },
+                    {
+                        "id": "opening-state",
+                        "kind": "current_state",
+                        "role": "user",
+                        "content": "{{current_state}}",
+                    },
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (styles / "graphs" / "opening-test.json").write_text(
+        json.dumps(
+            {
+                "id": "opening-test",
+                "nodes": [
+                    {
+                        "id": "writer",
+                        "role": "narrative_director",
+                        "provider": "deepseek",
+                        "model": "opening-model",
+                        "max_retries": 1,
+                        "instruction": "OPENING_GRAPH_MARKER",
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+
 def _http(method, url, body=None, timeout=10):
     data = None
     headers = {"Accept": "application/json"}
@@ -98,6 +164,96 @@ def _wait_for(predicate, timeout=10.0, interval=0.05):
             return True
         time.sleep(interval)
     return False
+
+
+def test_generated_opening_is_ai_only_revision_zero_and_uses_selected_config(tmp_path):
+    styles = tmp_path / "styles"
+    styles.mkdir()
+    _write_runtime_config(styles)
+    card = tmp_path / "card"
+    _write_card(card)
+    config_store = RuntimeConfigStore(styles)
+    frozen_config = config_store.freeze().data
+    runtime = SessionTurnRuntime(
+        database_path=tmp_path / "r.sqlite3",
+        card_folder=card,
+        projection_root=styles,
+        executor=_scripted_director(),
+        runtime_config_store=config_store,
+    )
+    provider = FakeProvider(
+        [
+            [
+                {
+                    "type": "error",
+                    "category": "provider_unavailable",
+                    "retryable": True,
+                    "message": "retry once",
+                }
+            ],
+            [
+                {
+                    "type": "text",
+                    "text": (
+                        "<content><p>雾中的灯塔亮起。</p></content>"
+                        "<UpdateVariable>_.set('世界.时间', '1月1日 09:30');</UpdateVariable>"
+                    ),
+                },
+                {"type": "text", "text": "<summary>灯塔开场</summary>"},
+                {
+                    "type": "final",
+                    "usage": {
+                        "prompt_tokens": 12,
+                        "completion_tokens": 8,
+                        "total_tokens": 20,
+                    },
+                },
+            ],
+        ],
+        model="opening-model",
+    )
+
+    origin = _deliver_opening(
+        card,
+        styles,
+        runtime,
+        mock=False,
+        runtime_config=frozen_config,
+        provider=provider,
+    )
+    runtime.resume_projection()
+
+    assert origin == "generated"
+    assert provider.call_count == 2
+    assert runtime.active_revision() == 0
+    assert SessionCommandService(runtime).snapshot().current_task is None
+    log = json.loads((card / "chat_log.json").read_text(encoding="utf-8"))
+    assert len(log) == 1
+    assert "user" not in log[0]
+    assert "雾中的灯塔亮起" in log[0]["ai"]
+    assert log[0]["summary"] == "灯塔开场"
+    assert log[0]["tokens"] == {"in": 12, "out": 8, "total": 20}
+    next_context = runtime.compile_opening_context("检查 revision 0 状态")
+    current_state = next(
+        section["content"]
+        for section in next_context.manifest["sections"]
+        if section["kind"] == "current_state"
+    )
+    assert current_state["世界"]["时间"] == "1月1日 09:30"
+    generated = [
+        event for event in runtime.events_after(0)
+        if event.type == "session.opening_generated"
+    ]
+    assert generated[-1].payload == {
+        "graph_id": "opening-test",
+        "model": "opening-model",
+        "preset_id": "opening-test",
+    }
+    request = provider.requests[-1]
+    assert request.model == "opening-model"
+    serialized_messages = json.dumps(request.messages, ensure_ascii=False)
+    assert "OPENING_PRESET_MARKER" in serialized_messages
+    assert "OPENING_GRAPH_MARKER" in serialized_messages
 
 
 # ════════════════════════════════════════════════════════════════════
@@ -132,10 +288,33 @@ def test_runtime_frontend_uses_same_origin_api_urls_and_runtime_config_ui():
     assert "http://localhost:8765" not in index_html
     assert "Runtime Config" in index_html
     assert "/api/runtime/config" in index_html
+    assert "/api/sessions" in index_html
     assert "/v1/session/events/stream" in index_html
-    assert "session-status" in index_html
-    assert "runtime-task-cancel" in index_html
+    assert 'id="session-select"' in index_html
+    assert 'id="sidebar-toggle"' in index_html
+    assert "@media (max-width: 760px)" in index_html
+    assert "function createSession()" in index_html
+    assert "function switchSession(sessionId)" in index_html
+    assert "function toggleSidebar()" in index_html
+    assert "function refreshSubmittedTurn(taskId)" in index_html
+    assert "runtime-task-status" in index_html
+    assert "runtime-cancel-button" in index_html
     assert "python skills/server.py" not in index_html
+
+
+def test_runtime_frontend_has_stream_preview_provider_controls_and_agent_trace():
+    """The browser must expose the same durable observability surfaces as SSE."""
+    index_html = (SKILLS / "styles" / "index.html").read_text(encoding="utf-8")
+    assert "renderStreamingPreview" in index_html
+    assert "narrative.preview.delta" in index_html
+    assert 'id="provider-api-key"' in index_html
+    assert 'id="provider-base-url"' in index_html
+    assert 'id="provider-model-select"' in index_html
+    assert "/api/provider/models" in index_html
+    assert "/api/provider/config" in index_html
+    assert "model_call.started" in index_html
+    assert "tool_run.started" in index_html
+    assert "renderAgentTrace" in index_html
 
 
 # ════════════════════════════════════════════════════════════════════
@@ -185,10 +364,10 @@ def test_api_submit_returns_task_identity_and_snapshot(tmp_path):
         assert status == 200
         assert body["ok"] is True
         assert body["task_id"]
-        assert body["status"] in {"queued", "running", "projection_pending", "succeeded"}
-        assert body["submitted_text"] == "【玩家】我走向海边"
+        assert body["status"] in {"queued", "leased", "running", "projection_pending", "succeeded"}
+        assert body["submitted_text"] == "我走向海边"
         assert body["snapshot"]["session_id"] == runtime.session_id
-        assert body["snapshot"]["status"] in {"queued", "running", "projection_pending", "succeeded"}
+        assert body["snapshot"]["status"] in {"queued", "leased", "running", "projection_pending", "succeeded"}
 
 
 def test_api_submit_rejects_empty_input(tmp_path):
@@ -234,6 +413,45 @@ def test_api_pending_reports_running_then_idle(tmp_path):
                 "pending": False,
             },
         }
+
+
+def test_api_snapshot_treats_leased_task_as_pending(tmp_path):
+    styles = tmp_path / "styles"
+    styles.mkdir()
+    card = tmp_path / "card"
+    _write_card(card)
+    runtime = SessionTurnRuntime(
+        database_path=tmp_path / "r.sqlite3",
+        card_folder=card,
+        projection_root=styles,
+        executor=_scripted_director(),
+    )
+    leased = threading.Event()
+    release = threading.Event()
+    original_compile = runtime._compile_and_persist
+
+    def hold_lease(task):
+        leased.set()
+        release.wait(timeout=5)
+        return original_compile(task)
+
+    runtime._compile_and_persist = hold_lease
+    try:
+        with SessionRuntimeServer(runtime, static_root=styles) as server:
+            status, submitted = _http(
+                "POST", f"{server.base_url}/api/submit", {"text": "我检查门锁"}
+            )
+            assert status == 200
+            assert submitted["task_id"]
+            assert leased.wait(timeout=2)
+
+            status, snapshot = _http("GET", f"{server.base_url}/api/session_snapshot")
+            assert status == 200
+            release.set()
+            assert snapshot["status"] == "leased"
+            assert snapshot["pending"] is True
+    finally:
+        release.set()
 
 
 def test_api_session_status_snapshot_and_options_are_consistent(tmp_path):
@@ -441,6 +659,12 @@ def test_api_openings_fall_back_to_card_local_store_and_switch_opening(tmp_path)
         status, body = _http("POST", f"{server.base_url}/api/switch_opening", {"opening_id": 1})
         assert status == 200
         assert body.get("ok") is True
+        assert body["snapshot"]["active_revision"] == 0
+        switched = [
+            event for event in runtime.events_after(0)
+            if event.type == "session.opening_switched"
+        ]
+        assert switched[-1].payload == {"opening_id": 1}
         log = json.loads((card / "chat_log.json").read_text(encoding="utf-8"))
         assert "浪花拍上岸沿" in log[0]["ai"]
 
@@ -532,3 +756,56 @@ def test_real_deepseek_bridge_submit_updates_projection(tmp_path):
         assert _wait_for(lambda: "CONTENT_HTML" in (styles / "content.js").read_text(encoding="utf-8")
                          and len((styles / "content.js").read_text(encoding="utf-8")) > 50,
                          timeout=90), "DeepSeek did not update projection"
+
+
+def test_provider_config_keeps_key_memory_only_and_updates_active_graph(tmp_path, monkeypatch):
+    styles = tmp_path / "styles"; styles.mkdir()
+    _write_runtime_config(styles)
+    card = tmp_path / "card"; _write_card(card)
+    runtime = SessionTurnRuntime(database_path=tmp_path / "r.sqlite3", card_folder=card, projection_root=styles, executor=_scripted_director())
+    captured = {}
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    monkeypatch.setattr(runtime_server, "runtime_provider_api_key", lambda _provider: None)
+    monkeypatch.setattr(runtime_server, "set_runtime_provider_override", lambda provider, *, api_key: captured.update(provider=provider, api_key=api_key))
+    with SessionRuntimeServer(runtime, static_root=styles) as server:
+        status, before = _http("GET", f"{server.base_url}/api/provider/config")
+        assert status == 200
+        assert before == {"ok": True, "provider": "deepseek", "base_url": "https://api.deepseek.com", "model": "opening-model", "key_configured": False}
+        status, saved = _http("PUT", f"{server.base_url}/api/provider/config", {"base_url": "https://llm.example/v1/", "model": "chosen-model", "api_key": "never-persist"})
+        assert status == 200
+        assert saved["base_url"] == "https://llm.example/v1"
+        assert saved["model"] == "chosen-model"
+        assert "api_key" not in saved
+    assert captured == {"provider": "deepseek", "api_key": "never-persist"}
+    settings_text = (styles / "settings.json").read_text(encoding="utf-8")
+    assert "never-persist" not in settings_text
+    assert json.loads(settings_text)["provider"] == {"base_url": "https://llm.example/v1"}
+    graph = json.loads((styles / "graphs" / "opening-test.json").read_text(encoding="utf-8"))
+    assert graph["nodes"][-1]["model"] == "chosen-model"
+
+
+def test_provider_model_discovery_uses_transient_key(tmp_path, monkeypatch):
+    styles = tmp_path / "styles"; styles.mkdir()
+    _write_runtime_config(styles)
+    card = tmp_path / "card"; _write_card(card)
+    runtime = SessionTurnRuntime(database_path=tmp_path / "r.sqlite3", card_folder=card, projection_root=styles, executor=_scripted_director())
+    seen = {}
+    class Response:
+        def read(self):
+            return b"{\"data\":[{\"id\":\"beta\"},{\"id\":\"alpha\"},{\"id\":\"alpha\"}]}"
+        def __enter__(self):
+            return self
+        def __exit__(self, *_args):
+            return False
+    def fake_urlopen(request, timeout):
+        seen["url"] = request.full_url
+        seen["authorization"] = request.get_header("Authorization")
+        seen["timeout"] = timeout
+        return Response()
+    monkeypatch.setattr(runtime_server, "urlopen", fake_urlopen)
+    with SessionRuntimeServer(runtime, static_root=styles) as server:
+        status, found = _http("POST", f"{server.base_url}/api/provider/models", {"base_url": "https://llm.example/v1", "api_key": "temporary-key"})
+        assert status == 200
+        assert found == {"ok": True, "models": ["alpha", "beta"]}
+        assert "temporary-key" not in json.dumps(found)
+    assert seen == {"url": "https://llm.example/v1/models", "authorization": "Bearer temporary-key", "timeout": runtime_server.MODEL_DISCOVERY_TIMEOUT_SECONDS}

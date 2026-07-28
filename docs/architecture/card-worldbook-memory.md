@@ -2,17 +2,19 @@
 
 ## 卡片目录是长期事实源
 
-每张卡运行在独立目录中。导入源可以是 PNG、JSON 或 TXT；导入后由引擎生成可运行的持久状态。
+每张卡运行在独立目录中。导入源可以是 PNG、JSON 或 TXT；导入后由引擎生成卡片事实、共享基线和 card-local session store。
 
 | 文件/目录 | 用途 | 生命周期 |
 |---|---|---|
 | `.card_data.json` | 导入后的完整卡片元数据归档 | 导入时生成，卡片专属 |
+| `.session_init` | 已完成导入的标记 | 导入时生成，卡片专属 |
 | `.initvar.json` | MVU 变量基线 | 导入时生成，回合读取 |
-| `.var_diff.json` | 最近变量变更审计 | 每轮覆盖 |
-| `chat_log.json` | 完整回合历史、变量快照、摘要和 token | 每轮追加，跨会话持久 |
+| `.runtime.sqlite3` | session catalog、活动指针、task/event/commit/revision/state lineage | 每轮事务写入，权威 session store |
+| `.var_diff.json` | 当前活动 session 的最近变量变更投影 | 提交或切换时覆盖 |
+| `chat_log.json` | 当前活动 session 的可见 lineage 投影 | 提交、回退、重roll、切换或启动时重建 |
 | `memory/reference.md` | 世界书条目原文，按 `## 标题` 分节 | 导入时生成，按需读取 |
 | `memory/.worldbook_index.json` | catalog：`title/section/usage` | 导入时生成，usage 可由 agent 回写 |
-| `memory/project.md` | 近期剧情摘要 | 每轮追加 |
+| `memory/project.md` | 卡片级共享的近期剧情摘要 | 每轮追加；尚未按 session 隔离 |
 | `memory/story_plan.md` | 中期剧情规划 | 周期性更新 |
 | `memory/feedback.md` | 用户偏好和边界 | 偶发更新 |
 
@@ -32,6 +34,14 @@
 4. 读取到的正文严格约束对应主题的描写。
 
 这减少了动态上下文体积，但当前 Claude Code transcript 仍会保存按需读取结果；独立 harness 应把上下文装配完全纳入自己的控制。
+
+普通结构化世界书条目只作为参考事实，不会被猜测为 MVU 初始变量。导入器仅接受显式 `[initvar]` / `<initvar>`、Zod prefault 或 beautify 变量宏作为变量来源。SillyTavern 标准 `{{user}}` / `{{char}}` 宏在开场交付时按当前玩家名和卡片名解析。
+
+## Session 与兼容投影
+
+`SessionManager` 是创建、切换、重命名和删除存档的 interface。每个 session 在 SQLite 中拥有独立 opening、task、event、commit、active revision 和 state snapshot；幂等键也以 session 为作用域。浏览器一次只激活一个 session，切换时 runtime 从该 session 的 active lineage 重建共享 `chat_log.json`、`content.js` 和 `state.js`。
+
+因此这些 JSON/JS 文件不是多 session 的事实源。卡片事实、世界书、变量基线、settings/preset 和现有 `memory/*.md` 仍为卡片级共享；需要真正分叉长期记忆时，应先把 memory 纳入 revision/session store，而不是复制投影文件。
 
 ## 记忆职责分离
 

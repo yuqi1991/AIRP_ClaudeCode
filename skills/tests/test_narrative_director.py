@@ -132,7 +132,7 @@ def test_director_commits_via_tool_produces_one_turn(tmp_path):
     # committed content/summary/options match what the director supplied
     log = json.loads((card_folder / "chat_log.json").read_text(encoding="utf-8"))
     assert len(log) == 1
-    assert log[0]["user"] == "我走向礁石"            # polished_input used
+    assert log[0]["user"] == "我走向海边"            # task-owned input is immutable
     assert log[0]["summary"] == "玩家来到海边"
     content_js = (tmp_path / "projection" / "content.js").read_text(encoding="utf-8")
     assert "海风掠过礁石" in content_js

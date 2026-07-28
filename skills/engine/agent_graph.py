@@ -24,7 +24,11 @@ class SequentialAgentGraph(NarrativeDirector):
             return self.nodes[-1].director.direct(handle, compiled)
         for index, node in enumerate(self.nodes):
             node_handle = _GraphNodeHandle(handle, node)
-            node.director.direct(node_handle, current)
+            node_handle.report_agent_node_started(node.id, node.role)
+            try:
+                node.director.direct(node_handle, current)
+            finally:
+                node_handle.report_agent_node_finished(node.id, node.role)
             previous_text = node_handle.take_final_text() or previous_text
             if index < len(self.nodes) - 1:
                 current = node_handle.compile_sequential_handoff(current, node, self.nodes[index + 1], previous_text)
@@ -89,6 +93,12 @@ class _GraphNodeHandle:
 
     def compile_sequential_handoff(self, compiled, source_node, target_node, text):
         return self._parent.compile_sequential_handoff(compiled, source_node, target_node, text)
+
+    def report_agent_node_started(self, node_id, role):
+        getattr(self._parent, "report_agent_node_started", lambda _id, _role: None)(node_id, role)
+
+    def report_agent_node_finished(self, node_id, role):
+        getattr(self._parent, "report_agent_node_finished", lambda _id, _role: None)(node_id, role)
 
     def report_model_call_started(self, meta):
         self._parent.report_model_call_started({**meta, "agent_node_id": self.node.id, "agent_role": self.node.role})

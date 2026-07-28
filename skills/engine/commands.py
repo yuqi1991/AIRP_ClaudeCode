@@ -105,6 +105,13 @@ class SessionSnapshot:
                 "commit_id": self.current_task.commit_id,
                 "revision": self.current_task.revision,
                 "status": self.current_task.status,
+                "error": (
+                    self.current_task.status
+                    if self.current_task.status not in _SUCCESS_TASK_STATUSES
+                    else None
+                ),
+                "retryable": self.current_task.status in {"failed_retryable", "generation_busy"},
+                "attempt": int(getattr(self.current_task, "attempt", 0) or 0),
             }
         return {
             "session_id": self.session_id,
@@ -295,10 +302,19 @@ class SessionCommandService:
 
     def snapshot(self) -> SessionSnapshot:
         """Active revision, latest task (if any), and last durable event sequence."""
-        active = self.runtime.active_revision()
-        events = self.runtime.events_after(0)
-        last_seq = events[-1].sequence if events else 0
-        current = self._latest_task_from_events(events)
+        # Task creation and commit each update multiple readable surfaces in one
+        # transaction. A snapshot can still straddle those two transactions, so
+        # retry when the head or event tail changes while deriving the view.
+        for _attempt in range(3):
+            events = self.runtime.events_after(0)
+            active = self.runtime.active_revision()
+            last_seq = events[-1].sequence if events else 0
+            current = self._latest_task_from_events(events, active)
+            if self.runtime.active_revision() != active:
+                continue
+            if self.runtime.events_after(last_seq):
+                continue
+            break
         return SessionSnapshot(
             session_id=self.runtime.session_id,
             active_revision=active,
@@ -312,15 +328,26 @@ class SessionCommandService:
 
     # ── helpers ────────────────────────────────────────────────────────
 
-    def _latest_task_from_events(self, events: list[RuntimeEvent]) -> RuntimeResult | None:
+    def _latest_task_from_events(
+        self, events: list[RuntimeEvent], active_revision: int
+    ) -> RuntimeResult | None:
         task_id = None
         for event in reversed(events):
             if event.type in ("player_message.submitted", "task.reroll_requested"):
                 task_id = event.payload.get("task_id")
                 break
-        if not task_id:
-            return None
-        return self.runtime.task(task_id)
+        latest = self.runtime.task(task_id) if task_id else None
+        if latest and (
+            latest.status in {"queued", "leased", "running", "projection_pending"}
+            or latest.status not in _SUCCESS_TASK_STATUSES
+        ):
+            return latest
+
+        if active_revision > 0:
+            commit = self.runtime.commit_for_revision(active_revision)
+            if commit is not None:
+                return self.runtime.task(commit.task_id)
+        return None
 
     def _from_runtime_result(self, result: RuntimeResult) -> CommandResult:
         if result.status in _SUCCESS_TASK_STATUSES:

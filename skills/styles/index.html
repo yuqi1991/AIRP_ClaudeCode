@@ -81,6 +81,13 @@ body {
 #topbar .sep { color: var(--border); }
 #topbar .dim { color: var(--muted); }
 #topbar .spacer { flex: 1; }
+#sidebar-toggle {
+  display: none; width: 28px; height: 26px; padding: 0;
+  border: 1px solid var(--border); border-radius: 4px;
+  background: var(--input-bg); color: var(--text); cursor: pointer;
+  font-size: 1rem; line-height: 1;
+}
+#sidebar-backdrop { display: none; }
 
 /* ═══ MAIN ═══ */
 #main {
@@ -228,9 +235,42 @@ body {
 }
 .side-button:hover { border-color: var(--accent); background: var(--surface); }
 .side-note { font-size: 0.72em; color: var(--muted); line-height: 1.45; margin-top: 4px; }
+#streaming-preview { margin-top: 18px; }
+#streaming-preview[hidden] { display: none; }
+.streaming-cursor {
+  display: inline-block; width: 7px; height: 1em; margin-left: 3px;
+  background: var(--accent2); vertical-align: text-bottom;
+  animation: streaming-blink 0.9s steps(2, start) infinite;
+}
+@keyframes streaming-blink { 50% { opacity: 0; } }
+.provider-input {
+  width: 100%; margin-top: 4px; padding: 6px 8px;
+  border: 1px solid var(--border); border-radius: 6px;
+  background: var(--input-bg); color: var(--text); font: inherit; font-size: .78em;
+}
+.provider-input:focus { outline: none; border-color: var(--accent2); }
+#agent-trace { max-height: 250px; overflow-y: auto; }
+.trace-node { border-left: 3px solid var(--border); padding: 4px 0 4px 7px; margin: 4px 0; }
+.trace-node.running { border-left-color: #cc9a56; }
+.trace-node.finished { border-left-color: var(--accent2); }
+.trace-node.failed { border-left-color: #b0624a; }
+.trace-title { color: var(--text); font-size: .78em; }
+.trace-meta { color: var(--muted); font-size: .7em; margin-top: 2px; overflow-wrap: anywhere; }
 #runtime-task-meta { color: var(--muted); line-height: 1.45; white-space: pre-wrap; }
 #runtime-cancel-button { margin-top: 6px; }
 #runtime-cancel-button[hidden] { display: none; }
+.session-toolbar { display: grid; grid-template-columns: minmax(0, 1fr) 30px 30px 30px; gap: 5px; }
+.session-toolbar select {
+  min-width: 0; width: 100%; padding: 5px 7px; border: 1px solid var(--border);
+  border-radius: 4px; background: var(--input-bg); color: var(--text); font: inherit;
+}
+.session-tool {
+  width: 30px; height: 30px; padding: 0; border: 1px solid var(--border);
+  border-radius: 4px; background: var(--input-bg); color: var(--text);
+  font-size: 0.92em; cursor: pointer;
+}
+.session-tool:hover { border-color: var(--accent); background: var(--surface); }
+.session-tool:disabled, .session-toolbar select:disabled { opacity: 0.5; cursor: not-allowed; }
 
 /* ═══ INPUT ═══ */
 #input-panel {
@@ -295,6 +335,49 @@ body {
   pointer-events: none; z-index: 100;
 }
 #toast.show { opacity: 1; }
+
+@media (max-width: 760px) {
+  #topbar {
+    min-height: 34px; height: 34px; padding: 4px 10px; gap: 8px;
+    position: relative; z-index: 70; overflow: hidden;
+  }
+  #topbar > .dot:not(#conn-dot),
+  #topbar > .sep,
+  #topbar > .dim { display: none; }
+  #topbar .tag { max-width: 110px; overflow: hidden; text-overflow: ellipsis; }
+  #sidebar-toggle { display: inline-grid; place-items: center; flex-shrink: 0; }
+  #main { min-width: 0; }
+  #content-panel {
+    min-width: 0; width: 100%; padding: 14px 16px;
+    align-items: stretch;
+  }
+  #content-panel #doc { max-width: none; }
+  #sidebar {
+    position: fixed; z-index: 60; top: 34px; right: 0; bottom: 0;
+    width: min(88vw, 340px); max-width: 100%;
+    border-left: 1px solid var(--border);
+    box-shadow: -8px 0 24px rgba(0,0,0,.18);
+    transform: translateX(100%); visibility: hidden;
+    transition: transform .18s ease, visibility 0s linear .18s;
+  }
+  body.sidebar-open #sidebar {
+    transform: translateX(0); visibility: visible;
+    transition: transform .18s ease;
+  }
+  #sidebar-backdrop {
+    position: fixed; z-index: 50; top: 34px; right: 0; bottom: 0; left: 0;
+    background: rgba(0,0,0,.35);
+  }
+  body.sidebar-open #sidebar-backdrop { display: block; }
+  #input-panel { padding: 8px 10px; min-width: 0; }
+  #input-panel .input-row { gap: 7px; }
+  #input-panel textarea { min-width: 0; padding: 8px 10px; }
+  #input-panel button { padding: 8px 11px; }
+  #input-panel .meta-row { gap: 6px; }
+  #input-panel .meta-row input { min-width: 0; width: 110px; }
+  .turn-ai .turn-text { line-height: 1.75; }
+  .turn-user .turn-text { padding: 10px 12px; }
+}
 
 /* ═══ DARK MODE OVERRIDES ═══ */
 [data-theme="dark"] .turn-ai .turn-text {
@@ -859,7 +942,10 @@ body {
   <span class="dim" id="tb-tokens" title="本轮Token / 累计Token">Token: —</span>
   <span class="sep">|</span>
   <button id="theme-toggle" title="切换夜间模式" style="background:none;border:1px solid var(--border);border-radius:4px;cursor:pointer;font-size:0.9em;padding:1px 6px;line-height:1;color:var(--muted);">🌙</button>
+  <button id="sidebar-toggle" title="打开工具面板" aria-label="打开工具面板" aria-expanded="false" onclick="toggleSidebar()">☰</button>
 </div>
+
+<div id="sidebar-backdrop" onclick="closeSidebar()"></div>
 
 <div id="main">
   <div id="content-panel">
@@ -871,6 +957,16 @@ body {
     <div class="side-card" id="actions-card" style="display:none;">
       <h4>📂 可选项</h4>
       <div id="sb-actions"></div>
+    </div>
+    <div class="side-card" id="sessions-card">
+      <h4>存档</h4>
+      <div class="session-toolbar">
+        <select id="session-select" aria-label="当前存档" onchange="switchSession(this.value)"></select>
+        <button class="session-tool" id="session-new" title="新建存档" aria-label="新建存档" onclick="createSession()">+</button>
+        <button class="session-tool" id="session-rename" title="重命名存档" aria-label="重命名存档" onclick="renameSession()">✎</button>
+        <button class="session-tool" id="session-delete" title="删除存档" aria-label="删除存档" onclick="deleteSession()">×</button>
+      </div>
+      <div class="side-note" id="session-meta">正在读取存档…</div>
     </div>
     <div class="side-card">
       <h4>⚙️ 预设配置 <span id="settings-saved" style="margin-left:4px;">已保存</span></h4>
@@ -941,6 +1037,25 @@ body {
         <button class="side-button" onclick="loadRuntimeConfigPanel()">刷新列表</button>
         <button class="side-button" onclick="saveRuntimeGraph()">保存 Graph</button>
       </div>
+    </div>
+    <div class="side-card" id="provider-card">
+      <h4>🔌 LLM Provider</h4>
+      <div class="side-note" id="provider-status">Provider 配置未读取</div>
+      <label class="side-note" for="provider-base-url">API URL</label>
+      <input class="provider-input" id="provider-base-url" type="url" autocomplete="off" placeholder="https://api.example.com/v1">
+      <label class="side-note" for="provider-api-key">API Key</label>
+      <input class="provider-input" id="provider-api-key" type="password" autocomplete="new-password" placeholder="留空则保持服务器现有密钥">
+      <label class="side-note" for="provider-model-select">模型</label>
+      <select id="provider-model-select" class="config-select"><option value="">先加载模型</option></select>
+      <div class="side-buttons">
+        <button class="side-button" onclick="loadProviderModels()">加载模型</button>
+        <button class="side-button" onclick="saveProviderConfig()">保存 Provider</button>
+      </div>
+    </div>
+    <div class="side-card" id="agent-trace-card">
+      <h4>🧭 Agent Trace</h4>
+      <div class="side-note" id="agent-trace-status">等待运行时事件</div>
+      <div id="agent-trace" aria-live="polite"></div>
     </div>
     <div class="side-card">
       <h4>📌 当前目标</h4>
@@ -1268,6 +1383,8 @@ function render() {
     }
   }
 
+  renderStreamingPreview();
+
   // Beautify panel — rendered independently of narrative content.
   // Macros ({{format_message_variable::stat_data.XXX}}) are resolved
   // client-side against window.MVU_VARIABLES at display time, mirroring
@@ -1436,6 +1553,7 @@ function pickAction(action) {
 const API_BASE = '';
 let bridgeOk = false;
 let runtimeConfigState = { presets: [], graphs: [], selected: { preset_id: null, graph_id: null } };
+let sessionState = { active_session_id: null, sessions: [] };
 const RUNTIME_ACTIVE_STATUSES = new Set(['queued', 'leased', 'running', 'projection_pending']);
 const RUNTIME_TERMINAL_EVENT_TYPES = new Set([
   'task.succeeded', 'task.cancelled', 'task.failed_terminal', 'task.failed_retryable',
@@ -1449,13 +1567,92 @@ const RUNTIME_EVENT_TYPES = [
   'task.failed_retryable', 'task.stale_revision', 'task.quality_exhausted',
   'task.quality_gate_failed', 'task.mvu_validation_failed', 'task.rolled_back',
   'task.cannot_reroll_opening', 'task.unknown_revision', 'turn.committed',
-  'session.head_moved', 'session.rolled_back', 'narrative.preview.delta'
+  'session.opening_switched',
+  'session.head_moved', 'session.rolled_back', 'narrative.preview.delta',
+  'agent_node.started', 'agent_node.finished', 'model_call.started', 'model_call.finished',
+  'tool_run.started', 'tool_run.progress', 'tool_run.finished'
 ];
 const RUNTIME_AFTER_KEY = 'rp-runtime-last-event-sequence';
+const RUNTIME_SESSION_KEY = 'rp-runtime-session-id';
 let runtimeEventSource = null;
 let runtimeEventReconnectTimer = null;
 let runtimeLastSequence = parseInt(sessionStorage.getItem(RUNTIME_AFTER_KEY) || '0', 10) || 0;
+let runtimeSessionId = sessionStorage.getItem(RUNTIME_SESSION_KEY) || null;
 let runtimeTask = null;
+let streamingPreview = { taskId: null, text: "" };
+let agentTrace = { nodes: {}, events: [] };
+
+function renderStreamingPreview() {
+  const doc = document.getElementById("doc");
+  if (!doc) return;
+  let preview = document.getElementById("streaming-preview");
+  if (!streamingPreview.text) {
+    if (preview) preview.remove();
+    return;
+  }
+  if (!preview) {
+    preview = document.createElement("div");
+    preview.id = "streaming-preview";
+    preview.className = "turn-wrap turn-ai";
+    preview.innerHTML = "<div class=\"turn-role\">AI · 生成中</div><div class=\"turn-text\"><content></content><span class=\"streaming-cursor\" aria-label=\"生成中\"></span></div>";
+    doc.appendChild(preview);
+  }
+  const content = preview.querySelector("content");
+  if (content) content.textContent = streamingPreview.text;
+  const panel = document.getElementById("content-panel");
+  if (panel) panel.scrollTop = panel.scrollHeight;
+}
+
+function clearStreamingPreview(taskId) {
+  if (taskId && streamingPreview.taskId && taskId !== streamingPreview.taskId) return;
+  streamingPreview = { taskId: null, text: "" };
+  renderStreamingPreview();
+}
+
+function renderAgentTrace() {
+  const target = document.getElementById("agent-trace");
+  const status = document.getElementById("agent-trace-status");
+  if (!target || !status) return;
+  const entries = Object.keys(agentTrace.nodes).map(function(key) { return agentTrace.nodes[key]; });
+  entries.sort(function(a, b) { return b.sequence - a.sequence; });
+  target.innerHTML = "";
+  entries.slice(0, 20).forEach(function(item) {
+    const row = document.createElement("div");
+    row.className = "trace-node " + item.state;
+    const title = document.createElement("div");
+    title.className = "trace-title";
+    title.textContent = item.label;
+    const meta = document.createElement("div");
+    meta.className = "trace-meta";
+    meta.textContent = item.meta;
+    row.appendChild(title); row.appendChild(meta); target.appendChild(row);
+  });
+  status.textContent = entries.length ? "最近 " + entries.length + " 个运行节点" : "等待运行时事件";
+}
+
+function recordAgentTrace(type, payload, sequence) {
+  const taskId = payload.task_id || "runtime";
+  let key; let state; let label; let meta;
+  if (type.indexOf("agent_node.") === 0) {
+    key = taskId + ":node:" + (payload.node_id || "unknown");
+    state = type.endsWith("finished") ? "finished" : "running";
+    label = (payload.role || "agent") + " · " + (payload.node_id || "unknown");
+    meta = state === "finished" ? "节点完成" : "节点运行中";
+  } else if (type.indexOf("model_call.") === 0) {
+    key = taskId + ":model:" + (payload.call_ordinal || 0);
+    state = type.endsWith("finished") ? "finished" : "running";
+    label = "模型调用 #" + (payload.call_ordinal || "?") + (payload.model ? " · " + payload.model : "");
+    meta = type.endsWith("finished") ? "完成 · " + (payload.latency_ms || 0) + " ms · " + ((payload.usage || {}).total_tokens || 0) + " tokens" : "请求中";
+  } else {
+    key = taskId + ":tool:" + (payload.tool || "unknown") + ":" + (payload.args_hash || sequence);
+    state = type.endsWith("finished") ? (payload.ok === false ? "failed" : "finished") : "running";
+    label = "工具 · " + (payload.tool || "unknown");
+    meta = type.endsWith("finished") ? (payload.ok === false ? "失败" : "完成") + (payload.duration_ms ? " · " + payload.duration_ms + " ms" : "") : "运行中";
+  }
+  agentTrace.nodes[key] = { sequence: sequence || 0, state: state, label: label, meta: meta };
+  renderAgentTrace();
+}
+
 
 function apiUrl(path) {
   return API_BASE + path;
@@ -1489,7 +1686,142 @@ function updateRuntimeControls() {
   document.querySelectorAll('.btn-submit, .btn-reroll').forEach(function(btn) {
     btn.disabled = !!busy;
   });
+  document.querySelectorAll('#session-select, .session-tool').forEach(function(control) {
+    control.disabled = !!busy;
+  });
+  const remove = document.getElementById('session-delete');
+  if (remove && !busy) remove.disabled = sessionState.sessions.length <= 1;
 }
+
+function renderSessions() {
+  const select = document.getElementById('session-select');
+  if (!select) return;
+  select.innerHTML = '';
+  sessionState.sessions.forEach(function(session) {
+    const option = document.createElement('option');
+    option.value = session.id;
+    option.textContent = session.title + ' · Rev ' + Number(session.active_revision || 0);
+    option.selected = session.id === sessionState.active_session_id;
+    select.appendChild(option);
+  });
+  const current = sessionState.sessions.find(function(item) {
+    return item.id === sessionState.active_session_id;
+  });
+  setText('session-meta', current
+    ? '当前: ' + current.title + ' · Revision ' + Number(current.active_revision || 0)
+    : '暂无存档');
+  updateRuntimeControls();
+}
+
+function applySessionsPayload(data) {
+  sessionState = {
+    active_session_id: data.active_session_id || null,
+    sessions: Array.isArray(data.sessions) ? data.sessions : []
+  };
+  renderSessions();
+}
+
+async function loadSessions() {
+  try {
+    const response = await fetch(apiUrl('/api/sessions'), { cache: 'no-store' });
+    const data = await response.json();
+    if (!response.ok || !data.ok) throw new Error(data.message || data.error || '读取失败');
+    applySessionsPayload(data);
+  } catch (error) {
+    setText('session-meta', '存档读取失败: ' + (error.message || '未知错误'));
+  }
+}
+
+function activateSessionSnapshot(snapshot) {
+  if (!snapshot) return;
+  runtimeSessionId = snapshot.session_id || sessionState.active_session_id;
+  runtimeLastSequence = Number(snapshot.last_event_sequence || 0);
+  sessionStorage.setItem(RUNTIME_SESSION_KEY, runtimeSessionId || '');
+  sessionStorage.setItem(RUNTIME_AFTER_KEY, String(runtimeLastSequence));
+  clearStreamingPreview();
+  agentTrace = { nodes: {}, events: [] };
+  renderAgentTrace();
+  setRuntimeTaskStatus(snapshot.current_task || null);
+  if (runtimeEventReconnectTimer) {
+    clearTimeout(runtimeEventReconnectTimer);
+    runtimeEventReconnectTimer = null;
+  }
+  connectRuntimeEvents();
+  reloadData();
+}
+
+async function createSession() {
+  const title = window.prompt('新存档名称', '新存档');
+  if (title === null) return;
+  await mutateSession('/api/sessions', 'POST', { title: title }, '已创建新存档');
+}
+
+async function switchSession(sessionId) {
+  if (!sessionId || sessionId === sessionState.active_session_id) return;
+  await mutateSession('/api/sessions/switch', 'POST', { session_id: sessionId }, '已切换存档');
+}
+
+async function renameSession() {
+  const current = sessionState.sessions.find(function(item) {
+    return item.id === sessionState.active_session_id;
+  });
+  if (!current) return;
+  const title = window.prompt('存档名称', current.title);
+  if (title === null) return;
+  await mutateSession('/api/sessions/rename', 'POST', {
+    session_id: current.id, title: title
+  }, '存档已重命名', false);
+}
+
+async function deleteSession() {
+  const current = sessionState.sessions.find(function(item) {
+    return item.id === sessionState.active_session_id;
+  });
+  if (!current || sessionState.sessions.length <= 1) return;
+  if (!window.confirm('删除存档“' + current.title + '”？此操作不可撤销。')) return;
+  await mutateSession('/api/sessions/' + encodeURIComponent(current.id), 'DELETE', null, '存档已删除');
+}
+
+async function mutateSession(path, method, body, successMessage, activate = true) {
+  try {
+    const options = { method: method, headers: { 'Content-Type': 'application/json' } };
+    if (body !== null) options.body = JSON.stringify(body);
+    const response = await fetch(apiUrl(path), options);
+    const data = await response.json();
+    if (!response.ok || !data.ok) throw new Error(data.message || data.error || '操作失败');
+    applySessionsPayload(data);
+    if (activate && data.snapshot) {
+      activateSessionSnapshot(data.snapshot);
+      closeSidebar();
+    }
+    showToast(successMessage);
+  } catch (error) {
+    showError('存档操作失败: ' + (error.message || '未知错误'));
+    await loadSessions();
+  }
+}
+
+function setSidebarOpen(open) {
+  document.body.classList.toggle('sidebar-open', !!open);
+  const toggle = document.getElementById('sidebar-toggle');
+  if (toggle) {
+    toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+    toggle.title = open ? '关闭工具面板' : '打开工具面板';
+    toggle.setAttribute('aria-label', toggle.title);
+  }
+}
+
+function toggleSidebar() {
+  setSidebarOpen(!document.body.classList.contains('sidebar-open'));
+}
+
+function closeSidebar() {
+  setSidebarOpen(false);
+}
+
+document.addEventListener('keydown', function(event) {
+  if (event.key === 'Escape') closeSidebar();
+});
 
 function runtimeEventPayload(event) {
   try { return JSON.parse(event.data || '{}'); } catch (e) { return {}; }
@@ -1503,11 +1835,24 @@ function applyRuntimeEvent(event) {
     runtimeLastSequence = sequence;
     sessionStorage.setItem(RUNTIME_AFTER_KEY, String(sequence));
   }
+  if (event.type === 'narrative.preview.delta') {
+    if (!streamingPreview.taskId || streamingPreview.taskId === payload.task_id) {
+      streamingPreview.taskId = payload.task_id || streamingPreview.taskId;
+      streamingPreview.text += payload.preview || '';
+      renderStreamingPreview();
+    }
+  }
+  if (event.type.indexOf('agent_node.') === 0 || event.type.indexOf('model_call.') === 0 || event.type.indexOf('tool_run.') === 0) {
+    recordAgentTrace(event.type, payload, sequence);
+  }
   if (payload.task_id && (!runtimeTask || runtimeTask.task_id === payload.task_id || RUNTIME_TERMINAL_EVENT_TYPES.has(event.type))) {
     const next = Object.assign({}, runtimeTask || {}, payload, { status: payload.status || event.type.replace(/^task\./, '') });
     setRuntimeTaskStatus(next);
   }
-  if (RUNTIME_TERMINAL_EVENT_TYPES.has(event.type)) {
+  if (RUNTIME_TERMINAL_EVENT_TYPES.has(event.type) || event.type === 'session.opening_switched') {
+    clearStreamingPreview(payload.task_id);
+    if (event.type === 'session.opening_switched') agentTrace = { nodes: {}, events: [] };
+    renderAgentTrace();
     reloadData();
     checkBridge();
   }
@@ -1542,7 +1887,15 @@ async function hydrateRuntimeSnapshot() {
     if (!r.ok) throw new Error('snapshot unavailable');
     const snapshot = await r.json();
     const seq = Number(snapshot.last_event_sequence || 0);
-    if (seq > runtimeLastSequence) {
+    if (snapshot.session_id && snapshot.session_id !== runtimeSessionId) {
+      clearStreamingPreview();
+      agentTrace = { nodes: {}, events: [] };
+      renderAgentTrace();
+      runtimeSessionId = snapshot.session_id;
+      runtimeLastSequence = seq;
+      sessionStorage.setItem(RUNTIME_SESSION_KEY, runtimeSessionId);
+      sessionStorage.setItem(RUNTIME_AFTER_KEY, String(seq));
+    } else if (seq > runtimeLastSequence) {
       runtimeLastSequence = seq;
       sessionStorage.setItem(RUNTIME_AFTER_KEY, String(seq));
     }
@@ -1594,6 +1947,13 @@ async function doReroll() {
     const r = await fetch(apiUrl('/api/reroll'), { method: 'POST' });
     const data = await r.json();
     if (data.ok) {
+      setRuntimeTaskStatus({
+        status: data.status || 'queued',
+        task_id: data.task_id || null,
+        error: data.error,
+        retryable: data.retryable,
+        message: data.message
+      });
       showToast('🔄 已触发重roll，等待重新生成...');
       // Poll more frequently for a bit
       let tries = 0;
@@ -1667,6 +2027,80 @@ async function doDeleteFrom(index) {
     }
   } catch(e) {
     showError('无法连接服务器');
+  }
+}
+
+function applyProviderModels(models, selected) {
+  const select = document.getElementById('provider-model-select');
+  if (!select) return;
+  const normalized = Array.isArray(models) ? models : [];
+  select.innerHTML = '';
+  normalized.forEach(function(model) {
+    const value = typeof model === 'string' ? model : (model.id || model.name);
+    if (!value) return;
+    const option = document.createElement('option');
+    option.value = value; option.textContent = value;
+    select.appendChild(option);
+  });
+  if (!normalized.length && selected) {
+    const option = document.createElement('option');
+    option.value = selected; option.textContent = selected; select.appendChild(option);
+  } else if (!normalized.length) {
+    select.innerHTML = '<option value="">没有可用模型</option>';
+  }
+  if (selected) select.value = selected;
+}
+
+async function loadProviderConfig() {
+  try {
+    const response = await fetch(apiUrl('/api/provider/config'), { cache: 'no-store' });
+    const data = await response.json();
+    if (!response.ok || !data.ok) throw new Error(data.error || '读取失败');
+    document.getElementById('provider-base-url').value = data.base_url || data.baseUrl || '';
+    applyProviderModels(data.models || [], data.model);
+    setText('provider-status', '当前模型: ' + (data.model || '未选择') + (data.has_api_key ? ' · 已配置密钥' : ' · 未配置密钥'));
+  } catch (error) {
+    setText('provider-status', 'Provider 配置接口不可用');
+  }
+}
+
+async function loadProviderModels() {
+  const button = document.querySelector('#provider-card .side-button');
+  const baseUrl = document.getElementById('provider-base-url').value.trim();
+  const apiKey = document.getElementById('provider-api-key').value;
+  if (button) button.disabled = true;
+  try {
+    const response = await fetch(apiUrl('/api/provider/models'), {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ base_url: baseUrl, api_key: apiKey || undefined })
+    });
+    const data = await response.json();
+    if (!response.ok || !data.ok) throw new Error(data.error || data.message || '加载模型失败');
+    applyProviderModels(data.models || data.data || [], data.model);
+    setText('provider-status', '已加载 ' + ((data.models || data.data || []).length || 0) + ' 个模型');
+  } catch (error) {
+    showError('加载模型失败: ' + (error.message || '未知错误'));
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
+async function saveProviderConfig() {
+  const baseUrl = document.getElementById('provider-base-url').value.trim();
+  const apiKeyInput = document.getElementById('provider-api-key');
+  const body = { base_url: baseUrl, model: document.getElementById('provider-model-select').value || null };
+  if (apiKeyInput.value) body.api_key = apiKeyInput.value;
+  try {
+    const response = await fetch(apiUrl('/api/provider/config'), {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
+    });
+    const data = await response.json();
+    if (!response.ok || !data.ok) throw new Error(data.error || data.message || '保存失败');
+    apiKeyInput.value = '';
+    setText('provider-status', '当前模型: ' + (data.model || body.model || '未选择') + ' · 配置已保存');
+    showToast('Provider 配置已保存，将用于下一任务');
+  } catch (error) {
+    showError('保存 Provider 失败: ' + (error.message || '未知错误'));
   }
 }
 
@@ -1837,6 +2271,8 @@ async function doSubmit() {
       toast.classList.add('show');
       document.getElementById('last-action').textContent = '上次提交: ' + new Date().toLocaleTimeString();
       setRuntimeTaskStatus({ status: data.status || 'queued', task_id: data.task_id || null, error: data.error, retryable: data.retryable, message: data.message });
+      reloadData();
+      refreshSubmittedTurn(data.task_id || null);
       setTimeout(() => toast.classList.remove('show'), 2500);
     } else {
       showError('发送失败: ' + (data.error || '未知错误'));
@@ -1847,6 +2283,26 @@ async function doSubmit() {
   if (!runtimeTask || !RUNTIME_ACTIVE_STATUSES.has(runtimeTask.status)) {
     btn.disabled = false; btn.textContent = '▶ 提交';
   }
+}
+
+function refreshSubmittedTurn(taskId) {
+  let attempts = 0;
+  const timer = setInterval(async function() {
+    attempts += 1;
+    try {
+      const response = await fetch(apiUrl('/api/session_snapshot'), { cache: 'no-store' });
+      const snapshot = await response.json();
+      if (!response.ok) return;
+      const task = snapshot.current_task || null;
+      setRuntimeTaskStatus(task);
+      if (!taskId || !task || task.task_id === taskId) reloadData();
+      if (!task || !RUNTIME_ACTIVE_STATUSES.has(task.status) || attempts >= 80) {
+        clearInterval(timer);
+      }
+    } catch (error) {
+      if (attempts >= 80) clearInterval(timer);
+    }
+  }, 750);
 }
 
 function showError(msg) {
@@ -2338,15 +2794,18 @@ function escHtml(s) {
 // No page flash: use dynamic script reloading instead of meta refresh
 reloadData();
 checkBridge();
-hydrateRuntimeSnapshot();
-connectRuntimeEvents();
+hydrateRuntimeSnapshot().finally(connectRuntimeEvents);
+loadSessions();
 loadSettings();
 loadOpenings();
 loadRuntimeConfigPanel();
+loadProviderConfig();
+renderAgentTrace();
 pollTimer = setInterval(reloadData, 3000);
 setInterval(checkBridge, 5000);
 setInterval(loadStyleProfiles, 15000);
 setInterval(loadRuntimeConfigPanel, 20000);
+setInterval(loadProviderConfig, 30000);
 
 // ═══ Dark Mode Toggle ═══
 (function() {

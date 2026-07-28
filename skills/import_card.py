@@ -594,82 +594,6 @@ def extract_initvar_from_beautify_template(card_dir: str) -> dict:
     return result
 
 
-def extract_initvar_from_worldbook_structured(entries: list[dict]) -> dict:
-    """Fallback #4: Extract variable structure from worldbook entries
-    that contain structured key-value data (common in Chinese cultivation cards).
-
-    Scans each entry's content for lines matching:
-        key: value
-        - key: value
-    Groups entries by their comment (title) prefix to infer character/section
-    hierarchy, then builds a nested initvar tree.
-    """
-    if not entries:
-        return {}
-
-    # First pass: find entries with structured key-value content
-    kv_entries = []
-    for e in entries:
-        content = e.get("content", "")
-        comment = e.get("comment", "")
-        if not content.strip():
-            continue
-
-        # Count key-value lines (Chinese/English keys with colon separator)
-        lines = content.strip().split("\n")
-        kv_count = 0
-        parsed = {}
-        for line in lines:
-            line = line.strip()
-            # Skip markdown headers, empty lines, code blocks
-            if not line or line.startswith("#") or line.startswith("```"):
-                continue
-            # Match: key: value  (key can be Chinese, English, or mixed)
-            m = re.match(r"^[-*]?\s*([\w一-鿿＀-￯]+)\s*[:：]\s*(.+)$", line)
-            if m:
-                key = m.group(1).strip()
-                val = m.group(2).strip()
-                # Skip lines that are full sentences (too long to be variable values)
-                if len(val) > 80:
-                    continue
-                parsed[key] = val
-                kv_count += 1
-
-        if kv_count >= 3:  # At least 3 key-value pairs to qualify
-            kv_entries.append({
-                "comment": comment,
-                "kv": parsed,
-                "count": kv_count,
-            })
-
-    if not kv_entries:
-        return {}
-
-    # Second pass: group by inferred character/category from comment
-    # Common patterns: "角色名-类别", "类别-子类", or just "类别"
-    result = {}
-    for ke in kv_entries:
-        comment = ke["comment"]
-        # Try to extract character name and category from comment
-        # e.g. "苏轻韵-衣物" → char="苏轻韵", cat="衣物"
-        # e.g. "林墨瞳-修为" → char="林墨瞳", cat="修为"
-        parts = re.split(r"[-—・·]", comment, maxsplit=1)
-        if len(parts) == 2:
-            char = parts[0].strip()
-            cat = parts[1].strip()
-            if char not in result:
-                result[char] = {}
-            result[char][cat] = ke["kv"]
-        else:
-            # Standalone category — put at top level
-            cat = comment.strip()
-            if cat not in result:
-                result[cat] = {}
-            result[cat].update(ke["kv"])
-
-    return result
-
-
 def analyze_card_structure(memory_dir: str) -> dict:
     """扫描 reference.md 的 ## 标题，检测卡片的叙事结构。
 
@@ -1001,6 +925,8 @@ def run_import(card_dir, root_dir):
         "openings_count": 0,
         "memory": {},
         "worldbook_entries_total": 0,
+        "initvar_keys": [],
+        "initvar_source": "",
     }
 
     # 1. 扫描素材（跳过隐藏文件）
@@ -1191,19 +1117,15 @@ def run_import(card_dir, root_dir):
             result["initvar_keys"] = list(merged_initvar.keys())
             result["initvar_source"] = " + ".join(sources_used)
 
-        # Fallback: if all paths above produced nothing, try beautify/KV heuristics
+        # Beautify macros are an observable variable-consumer signal. Arbitrary
+        # worldbook key/value prose is not: character profiles commonly use the
+        # same shape and must remain reference material rather than mutable state.
         if not result.get("initvar_keys"):
             beautify_initvar = extract_initvar_from_beautify_template(card_dir)
             if beautify_initvar:
                 _deep_merge(merged_initvar, beautify_initvar)
                 sources_used.append("beautify macros")
                 result["initvar_source"] = "beautify template macros (heuristic)"
-        if not result.get("initvar_keys"):
-            wb_initvar = extract_initvar_from_worldbook_structured(entries)
-            if wb_initvar:
-                _deep_merge(merged_initvar, wb_initvar)
-                sources_used.append("structured KV")
-                result["initvar_source"] = "worldbook structured KV (heuristic)"
         # Re-check and write if heuristic sources produced data
         if merged_initvar and not os.path.exists(os.path.join(card_dir, ".initvar.json")):
             initvar_path = os.path.join(card_dir, ".initvar.json")
@@ -1254,8 +1176,9 @@ def run_import(card_dir, root_dir):
             f.write(resp_txt)
         result["response_txt_written"] = True
 
-    # 创建 .session_init，标记会话已初始化（跳过 selector 重定向）
-    session_path = os.path.join(styles_dir, ".session_init")
+    # Card-local initialization marker. A shared styles marker cannot identify
+    # which card was imported and made start_runtime re-import on every restart.
+    session_path = os.path.join(card_dir, ".session_init")
     Path(session_path).touch()
     result["session_init"] = True
 

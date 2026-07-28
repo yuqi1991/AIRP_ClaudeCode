@@ -31,7 +31,14 @@ from engine.commands import (  # noqa: E402
     SessionCommandService,
 )
 from engine.director import NarrativeDirector, ScriptedDirector  # noqa: E402
-from engine.runtime import FakeNarrativeExecutor, SessionTurnRuntime  # noqa: E402
+from engine.provider import ProviderError  # noqa: E402
+from engine.runtime import (  # noqa: E402
+    FakeNarrativeExecutor,
+    RuntimeEvent,
+    RuntimeResult,
+    SessionTurnRuntime,
+    TurnCommit,
+)
 from runtime_server import SessionRuntimeServer  # noqa: E402
 
 
@@ -209,6 +216,38 @@ def _parse_sse_block(block: str):
 # ════════════════════════════════════════════════════════════════════
 # Slice 1 — Command API (library)
 # ════════════════════════════════════════════════════════════════════
+
+
+def test_snapshot_does_not_report_idle_when_fast_commit_lands_during_read():
+    class CommitDuringSnapshotRuntime:
+        session_id = "local"
+
+        def __init__(self):
+            self.committed = False
+
+        def events_after(self, _sequence):
+            events = [RuntimeEvent(1, "player_message.submitted", {"task_id": "task-1"})]
+            if self.committed:
+                events.append(RuntimeEvent(2, "task.succeeded", {"task_id": "task-1"}))
+            return [event for event in events if event.sequence > _sequence]
+
+        def active_revision(self):
+            return 1 if self.committed else 0
+
+        def task(self, task_id):
+            assert task_id == "task-1"
+            self.committed = True
+            return RuntimeResult("task-1", "commit-1", 1, "succeeded", attempt=1)
+
+        def commit_for_revision(self, revision):
+            assert revision == 1
+            return TurnCommit("commit-1", 1, "task-1")
+
+    snapshot = SessionCommandService(CommitDuringSnapshotRuntime()).snapshot()
+
+    assert snapshot.active_revision == 1
+    assert snapshot.current_task.status == "succeeded"
+    assert snapshot.current_task.revision == 1
 
 
 def test_command_submit_advances_revision_and_emits_progress_chain(tmp_path):
@@ -849,6 +888,44 @@ def test_snapshot_recovery_after_refresh_on_same_database(tmp_path):
     assert_no_legacy_pending(card_folder, projection_root)
 
 
+def test_snapshot_tracks_the_active_branch_after_rollback(tmp_path):
+    runtime, _, _, _ = make_runtime(tmp_path)
+    service = SessionCommandService(runtime)
+
+    first = service.submit(text="我走向海边", idempotency_key="snapshot-rollback-1")
+    second = service.submit(text="我走向灯塔", idempotency_key="snapshot-rollback-2")
+    rollback = service.rollback(revision=first.revision, idempotency_key="snapshot-rollback")
+
+    assert first.ok and second.ok and rollback.ok
+    snapshot = service.snapshot()
+    assert snapshot.active_revision == first.revision
+    assert snapshot.current_task is not None
+    assert snapshot.current_task.task_id == first.task_id
+    assert snapshot.current_task.revision == first.revision
+
+
+def test_snapshot_current_task_exposes_error_retryability_and_attempt(tmp_path):
+    class RetryableFailureDirector(NarrativeDirector):
+        def direct(self, handle, compiled):
+            raise ProviderError("temporary provider outage", "provider_unavailable", True)
+
+    runtime, card_folder, projection_root, _ = make_runtime(
+        tmp_path, executor=RetryableFailureDirector()
+    )
+    service = SessionCommandService(runtime)
+
+    result = service.submit(text="我走向海边", idempotency_key="snapshot-failure-1")
+
+    assert result.ok is False
+    assert result.status == "failed_retryable"
+    current = service.snapshot().to_dict()["current_task"]
+    assert current["task_id"] == result.task_id
+    assert current["error"] == "failed_retryable"
+    assert current["retryable"] is True
+    assert current["attempt"] == 1
+    assert_no_legacy_pending(card_folder, projection_root)
+
+
 def test_http_snapshot_recovery_matches_library_path(tmp_path):
     runtime, card_folder, projection_root, database_path = make_runtime(tmp_path)
     with SessionRuntimeServer(runtime) as server:
@@ -864,6 +941,9 @@ def test_http_snapshot_recovery_matches_library_path(tmp_path):
         status, snap1 = http_json("GET", f"{server.base_url}/v1/session/snapshot")
         assert status == 200
         assert snap1["active_revision"] == 1
+        assert snap1["current_task"]["error"] is None
+        assert snap1["current_task"]["retryable"] is False
+        assert snap1["current_task"]["attempt"] == 1
         commit_id = snap1["current_task"]["commit_id"]
 
     # New server process simulation: new runtime on same DB, new HTTP server.
@@ -878,6 +958,9 @@ def test_http_snapshot_recovery_matches_library_path(tmp_path):
         assert status == 200
         assert snap2["active_revision"] == 1
         assert snap2["current_task"]["commit_id"] == commit_id
+        assert snap2["current_task"]["error"] is None
+        assert snap2["current_task"]["retryable"] is False
+        assert snap2["current_task"]["attempt"] == 1
         status, payload = http_json(
             "GET", f"{server2.base_url}/v1/session/events?after=0"
         )

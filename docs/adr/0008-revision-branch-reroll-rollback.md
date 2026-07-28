@@ -35,6 +35,5 @@ Ticket 01–05 的 commit 模型是**线性**的：`revision = active_revision +
 
 - Ticket 04 预留的 `not_implemented` / `501` 被真实 reroll/rollback 替换；SSE 线格式不变，`turn.committed` 增加 `parent_revision`。
 - 线性 happy path 行为兼容：连续 submit 仍 `parent=i-1`、`active` 每次 +1（数值上等于 max+1）。
-- Crash recovery / lease（Ticket 07）与真实 Pi/DeepSeek 仍未落地。
-- 已知限制：单 Session tracer bullet；兼容投影仍是 rebuildable 文件面，不是多 branch 并存 UI。
-- 已知限制（并发/lease）：本票**未**实现 generation lease（spec Decision 8「至多一个 narrative task 持有 Session 生成租约」）。为让 director 路径的 reroll/rollback 能与并发命令交错，`reroll`/director 在生成阶段**释放** `self._lock`。后果：reroll 先把 active head 移到 parent、新 tip 尚未 commit 时存在一个**中间态窗口**（head 已在 parent），此窗口内的 snapshot/events 读会看到该中间态；并发 submit 也可能在 reroll director 跑前插入新 task，导致 provider 浪费与一方 `stale_revision`。**commit 边界仍唯一且原子**（`_commit_via_tool` 在 `BEGIN IMMEDIATE` 内做 optimistic + per-task 幂等），故最坏情况是 stale + 浪费，**不会**重复 commit / 部分 commit / 数据损坏。真正的 lease/串行化与崩溃恢复分类属 Ticket 07。
+- 本 ADR 落地时尚无 crash recovery / generation lease；后续 runtime 已实现持久 lease、attempt/recovery 与快照竞态加固，相关回归见 `test_session_turn_runtime.py`、`test_session_event_stream.py` 和 `test_revision_branch.py`。
+- 本 ADR 落地时是单 Session tracer bullet；ADR-0012 已扩展为 card-local 多 Session。兼容投影仍是单活动 lineage 的 rebuildable 文件面，不是多 branch 并存 UI。

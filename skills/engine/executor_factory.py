@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from engine.agent_graph import SequentialAgentGraph, SequentialGraphNode
 from engine.director import NarrativeDirector, ProviderDrivenDirector
-from engine.provider import RealProviderAdapter
+from engine.provider import RealProviderAdapter, runtime_provider_api_key
 
 
 class DeterministicGraphDirector(NarrativeDirector):
@@ -43,20 +43,20 @@ class RuntimeExecutorFactory:
         nodes = [node for node in graph.get("nodes", []) if node.get("enabled", True)]
         if not nodes:
             raise ValueError("frozen runtime graph has no enabled nodes")
-        graph_nodes = [self._build_node(node) for node in nodes]
-        if len(graph_nodes) == 1:
-            return graph_nodes[0].director
+        graph_nodes = [self._build_node(node, runtime_config) for node in nodes]
         return SequentialAgentGraph(graph_nodes)
 
-    def _build_node(self, node):
+    def _build_node(self, node, runtime_config):
         if self.mock:
             director = DeterministicGraphDirector(node["id"], node["role"])
         else:
+            provider_settings = (runtime_config.get("settings") or {}).get("provider") or {}
             adapter = RealProviderAdapter(
                 mock=False,
                 model=node["model"],
-                base_url=self.base_url,
+                base_url=provider_settings.get("base_url") or self.base_url,
                 provider=node["provider"],
+                runtime_api_key=runtime_provider_api_key(node["provider"]),
             )
             director = ProviderDrivenDirector(
                 adapter,

@@ -15,7 +15,7 @@ from pathlib import Path
 from engine.mvu import extract_commands, execute_commands, compute_current_variables, audit_variables, validate_command, generate_schema, SchemaNode
 from engine.card import (read_chat_log, write_chat_log, read_state, write_state,
                          _get_latest_variables, _get_latest_delta, _get_turn_variables, update_state)
-from engine.render import (resolve_macros, _stat_color, _stat_max_guess, _render_stat_bar,
+from engine.render import (resolve_card_macros, resolve_macros, _stat_color, _stat_max_guess, _render_stat_bar,
                            _html_escape, _build_beautify_panel, _escape_attr, _strip_tags,
                            _strip_mvu_commands, _text_to_p, _extract_options)
 
@@ -554,7 +554,7 @@ def list_openings(card_folder=None):
     return []
 
 
-def switch_opening(card_folder, opening_id):
+def switch_opening(card_folder, opening_id, *, user_name="旅行者", character_name=""):
     """Replace the current opening (index 0) with a different one."""
     openings = list_openings(card_folder)
     target = None
@@ -575,7 +575,9 @@ def switch_opening(card_folder, opening_id):
 
     # Replace opening AI content with the selected greeting
     # Convert plain-text paragraphs to <p> tags if not already HTML
-    greeting = target["content"]
+    greeting = resolve_card_macros(
+        target["content"], user_name=user_name, character_name=character_name
+    )
     if "<p>" not in greeting and "<content>" not in greeting:
         greeting = _text_to_p(greeting)
 

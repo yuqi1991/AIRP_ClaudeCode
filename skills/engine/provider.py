@@ -33,6 +33,23 @@ from pathlib import Path
 from typing import Iterator
 
 
+_runtime_provider_overrides: dict[str, dict[str, str]] = {}
+_runtime_provider_lock = threading.Lock()
+
+
+def set_runtime_provider_override(provider: str, *, api_key: str | None = None) -> None:
+    """Keep a UI-supplied provider key in process memory only."""
+    with _runtime_provider_lock:
+        if api_key:
+            _runtime_provider_overrides[provider] = {"api_key": api_key}
+
+
+def runtime_provider_api_key(provider: str) -> str | None:
+    with _runtime_provider_lock:
+        value = _runtime_provider_overrides.get(provider, {}).get("api_key")
+    return value or None
+
+
 # ═══ Abort signaling ═══
 
 
@@ -226,11 +243,13 @@ class FakeProvider(ProviderAdapter):
         self._credentials = credentials or {}
         # number of times stream() was invoked — useful for assertions
         self.call_count = 0
+        self.requests: list[ProviderRequest] = []
 
     def model_id(self, role: str) -> str:
         return self._model
 
     def stream(self, request, signal):
+        self.requests.append(request)
         idx = min(self._call_index, len(self._scripts) - 1)
         script = self._scripts[idx]
         self._call_index += 1
@@ -323,11 +342,14 @@ class RealProviderAdapter(ProviderAdapter):
         cwd: str | Path | None = None,
         rates: CostEstimate | None = None,
         request_timeout: float | None = None,
+        runtime_api_key: str | None = None,
     ) -> None:
         self._sidecar_command = list(sidecar_command) if sidecar_command else None
         # Accepted for symmetry with FakeProvider; NEVER forwarded to the
         # sidecar, request bodies, or any durable surface.
         self._credentials = credentials or {}
+        # Volatile UI secret: only copied into this call's sidecar environment.
+        self._runtime_api_key = runtime_api_key or None
         self._model = model or self.DEFAULT_MODEL
         self._base_url = base_url or self.DEFAULT_BASE_URL
         self._provider = provider or self.DEFAULT_PROVIDER
@@ -622,6 +644,8 @@ class RealProviderAdapter(ProviderAdapter):
             "COMSPEC",
         }
         env = {key: os.environ[key] for key in allowed if key in os.environ}
+        if self._runtime_api_key:
+            env["DEEPSEEK_API_KEY"] = self._runtime_api_key
         if self._mock:
             env["PI_SIDECAR_MOCK"] = "1"
         # Ensure node can resolve the root node_modules even if cwd drifts.

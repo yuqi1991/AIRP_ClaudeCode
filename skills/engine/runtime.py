@@ -31,8 +31,9 @@ class TurnDraft:
     """Structured narrative turn, authored by the director and committed by the runtime.
 
     ``content`` / ``summary`` / ``options`` mirror the existing projection
-    contract; ``polished_input`` carries the (optional) editor-pass of the
-    player's input and ``mvu_commands`` carries the raw MVU payload
+    contract; ``polished_input`` carries an optional model editor-pass for
+    inspection only (the durable player message always remains task-owned
+    input) and ``mvu_commands`` carries the raw MVU payload
     (``_.set()`` / ``<JSONPatch>`` / ``<UpdateVariable>``). When
     ``mvu_commands`` is empty, MVU is extracted from ``content`` for backward
     compatibility with the deterministic fake executor.
@@ -75,6 +76,7 @@ class RuntimeResult:
     commit_id: str | None
     revision: int
     status: str
+    attempt: int = 0
 
 
 @dataclass(frozen=True)
@@ -140,10 +142,11 @@ class LegacyProjectionAdapter:
             full_text = draft.content
             if draft.mvu_commands:
                 full_text = full_text + "\n" + draft.mvu_commands
-            polished = draft.polished_input or text
             handler.append_turn(
                 self.card_folder,
-                polished_input=polished,
+                # A model can suggest a polished rendering, but it must never
+                # become the durable player message. ``text`` is task-owned.
+                polished_input=text,
                 content=draft.content,
                 summary=draft.summary,
                 options=draft.options,
@@ -194,6 +197,7 @@ class SessionTurnRuntime:
         max_commit_validation_retries: int = 3,
         runtime_config_store=None,
         executor_factory=None,
+        bootstrap_legacy_history: bool = True,
     ):
         self.database_path = Path(database_path)
         self.card_folder = Path(card_folder)
@@ -203,6 +207,7 @@ class SessionTurnRuntime:
         self.session_settings = json.loads(self._canonical(session_settings or {}))
         self.runtime_config_store = runtime_config_store
         self.executor_factory = executor_factory
+        self.bootstrap_legacy_history = bool(bootstrap_legacy_history)
         self.quality_policy = quality_policy or QualityPolicy()
         self.quality_gate = quality_gate or DefaultQualityGate(self.quality_policy)
         self.max_commit_validation_retries = max(1, int(max_commit_validation_retries))
@@ -217,6 +222,30 @@ class SessionTurnRuntime:
         with self._lock:
             task = self._create_or_get_task(text, idempotency_key)
         return self._submit_queued_task(task)
+
+    def compile_opening_context(self, instruction):
+        """Compile the selected preset against revision 0 for opening generation.
+
+        Opening generation is a provider phase, not a player turn, so it must
+        not allocate a task, commit, or revision. The returned context still
+        uses the same frozen card/settings/preset sources as normal turns.
+        """
+        if not isinstance(instruction, str) or not instruction.strip():
+            raise ValueError("empty opening instruction")
+        snapshot = self._source_snapshot(0)
+        runtime_config = snapshot.get("runtime_config")
+        return compile_context(
+            ContextCompileRequest(
+                session_id=self.session_id,
+                task_id="opening",
+                base_revision=0,
+                player_input=instruction,
+                snapshot=snapshot,
+                policy=self._policy_for_snapshot(snapshot),
+                preset=prompt_preset_from_snapshot(runtime_config),
+                preset_id=(runtime_config or {}).get("preset_id"),
+            )
+        )
 
     def _submit_queued_task(self, task):
         """Return promptly unless this caller atomically acquires the generation lease.
@@ -360,9 +389,13 @@ class SessionTurnRuntime:
         return False
 
     def task_id_for_key(self, idempotency_key):
+        stored_key = self._stored_idempotency_key(idempotency_key)
         with self._connect() as connection:
             row = connection.execute(
-                "SELECT id FROM tasks WHERE idempotency_key = ?", (idempotency_key,)
+                "SELECT id FROM tasks WHERE session_id = ? "
+                "AND idempotency_key IN (?, ?) "
+                "ORDER BY (idempotency_key = ?) DESC LIMIT 1",
+                (self.session_id, stored_key, idempotency_key, stored_key),
             ).fetchone()
         return row["id"] if row else None
 
@@ -384,7 +417,7 @@ class SessionTurnRuntime:
     def task(self, task_id):
         with self._connect() as connection:
             row = connection.execute(
-                "SELECT id, commit_id, revision, status FROM tasks WHERE id = ? AND session_id = ?",
+                "SELECT id, commit_id, revision, status, (SELECT COUNT(*) FROM task_attempts WHERE task_id = tasks.id) AS attempt FROM tasks WHERE id = ? AND session_id = ?",
                 (task_id, self.session_id),
             ).fetchone()
         return self._result(row) if row else None
@@ -493,7 +526,7 @@ class SessionTurnRuntime:
                         (
                             task_id,
                             self.session_id,
-                            idempotency_key,
+                            self._stored_idempotency_key(idempotency_key),
                             text,
                             "queued",
                             0,
@@ -728,7 +761,7 @@ class SessionTurnRuntime:
                     (
                         task_id,
                         self.session_id,
-                        idempotency_key,
+                        self._stored_idempotency_key(idempotency_key),
                         text,
                         "queued",
                         0,
@@ -1499,6 +1532,10 @@ class SessionTurnRuntime:
                 },
             )
 
+    def _emit_agent_node_event(self, task_id, event_type, node_id, role):
+        with self._connect() as connection:
+            self._event(connection, event_type, {"task_id": task_id, "node_id": node_id, "role": role})
+
     def _emit_model_call_started(self, task_id, meta):
         with self._connect() as connection:
             self._event(
@@ -1509,6 +1546,8 @@ class SessionTurnRuntime:
                     "call_ordinal": meta["call_ordinal"],
                     "manifest_id": meta.get("manifest_id"),
                     "model": meta.get("model"),
+                    "agent_node_id": meta.get("agent_node_id"),
+                    "agent_role": meta.get("agent_role"),
                 },
             )
 
@@ -1547,6 +1586,8 @@ class SessionTurnRuntime:
                     "call_ordinal": meta["call_ordinal"],
                     "manifest_id": meta.get("manifest_id"),
                     "model": meta.get("model"),
+                    "agent_node_id": meta.get("agent_node_id"),
+                    "agent_role": meta.get("agent_role"),
                     "usage": {
                         "prompt_tokens": meta.get("prompt_tokens", 0),
                         "completion_tokens": meta.get("completion_tokens", 0),
@@ -1680,6 +1721,11 @@ class SessionTurnRuntime:
 
     def _state_at_revision(self, revision):
         if revision == 0:
+            opening = self._opening_entry()
+            if isinstance(opening, dict):
+                opening_state = (opening.get("variables") or {}).get("stat_data")
+                if isinstance(opening_state, dict):
+                    return copy.deepcopy(opening_state)
             return self._read_json(self.card_folder / ".initvar.json", {})
         with self._connect() as connection:
             row = connection.execute(
@@ -1758,13 +1804,20 @@ class SessionTurnRuntime:
 
     @staticmethod
     def _result(task):
-        return RuntimeResult(task["id"], task["commit_id"], task["revision"], task["status"])
+        attempt = int(task["attempt"] or 0) if "attempt" in task.keys() else 0
+        return RuntimeResult(task["id"], task["commit_id"], task["revision"], task["status"], attempt=attempt)
 
-    @staticmethod
-    def _task_for_key(connection, idempotency_key):
+    def _task_for_key(self, connection, idempotency_key):
+        stored_key = self._stored_idempotency_key(idempotency_key)
         return connection.execute(
-            "SELECT id, commit_id, revision, status, text, base_revision, source_snapshot FROM tasks WHERE idempotency_key = ?", (idempotency_key,)
+            "SELECT id, commit_id, revision, status, text, base_revision, source_snapshot "
+            "FROM tasks WHERE session_id = ? AND idempotency_key IN (?, ?) "
+            "ORDER BY (idempotency_key = ?) DESC LIMIT 1",
+            (self.session_id, stored_key, idempotency_key, stored_key),
         ).fetchone()
+
+    def _stored_idempotency_key(self, idempotency_key):
+        return f"{self.session_id}::{idempotency_key}"
 
     @staticmethod
     def _compiled_from_manifest(manifest):
@@ -1784,7 +1837,13 @@ class SessionTurnRuntime:
         manifest["payload"] = json.loads(row["payload_json"])
         return manifest
 
-    def capture_opening_from_chat_log(self):
+    def capture_opening_from_chat_log(self, *, event_type=None, event_payload=None):
+        """Persist the AI-only opening currently projected in ``chat_log``.
+
+        Startup and legacy recovery only need the stored opening. Interactive
+        opening selection additionally supplies an event so reconnecting
+        browser clients can refresh from the durable runtime stream.
+        """
         log = self._read_json(self.card_folder / "chat_log.json", [])
         opening = None
         if isinstance(log, list) and log:
@@ -1798,7 +1857,36 @@ class SessionTurnRuntime:
                 "UPDATE sessions SET opening_turn_json = ? WHERE id = ?",
                 (self._canonical(opening) if opening is not None else None, self.session_id),
             )
+            if event_type:
+                self._event(connection, event_type, dict(event_payload or {}))
         return opening is not None
+
+    def opening_turn(self):
+        """Return this session's durable AI-only opening, if one exists."""
+        opening = self._opening_entry()
+        return copy.deepcopy(opening) if opening is not None else None
+
+    def card_facts(self):
+        """Return the imported card payload without exposing projection I/O helpers."""
+        card_data = self._read_json(self.card_folder / ".card_data.json", {})
+        facts = card_data.get("data") if isinstance(card_data.get("data"), dict) else card_data
+        return copy.deepcopy(facts) if isinstance(facts, dict) else {}
+
+    def set_opening_turn(self, opening, *, event_type=None, event_payload=None):
+        """Replace this session's durable opening without reading shared projection files."""
+        if not isinstance(opening, dict) or opening.get("user"):
+            raise ValueError("opening must be an AI-only turn object")
+        stored = copy.deepcopy(opening)
+        stored["index"] = 0
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute(
+                "UPDATE sessions SET opening_turn_json = ? WHERE id = ?",
+                (self._canonical(stored), self.session_id),
+            )
+            if event_type:
+                self._event(connection, event_type, dict(event_payload or {}))
+        return copy.deepcopy(stored)
 
     def visible_turns(self, head_revision=None):
         head = self.active_revision() if head_revision is None else head_revision
@@ -1814,7 +1902,8 @@ class SessionTurnRuntime:
         return visible
 
     def resume_projection(self):
-        self.capture_opening_from_chat_log()
+        if self._opening_entry() is None:
+            self.capture_opening_from_chat_log()
         self._rebuild_active_projections(self.active_revision())
 
     def _rebuild_active_projections(self, head_revision):
@@ -1857,7 +1946,8 @@ class SessionTurnRuntime:
         draft = item["draft"]
         entry = {
             "index": index,
-            "user": draft.polished_input or item.get("text") or "",
+            # Rebuilds must use the same task-owned input as live projection.
+            "user": item.get("text") or "",
             "ai": self._compose_ai_text(draft),
             "summary": draft.summary or "",
             "variables": {
@@ -2321,7 +2411,8 @@ class SessionTurnRuntime:
             connection.execute("INSERT OR IGNORE INTO schema_migrations (version) VALUES (3)")
             connection.execute("INSERT OR IGNORE INTO schema_migrations (version) VALUES (4)")
             connection.execute("INSERT OR IGNORE INTO sessions (id, active_revision) VALUES (?, 0)", (self.session_id,))
-        self._bootstrap_legacy_history_if_needed()
+        if self.bootstrap_legacy_history:
+            self._bootstrap_legacy_history_if_needed()
         self._recover_startup_state()
 
     def _connect(self):

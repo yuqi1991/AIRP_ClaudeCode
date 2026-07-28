@@ -10,6 +10,21 @@ import json
 import re
 
 
+def resolve_card_macros(text, *, user_name="旅行者", character_name=""):
+    """Resolve the standard SillyTavern identity macros used in card prose."""
+    resolved = text if isinstance(text, str) else ""
+    values = {
+        "user": str(user_name or "旅行者"),
+        "char": str(character_name or ""),
+    }
+    return re.sub(
+        r"\{\{\s*(user|char)\s*\}\}",
+        lambda match: values[match.group(1).lower()],
+        resolved,
+        flags=re.IGNORECASE,
+    )
+
+
 def resolve_macros(text, stat_data):
     """Replace {{getvar::path}} and {{formatvar::path}} macros with variable values.
 

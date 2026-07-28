@@ -9,7 +9,7 @@ sys.path.insert(0, str(SKILLS))
 import handler
 
 from engine.mvu import generate_schema, validate_command, validate_command_strict
-from engine.runtime import FakeNarrativeExecutor, MultiTurnFakeExecutor, SessionTurnRuntime
+from engine.runtime import FakeNarrativeExecutor, MultiTurnFakeExecutor, SessionTurnRuntime, TurnDraft
 
 
 def write_card_fixture(card_folder):
@@ -96,6 +96,35 @@ def test_submit_commits_one_turn_and_writes_compatible_projection(tmp_path):
     ]
     assert runtime.active_revision() == 1
     assert runtime.task(result.task_id).status == "succeeded"
+
+
+def test_projection_never_allows_model_to_rewrite_player_input(tmp_path):
+    card_folder = tmp_path / "card"
+    card_folder.mkdir()
+    write_card_fixture(card_folder)
+
+    class RewritingExecutor:
+        def run(self, text, compiled_context=None):
+            return TurnDraft(
+                content="<p>刻晴点头回应。</p>",
+                polished_input="模型伪造的一整段开场内容",
+            )
+
+    runtime = SessionTurnRuntime(
+        database_path=tmp_path / "runtime.sqlite3",
+        card_folder=card_folder,
+        projection_root=tmp_path / "projection",
+        executor=RewritingExecutor(),
+    )
+
+    runtime.submit("我请求查看任务进度", "raw-player-input")
+
+    log = json.loads((card_folder / "chat_log.json").read_text(encoding="utf-8"))
+    assert log[-1]["user"] == "我请求查看任务进度"
+
+    runtime.resume_projection()
+    rebuilt = json.loads((card_folder / "chat_log.json").read_text(encoding="utf-8"))
+    assert rebuilt[-1]["user"] == "我请求查看任务进度"
 
 
 def test_duplicate_submit_returns_existing_commit_without_duplicate_turn(tmp_path):

@@ -132,6 +132,12 @@ class DirectorHandle:
     def report_model_call_started(self, meta: dict) -> None:
         self._runtime._emit_model_call_started(self.task_id, meta)
 
+    def report_agent_node_started(self, node_id: str, role: str) -> None:
+        self._runtime._emit_agent_node_event(self.task_id, "agent_node.started", node_id, role)
+
+    def report_agent_node_finished(self, node_id: str, role: str) -> None:
+        self._runtime._emit_agent_node_event(self.task_id, "agent_node.finished", node_id, role)
+
     def report_model_call_finished(self, meta: dict) -> None:
         self._runtime._record_model_call(self.task_id, meta)
 

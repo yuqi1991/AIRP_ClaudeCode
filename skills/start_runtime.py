@@ -121,21 +121,39 @@ def _load_first_mes(card_folder: Path) -> dict | None:
     return None
 
 
-def _deliver_opening(card_folder: Path, styles: Path, runtime, *, mock: bool) -> str:
+def _deliver_opening(
+    card_folder: Path,
+    styles: Path,
+    runtime,
+    *,
+    mock: bool,
+    runtime_config=None,
+    provider=None,
+) -> str:
     """Write the opening turn (index 0, AI-only). Card first_mes preferred;
     otherwise generate via the real provider. Returns 'first_mes' | 'generated'."""
     import handler
+    from engine.render import resolve_card_macros
+
+    card_facts = runtime.card_facts()
+    settings = runtime.session_settings if isinstance(runtime.session_settings, dict) else {}
+    user_name = settings.get("charName") or settings.get("user") or "旅行者"
+    character_name = card_facts.get("name") or ""
     first = _load_first_mes(card_folder)
     if first:
+        content = resolve_card_macros(
+            first["content"], user_name=user_name, character_name=character_name
+        )
         handler.append_turn(
             str(card_folder),
-            content=first["content"],
+            content=content,
             summary=first.get("summary", ""),
             options=first.get("options", ""),
             is_opening=True,
-            full_text=first["content"],
+            full_text=content,
             projection_root=styles,
         )
+        runtime.capture_opening_from_chat_log()
         return "first_mes"
     if mock:
         # FakeProvider path has no real model; write a placeholder opening.
@@ -148,12 +166,101 @@ def _deliver_opening(card_folder: Path, styles: Path, runtime, *, mock: bool) ->
             full_text="<p>占位开场</p>",
             projection_root=styles,
         )
+        runtime.capture_opening_from_chat_log()
         return "placeholder"
-    # Generate an opening via real DeepSeek.
-    from engine.director import ProviderDrivenDirector
-    director = runtime.executor
-    text = "请生成一段开场叙事（两三句中文），用 <content>/<summary>/<options> 标签。"
-    result = runtime.submit(text=text, idempotency_key="opening-gen")
+
+    from engine.provider import (
+        AbortSignal,
+        ProviderDelta,
+        ProviderError,
+        ProviderRequest,
+        ProviderResult,
+        RealProviderAdapter,
+        UsageRecord,
+    )
+    from engine.turn_parser import parse_turn_text
+
+    config = runtime_config
+    if not isinstance(config, dict):
+        store = getattr(runtime, "runtime_config_store", None)
+        if store is None:
+            raise ValueError("generated opening requires runtime config")
+        config = store.freeze().data
+    graph = config.get("graph") or {}
+    nodes = [node for node in graph.get("nodes", []) if node.get("enabled", True)]
+    if not nodes or nodes[-1].get("role") != "narrative_director":
+        raise ValueError("generated opening requires a final narrative_director node")
+    node = nodes[-1]
+    instruction = (
+        "请根据角色设定生成一段自然的中文开场叙事。不要虚构玩家已经做出的行动。"
+        "输出 <content>、<summary> 和 <options>；如需初始化变量，可输出 <UpdateVariable>。"
+    )
+    if node.get("instruction"):
+        instruction += "\n本次写作节点指令：" + node["instruction"]
+    compiled = runtime.compile_opening_context(instruction)
+    adapter = provider or RealProviderAdapter(
+        mock=False,
+        model=node["model"],
+        base_url="https://api.deepseek.com",
+        provider=node["provider"],
+    )
+    request = ProviderRequest(
+        messages=compiled.payload,
+        tools=[],
+        model=node["model"],
+        metadata={
+            "session_id": runtime.session_id,
+            "phase": "opening",
+            "payload_hash": compiled.payload_hash,
+        },
+    )
+    usage = UsageRecord()
+    raw_text = ""
+    for attempt in range(node["max_retries"] + 1):
+        chunks = []
+        usage = UsageRecord()
+        try:
+            for item in adapter.stream(request, AbortSignal()):
+                if isinstance(item, ProviderDelta):
+                    if item.tool_call is not None:
+                        raise RuntimeError("opening provider returned an unexpected tool call")
+                    if item.text:
+                        chunks.append(item.text)
+                elif isinstance(item, ProviderResult):
+                    usage = item.usage
+            raw_text = "".join(chunks).strip()
+            break
+        except ProviderError as exc:
+            if not exc.retryable or attempt >= node["max_retries"]:
+                raise
+    if not raw_text:
+        raise RuntimeError("opening provider returned empty content")
+    draft = parse_turn_text(raw_text)
+    if not draft.content.strip():
+        raise RuntimeError("opening provider returned no visible content")
+    tokens = {
+        "in": usage.prompt_tokens,
+        "out": usage.completion_tokens,
+        "total": usage.total_tokens,
+    }
+    handler.append_turn(
+        str(card_folder),
+        content=draft.content,
+        summary=draft.summary,
+        options=draft.options,
+        is_opening=True,
+        tokens=tokens,
+        full_text=raw_text,
+        projection_root=styles,
+    )
+    runtime.capture_opening_from_chat_log(
+        event_type="session.opening_generated",
+        event_payload={
+            "graph_id": config.get("graph_id"),
+            "model": node["model"],
+            "preset_id": config.get("preset_id"),
+        },
+    )
     return "generated"
 
 
@@ -193,7 +300,8 @@ def main() -> None:
 
     # 3. Import card if not initialized
     session_init = card_folder / ".session_init"
-    if not session_init.exists():
+    imported_card_data = card_folder / ".card_data.json"
+    if not session_init.exists() and not imported_card_data.exists():
         print("[start_runtime] 导入卡片…", file=sys.stderr)
         r = subprocess.run([sys.executable, str(SKILLS / "import_prepare.py"),
                             str(card_folder), str(root)],
@@ -207,6 +315,7 @@ def main() -> None:
     from engine.executor_factory import RuntimeExecutorFactory
     from engine.runtime import MultiTurnFakeExecutor, SessionTurnRuntime
     from engine.runtime_config import RuntimeConfigStore
+    from engine.session_manager import SessionManager
 
     config_store = RuntimeConfigStore(styles)
     frozen_config = config_store.freeze().data
@@ -216,55 +325,76 @@ def main() -> None:
         token_budget=frozen_config["preset"]["token_budget"],
     )
     executor_factory = RuntimeExecutorFactory(mock=mock, base_url="https://api.deepseek.com")
-    runtime = SessionTurnRuntime(
-        database_path=card_folder / ".runtime.sqlite3",
-        card_folder=str(card_folder),
-        projection_root=styles,
-        # The factory is authoritative for every task; retain this fallback for
-        # callers and legacy test helpers that inspect or swap runtime.executor.
-        executor=MultiTurnFakeExecutor(),
-        session_settings=frozen_config["settings"],
-        manifest_policy=manifest_policy,
-        runtime_config_store=config_store,
-        executor_factory=executor_factory,
-        max_commit_validation_retries=graph["commit_validation_retries"],
+    database_path = card_folder / ".runtime.sqlite3"
+
+    def build_runtime(session_id, *, bootstrap_legacy_history=False):
+        return SessionTurnRuntime(
+            database_path=database_path,
+            card_folder=str(card_folder),
+            projection_root=styles,
+            # The factory is authoritative for every task; retain this fallback for
+            # callers and legacy test helpers that inspect or swap runtime.executor.
+            executor=MultiTurnFakeExecutor(),
+            session_id=session_id,
+            session_settings=frozen_config["settings"],
+            manifest_policy=manifest_policy,
+            runtime_config_store=config_store,
+            executor_factory=executor_factory,
+            max_commit_validation_retries=graph["commit_validation_retries"],
+            bootstrap_legacy_history=bootstrap_legacy_history,
+        )
+
+    active_session_id = SessionManager.load_active_session_id(database_path)
+    runtime = build_runtime(
+        active_session_id,
+        bootstrap_legacy_history=active_session_id == "local",
     )
 
     # 5. Deliver opening (only if chat_log is empty — no turn 0 yet) OR rebuild
     # projection from an existing save so the browser reflects the save instead
     # of import_prepare's placeholder content.js.
-    log_path = card_folder / "chat_log.json"
-    turns = []
-    if log_path.is_file():
-        try:
-            turns = json.loads(log_path.read_text(encoding="utf-8"))
-        except Exception:
-            turns = []
-    if not turns:
-        origin = _deliver_opening(card_folder, styles, runtime, mock=mock)
-        runtime.capture_opening_from_chat_log()
+    if runtime.opening_turn() is None and runtime.active_revision() == 0:
+        origin = _deliver_opening(
+            card_folder,
+            styles,
+            runtime,
+            mock=mock,
+            runtime_config=frozen_config,
+        )
         runtime.resume_projection()
         print(f"[start_runtime] 开场已交付（来源: {origin}）", file=sys.stderr)
     else:
         runtime.resume_projection()
-        print(f"[start_runtime] 已有存档（{len(turns)} 回合），projection 已重建", file=sys.stderr)
+        print(
+            f"[start_runtime] 已恢复存档 {runtime.session_id} "
+            f"（revision {runtime.active_revision()}），projection 已重建",
+            file=sys.stderr,
+        )
+
+    session_manager = SessionManager(
+        runtime,
+        build_runtime,
+        default_opening=runtime.opening_turn(),
+    )
 
     # 6. Start unified server on :8765
     from runtime_server import SessionRuntimeServer
     server = SessionRuntimeServer(
         runtime,
-        host="127.0.0.1",
+        host="0.0.0.0",
         port=PORT,
         static_root=styles,
         preset_root=config_store.preset_root,
         graph_root=config_store.graph_root,
+        session_manager=session_manager,
     )
     server.start()
     url = f"http://localhost:{PORT}"
     if not _wait_server_ready(url):
         _die(f"服务器未在 {url} 就绪")
     print(json.dumps({"ok": True, "url": url, "mock": mock,
-                      "card": str(card_folder)}, ensure_ascii=False))
+                      "card": str(card_folder),
+                      "session_id": session_manager.active_session_id}, ensure_ascii=False))
     try:
         while True:
             time.sleep(3600)

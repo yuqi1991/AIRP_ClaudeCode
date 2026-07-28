@@ -2,7 +2,29 @@
 
 ## 当前架构
 
-当前系统由浏览器前端、本地 HTTP bridge、CLI 编排脚本和 `skills/engine/` 深模块组成。
+当前系统由浏览器前端、本地 HTTP bridge、CLI 编排脚本和 `skills/engine/` 深模块组成。独立 runtime 已有可玩的 card-local 多 Session 黄金路径；原 Claude Code loop 仍保留为 legacy 路径。
+
+```text
+Browser ── HTTP commands / SSE ──► runtime_server.py
+                                      │
+                                      ▼
+                                SessionManager
+                                      │ active runtime
+                                      ▼
+                              SessionTurnRuntime
+                       ┌──────────────┼──────────────┐
+                       ▼              ▼              ▼
+                Context Manifest   Provider       SQLite lineage
+                       │              │              │
+                       └──────► harness commit ◄─────┘
+                                      │
+                                      ▼
+                         chat/state/content projection
+```
+
+`start_runtime.py` 负责导入或恢复卡片、恢复活动 session、冻结当前 preset/graph、交付 revision 0 开场并启动统一服务器。`SessionManager` 隐藏 SQLite catalog、活动指针、runtime 更换和兼容投影重建；浏览器提交、取消、重roll、回退、开场/存档切换和刷新恢复均通过 runtime interface 完成，不依赖 `.pending` 或 `input.txt`。
+
+### Legacy Claude Code 路径
 
 ```text
 Browser
@@ -37,6 +59,8 @@ server.py ── input.txt/.pending ──► runtime loop (Claude Code 当前�
 | `engine.worldbook` | 构建 catalog 与按标题读取条目 | usage 保留、条目索引、reference/user Markdown 定位 |
 | `engine.context` | 构建启动/回合上下文 | import_context、变量路径列表、catalog 展示 |
 | `engine.context_compiler` | 将 revision-scoped snapshot 编译为 Manifest/payload | section 选择、稳定顺序、预算、hash、重放 |
+| `engine.runtime` | 提交、取消、回退、重roll、snapshot 与 opening | task lease、event/commit/revision DAG、state snapshot、幂等与投影恢复 |
+| `engine.session_manager` | 列出、创建、切换、重命名和删除存档 | card-local catalog、活动指针、runtime 生命周期与删除清理 |
 
 这些模块的原则是：调用方只需知道少量 interface，文件格式、HTML、MVU 路径与 transcript 细节留在模块内部。
 
@@ -51,6 +75,28 @@ server.py ── input.txt/.pending ──► runtime loop (Claude Code 当前�
 
 ## 回合流程
 
+独立 runtime 的回合流程：
+
+1. 浏览器 `POST /api/submit`，runtime 建立带幂等键的持久 task；
+2. runtime 在 task 的 base revision 冻结 card/settings/preset/graph，编译 Context Manifest；
+3. provider 流式产生 preview 与最终叙事文本，SSE 向浏览器发布任务状态；
+4. harness 解析文本、执行质量与 MVU 门禁，原子写入 commit/revision/state；
+5. active lineage 重建兼容 `chat_log.json`、`state.js` 与 `content.js` 投影。
+
+### 浏览器流式、Provider 与 Graph 可观测性
+
+`narrative.preview.delta` 是 durable event 的临时浏览器投影：前端按 task id 累积 delta 为一个“生成中”的 AI 回合；成功、失败、取消、开场或存档切换时清除它，正式 `turn.committed` 投影仍是唯一历史事实。这使 SSE 中断时的 snapshot/content 轮询恢复不会把半成品写进 `chat_log.json`。
+
+Provider 面板通过 `/api/provider/config` 读取或更新当前活动图最后一个 `narrative_director` 节点的 model，并将非敏感 `base_url` 保存至 `settings.json.provider`，供下一 task 的冻结配置使用。`/api/provider/models` 调用 OpenAI-compatible `{base_url}/models` 获取模型列表。网页输入的 key 只保存在 Python 进程内存，并仅复制到每次 Node sidecar 子进程的 `DEEPSEEK_API_KEY` 环境；它不进入 settings、graph、IPC body、事件、manifest、SQLite、projection 或响应。
+
+顺序 graph 无论有一个还是多个节点，均通过 `SequentialAgentGraph` 执行。runtime 发布 `agent_node.started/finished`、`model_call.started/finished` 与 `tool_run.*` durable events；前端 Agent Trace 以此显示当前节点、模型耗时/token 和工具结果。graph 仍是受限的线性 writing-role pipeline，不是通用工作流 DSL。
+
+存档切换不复制 JSON 文件：`SessionManager` 选择目标 session 的 runtime，并由其 active lineage 原地重建共享 projection。生成 lease 活动时，创建、切换和删除返回冲突，避免浏览器在 provider 调用中途换掉 active runtime。
+
+开场是独立的 provider 阶段：卡片已有 `first_mes` 时直接交付；没有时使用当前 preset 和最终 `narrative_director` 节点生成。生成结果写成 AI-only 的 revision 0 opening，不创建玩家 task/commit/revision；opening 中经校验的初始变量成为 revision 0 状态，usage 和 `session.opening_generated` 事件随 opening 保存。这样玩家第一条输入始终对应 revision 1。
+
+Legacy Claude Code 回合流程：
+
 1. 浏览器将用户输入写入 `skills/styles/input.txt`；
 2. `round_prepare.py` 读取 settings、catalog、变量、近期记忆和近三轮对话，写 `round_context.txt`；
 3. 当前 Claude Code agent 读取上下文，按 catalog 按需加载最多 2–3 个世界书条目，写 `response.txt`；
@@ -61,9 +107,9 @@ server.py ── input.txt/.pending ──► runtime loop (Claude Code 当前�
 
 | 位置 | 归属 | 例子 |
 |---|---|---|
-| `<card>/` | 卡片专属持久状态 | `chat_log.json`、`.initvar.json`、`.var_diff.json`、`memory/` |
-| `<card>/memory/` | 跨会话叙事与设定 | `reference.md`、`project.md`、`story_plan.md`、`.worldbook_index.json` |
-| `skills/styles/` | 当前激活卡的前端和瞬态运行态 | `input.txt`、`response.txt`、`round_context.txt`、`content.js`、`state.js` |
+| `<card>/` | 卡片事实、共享基线和持久 session store | `.card_data.json`、`.session_init`、`.initvar.json`、`.runtime.sqlite3`、`memory/` |
+| `<card>/memory/` | 卡片级共享叙事与设定 | `reference.md`、`project.md`、`story_plan.md`、`.worldbook_index.json` |
+| `<card>/` 与 `skills/styles/` | 当前活动 session 的兼容投影 | `chat_log.json`、`.var_diff.json`、`content.js`、`state.js` |
 | `skills/engine/` | 可复用纯逻辑代码 | card/render/mvu/tokens/worldbook/context |
 
-> 当前 `styles/` 与卡片目录仍存在 state/content 双写与全局单例问题；这是下一阶段的数据分层重构对象，详见 [技术债](../status/technical-debt.md)。
+> 一个 server 进程当前仍只服务一张卡，且 settings/preset 与 `memory/*.md` 是卡片级共享。多 session 已摆脱 JSON 历史单例，但多卡并行和 session-scoped 长期记忆仍是后续数据分层工作。

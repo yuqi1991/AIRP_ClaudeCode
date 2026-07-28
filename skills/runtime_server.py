@@ -57,21 +57,27 @@ Thread model
 from __future__ import annotations
 
 import json
+import os
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
+from urllib.request import Request, urlopen
 
 from engine.commands import SessionCommandService
+from engine.provider import runtime_provider_api_key, set_runtime_provider_override
 from engine.runtime import RuntimeEvent, SessionTurnRuntime
 from engine.runtime_config import CONFIG_ID_RE, RuntimeConfigError, RuntimeConfigStore
+from engine.session_manager import SessionManager, SessionManagerError
 
 SSE_HEARTBEAT_SECONDS = 15.0
 SSE_POLL_INTERVAL_SECONDS = 0.05
 SUBMIT_ACCEPT_WAIT_SECONDS = 2.0
-RUNNING_TASK_STATUSES = frozenset({"queued", "running", "projection_pending"})
+RUNNING_TASK_STATUSES = frozenset({"queued", "leased", "running", "projection_pending"})
+DEFAULT_PROVIDER_BASE_URL = "https://api.deepseek.com"
+MODEL_DISCOVERY_TIMEOUT_SECONDS = 10
 
 
 def _event_to_dict(event: RuntimeEvent) -> dict:
@@ -107,9 +113,11 @@ class SessionRuntimeServer:
         static_root: str | None = None,
         preset_root: str | None = None,
         graph_root: str | None = None,
+        session_manager: SessionManager | None = None,
     ):
         self.runtime = runtime
         self.service = command_service or SessionCommandService(runtime)
+        self.session_manager = session_manager
         self.host = host
         self.port = port
         self.heartbeat_seconds = heartbeat_seconds
@@ -188,7 +196,9 @@ class SessionRuntimeServer:
         """
         return self._command_async(
             idempotency_key,
-            worker_fn=lambda: self.service.submit(text, idempotency_key),
+            worker_fn=lambda: self._run_and_touch(
+                lambda: self.service.submit(text, idempotency_key)
+            ),
             thread_name=f"submit-{idempotency_key[:24]}",
         )
 
@@ -196,9 +206,19 @@ class SessionRuntimeServer:
         """Background ``service.reroll`` so SSE can stream the new branch tip."""
         return self._command_async(
             idempotency_key,
-            worker_fn=lambda: self.service.reroll(revision=revision, idempotency_key=idempotency_key),
+            worker_fn=lambda: self._run_and_touch(
+                lambda: self.service.reroll(
+                    revision=revision, idempotency_key=idempotency_key
+                )
+            ),
             thread_name=f"reroll-{idempotency_key[:24]}",
         )
+
+    def _run_and_touch(self, command):
+        result = command()
+        if self.session_manager is not None:
+            self.session_manager.touch_active()
+        return result
 
     def _command_async(self, idempotency_key: str, worker_fn, thread_name: str) -> dict:
         with self._submit_lock:
@@ -298,6 +318,34 @@ class SessionRuntimeServer:
             "snapshot": snapshot,
         }
 
+    def _sessions_payload(self) -> dict[str, Any]:
+        if self.session_manager is None:
+            return {
+                "ok": True,
+                "active_session_id": self.runtime.session_id,
+                "sessions": [
+                    {
+                        "id": self.runtime.session_id,
+                        "title": "主存档",
+                        "active": True,
+                        "active_revision": self.runtime.active_revision(),
+                    }
+                ],
+            }
+        return {
+            "ok": True,
+            "active_session_id": self.session_manager.active_session_id,
+            "sessions": self.session_manager.list_sessions(),
+        }
+
+    def _sync_managed_runtime(self) -> None:
+        if self.session_manager is None:
+            return
+        self.runtime = self.session_manager.runtime
+        self.service = SessionCommandService(self.runtime)
+        with self._submit_lock:
+            self._submit_results.clear()
+
     def _runtime_selection(self) -> dict[str, str | None]:
         if self.config_store is None:
             return {"preset_id": None, "graph_id": None}
@@ -323,6 +371,104 @@ class SessionRuntimeServer:
             "presets": self._list_json_configs("preset"),
             "graphs": self._list_json_configs("graph"),
         }
+
+    # ── Provider configuration (keys are memory-only) ────────────────
+
+    def _active_narrative_node(self) -> tuple[dict | None, str | None]:
+        """Return the selected graph final narrative node and graph id."""
+        if self.config_store is None:
+            return None, None
+        try:
+            graph_id = self._runtime_selection().get("graph_id")
+            if not graph_id:
+                return None, None
+            graph = self.config_store.read_config("graph", graph_id)
+            graph = self.config_store.validate_config("graph", graph_id, graph)
+        except (RuntimeConfigError, OSError):
+            return None, None
+        nodes = [node for node in graph.get("nodes", []) if node.get("enabled", True)]
+        if not nodes or nodes[-1].get("role") != "narrative_director":
+            return None, graph_id
+        return nodes[-1], graph_id
+
+    def _provider_config_payload(self) -> dict[str, Any]:
+        node, _ = self._active_narrative_node()
+        provider = (node or {}).get("provider", "deepseek")
+        settings = self._read_settings()
+        provider_settings = settings.get("provider") if isinstance(settings, dict) else {}
+        if not isinstance(provider_settings, dict):
+            provider_settings = {}
+        return {
+            "ok": True,
+            "provider": provider,
+            "base_url": provider_settings.get("base_url") or DEFAULT_PROVIDER_BASE_URL,
+            "model": (node or {}).get("model") or "deepseek-v4-flash",
+            "key_configured": bool(runtime_provider_api_key(provider) or os.environ.get("DEEPSEEK_API_KEY")),
+        }
+
+    def _write_provider_config(self, body: dict) -> tuple[dict[str, Any], int]:
+        if not isinstance(body, dict):
+            return {"ok": False, "error": "invalid_payload"}, 400
+        node, graph_id = self._active_narrative_node()
+        if node is None or graph_id is None or self.config_store is None:
+            return {"ok": False, "error": "active_narrative_node_unavailable"}, 400
+        base_url = body.get("base_url")
+        if base_url is not None and (not isinstance(base_url, str) or not base_url.strip()):
+            return {"ok": False, "error": "invalid_base_url"}, 400
+        model = body.get("model")
+        if model is not None and (not isinstance(model, str) or not model.strip()):
+            return {"ok": False, "error": "invalid_model"}, 400
+        api_key = body.get("api_key")
+        if api_key is not None and (not isinstance(api_key, str) or not api_key.strip()):
+            return {"ok": False, "error": "invalid_api_key"}, 400
+        if base_url is not None:
+            settings = self._read_settings()
+            provider_settings = settings.get("provider") if isinstance(settings, dict) else {}
+            provider_settings = dict(provider_settings) if isinstance(provider_settings, dict) else {}
+            provider_settings["base_url"] = base_url.strip().rstrip("/")
+            try:
+                self.config_store.update_settings({"provider": provider_settings})
+            except RuntimeConfigError as exc:
+                return {"ok": False, **exc.to_dict()}, 400
+        if model is not None:
+            try:
+                graph = self.config_store.read_config("graph", graph_id)
+                final_node_id = node["id"]
+                final_node = next((item for item in graph.get("nodes", []) if item.get("id") == final_node_id), None)
+                if final_node is None:
+                    return {"ok": False, "error": "active_narrative_node_unavailable"}, 400
+                final_node["model"] = model.strip()
+                self.config_store.write_config("graph", graph_id, graph)
+            except (RuntimeConfigError, OSError) as exc:
+                return {"ok": False, "error": "invalid_runtime_config", "message": str(exc)}, 400
+        if api_key is not None:
+            # This key is intentionally process-only: never settings, task data, or events.
+            set_runtime_provider_override(node.get("provider", "deepseek"), api_key=api_key.strip())
+        return self._provider_config_payload(), 200
+
+    def _discover_provider_models(self, overrides: dict | None = None) -> dict[str, Any]:
+        overrides = overrides if isinstance(overrides, dict) else {}
+        current = self._provider_config_payload()
+        base_url = overrides.get("base_url", current["base_url"])
+        api_key = overrides.get("api_key") or runtime_provider_api_key(current["provider"]) or os.environ.get("DEEPSEEK_API_KEY")
+        if not isinstance(base_url, str) or not base_url.strip():
+            return {"ok": False, "models": [], "error": "invalid_base_url"}
+        if not isinstance(api_key, str) or not api_key:
+            return {"ok": False, "models": [], "error": "api_key_not_configured"}
+        try:
+            request = Request(
+                base_url.strip().rstrip("/") + "/models",
+                headers={"Accept": "application/json", "Authorization": f"Bearer {api_key}"},
+                method="GET",
+            )
+            with urlopen(request, timeout=MODEL_DISCOVERY_TIMEOUT_SECONDS) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+            raw_models = payload.get("data", []) if isinstance(payload, dict) else []
+            models = sorted({item.get("id") for item in raw_models if isinstance(item, dict) and isinstance(item.get("id"), str) and item["id"]})
+            return {"ok": True, "models": models}
+        except Exception:
+            # Provider exceptions can include request details; do not expose them.
+            return {"ok": False, "models": [], "error": "model_discovery_failed"}
 
     # ── HTTP handler factory ───────────────────────────────────────────
 
@@ -417,6 +563,15 @@ class SessionRuntimeServer:
                 if path == "/api/session_snapshot":
                     self._send_json(200, server_ref._snapshot_payload())
                     return
+                if path == "/api/sessions":
+                    self._send_json(200, server_ref._sessions_payload())
+                    return
+                if path == "/api/provider/config":
+                    self._send_json(200, server_ref._provider_config_payload())
+                    return
+                if path == "/api/provider/models":
+                    self._send_json(200, server_ref._discover_provider_models())
+                    return
                 if path == "/api/runtime/config":
                     self._send_json(200, server_ref._runtime_config_payload())
                     return
@@ -447,6 +602,71 @@ class SessionRuntimeServer:
                 parsed = urlparse(self.path)
                 path = parsed.path.rstrip("/") or "/"
                 body = self._read_json()
+
+                if path == "/api/sessions":
+                    if server_ref.session_manager is None:
+                        self._send_json(501, {"ok": False, "error": "session_management_unavailable"})
+                        return
+                    try:
+                        session = server_ref.session_manager.create_session(
+                            body.get("title") or "新存档"
+                        )
+                        server_ref._sync_managed_runtime()
+                    except SessionManagerError as exc:
+                        self._send_session_error(exc)
+                        return
+                    self._send_json(
+                        201,
+                        {
+                            **server_ref._sessions_payload(),
+                            "session": session,
+                            "snapshot": server_ref._snapshot_payload(),
+                        },
+                    )
+                    return
+
+                if path == "/api/sessions/switch":
+                    if server_ref.session_manager is None:
+                        self._send_json(501, {"ok": False, "error": "session_management_unavailable"})
+                        return
+                    try:
+                        session = server_ref.session_manager.switch_session(
+                            body.get("session_id")
+                        )
+                        server_ref._sync_managed_runtime()
+                    except SessionManagerError as exc:
+                        self._send_session_error(exc)
+                        return
+                    self._send_json(
+                        200,
+                        {
+                            **server_ref._sessions_payload(),
+                            "session": session,
+                            "snapshot": server_ref._snapshot_payload(),
+                        },
+                    )
+                    return
+
+                if path == "/api/sessions/rename":
+                    if server_ref.session_manager is None:
+                        self._send_json(501, {"ok": False, "error": "session_management_unavailable"})
+                        return
+                    try:
+                        session = server_ref.session_manager.rename_session(
+                            body.get("session_id"), body.get("title")
+                        )
+                    except SessionManagerError as exc:
+                        self._send_session_error(exc)
+                        return
+                    self._send_json(
+                        200,
+                        {**server_ref._sessions_payload(), "session": session},
+                    )
+                    return
+
+                if path == "/api/provider/models":
+                    self._send_json(200, server_ref._discover_provider_models(body))
+                    return
 
                 if path == "/v1/session/commands/submit":
                     text = body.get("text", "")
@@ -534,6 +754,8 @@ class SessionRuntimeServer:
                         revision=body.get("revision"),
                         idempotency_key=body.get("idempotency_key"),
                     )
+                    if server_ref.session_manager is not None:
+                        server_ref.session_manager.touch_active()
                     code = 200 if result.ok else 400
                     if result.error == "unknown_revision":
                         code = 404
@@ -546,8 +768,10 @@ class SessionRuntimeServer:
                     if not text:
                         self._send_json(400, {"ok": False, "error": "empty input"})
                         return
-                    char_name = (body.get("charName") or "").strip()
-                    submitted_text = f"【{char_name}】{text}" if char_name else text
+                    # Player identity is part of frozen settings/context. Keep
+                    # the durable player message byte-for-byte as the user typed
+                    # it so the chat bubble does not repeat an identity prefix.
+                    submitted_text = text
                     key = body.get("idempotency_key") or f"api-submit-{time.time_ns()}"
                     result = server_ref.submit_async(submitted_text, key)
                     payload = {
@@ -580,6 +804,8 @@ class SessionRuntimeServer:
                         if turn["revision"] > 0:
                             target = turn["revision"]
                     result = server_ref.service.rollback(revision=target, idempotency_key=f"api-delete-{time.time_ns()}")
+                    if server_ref.session_manager is not None:
+                        server_ref.session_manager.touch_active()
                     self._send_json(200 if result.ok else 400, {**result.to_dict(), "snapshot": server_ref._snapshot_payload()})
                     return
 
@@ -594,7 +820,10 @@ class SessionRuntimeServer:
 
                 if path == "/api/switch_opening":
                     ok = server_ref._switch_opening(body.get("opening_id"))
-                    self._send_json(200 if ok else 400, {"ok": ok})
+                    self._send_json(
+                        200 if ok else 400,
+                        {"ok": ok, "snapshot": server_ref._snapshot_payload()},
+                    )
                     return
 
                 if path == "/api/style-profiles/delete":
@@ -605,11 +834,46 @@ class SessionRuntimeServer:
 
                 self._send_json(404, {"ok": False, "error": "not_found"})
 
+            def do_DELETE(self):  # noqa: N802
+                parsed = urlparse(self.path)
+                path = parsed.path.rstrip("/") or "/"
+                prefix = "/api/sessions/"
+                if not path.startswith(prefix):
+                    self._send_json(404, {"ok": False, "error": "not_found"})
+                    return
+                if server_ref.session_manager is None:
+                    self._send_json(501, {"ok": False, "error": "session_management_unavailable"})
+                    return
+                session_id = path[len(prefix):]
+                try:
+                    result = server_ref.session_manager.delete_session(session_id)
+                    server_ref._sync_managed_runtime()
+                except SessionManagerError as exc:
+                    self._send_session_error(exc)
+                    return
+                self._send_json(
+                    200,
+                    {**server_ref._sessions_payload(), **result, "snapshot": server_ref._snapshot_payload()},
+                )
+
+            def _send_session_error(self, exc: SessionManagerError):
+                if exc.code == "unknown_session":
+                    status = 404
+                elif exc.code in {"generation_active", "cannot_delete_only_session"}:
+                    status = 409
+                else:
+                    status = 400
+                self._send_json(status, exc.to_dict())
+
             def do_PUT(self):  # noqa: N802
                 parsed = urlparse(self.path)
                 path = parsed.path.rstrip("/") or "/"
                 body = self._read_json()
 
+                if path == "/api/provider/config":
+                    payload, code = server_ref._write_provider_config(body)
+                    self._send_json(code, payload)
+                    return
                 if path == "/api/runtime/config":
                     payload, code = server_ref._write_runtime_selection(body)
                     self._send_json(code, payload)
@@ -878,12 +1142,25 @@ class SessionRuntimeServer:
         """Switch the active opening and rebuild runtime-derived projections."""
         import handler
         try:
-            ok = bool(handler.switch_opening(str(self.runtime.card_folder), int(opening_id or 0)))
+            resolved_id = int(opening_id or 0)
+            settings = self._read_settings()
+            facts = self.runtime.card_facts()
+            ok = bool(
+                handler.switch_opening(
+                    str(self.runtime.card_folder),
+                    resolved_id,
+                    user_name=settings.get("charName") or settings.get("user") or "旅行者",
+                    character_name=facts.get("name") or "",
+                )
+            )
         except Exception:
             return False
         if ok:
             try:
-                self.runtime.capture_opening_from_chat_log()
+                self.runtime.capture_opening_from_chat_log(
+                    event_type="session.opening_switched",
+                    event_payload={"opening_id": resolved_id},
+                )
                 self.runtime.resume_projection()
             except Exception:
                 return False
