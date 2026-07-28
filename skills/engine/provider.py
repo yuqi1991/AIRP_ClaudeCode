@@ -31,6 +31,8 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
 
 
 _runtime_provider_overrides: dict[str, dict[str, str]] = {}
@@ -195,6 +197,335 @@ class ProviderAdapter:
 
     def model_id(self, role: str) -> str:
         raise NotImplementedError
+
+
+class OpenAICompatibleProviderAdapter(ProviderAdapter):
+    """Direct HTTP adapter for OpenAI Responses and Chat Completions APIs."""
+
+    SUPPORTED_FORMATS = frozenset({"responses", "chat_completions"})
+
+    def __init__(
+        self,
+        *,
+        base_url: str,
+        api_key: str,
+        api_format: str,
+        model: str | None = None,
+        timeout: float = 120.0,
+    ) -> None:
+        if not isinstance(base_url, str) or not base_url.startswith(("http://", "https://")):
+            raise ValueError("base_url must use http:// or https://")
+        if api_format not in self.SUPPORTED_FORMATS:
+            raise ValueError("api_format must be responses or chat_completions")
+        if not isinstance(api_key, str) or not api_key:
+            raise ValueError("api_key must be configured")
+        if timeout <= 0:
+            raise ValueError("timeout must be positive")
+        self._base_url = base_url.rstrip("/")
+        self._api_key = api_key
+        self._api_format = api_format
+        self._model = model or ""
+        self._timeout = timeout
+
+    def model_id(self, role: str) -> str:
+        return self._model
+
+    def discover_models(self) -> list[str]:
+        payload = self._json_request("GET", self._base_url + "/models")
+        data = payload.get("data") if isinstance(payload, dict) else None
+        if not isinstance(data, list):
+            raise ProviderError("provider returned an invalid model catalog", "terminal_internal", False)
+        return sorted(
+            {
+                item["id"]
+                for item in data
+                if isinstance(item, dict) and isinstance(item.get("id"), str) and item["id"]
+            }
+        )
+
+    def test_connection(self) -> list[str]:
+        return self.discover_models()
+
+    def stream(self, request: ProviderRequest, signal: AbortSignal):
+        if signal.cancelled:
+            raise ProviderAborted("aborted before stream")
+        endpoint = "responses" if self._api_format == "responses" else "chat/completions"
+        body = self._request_body(request)
+        response = self._open("POST", f"{self._base_url}/{endpoint}", body)
+        usage = UsageRecord()
+        stop_reason = "stop"
+        tool_arguments: dict[str, dict[str, str]] = {}
+        chat_tool_calls: dict[int, dict[str, str]] = {}
+        try:
+            for raw_line in response:
+                if signal.cancelled:
+                    raise ProviderAborted("aborted by signal")
+                line = raw_line.decode("utf-8", errors="replace").strip()
+                if not line or line.startswith(":") or not line.startswith("data:"):
+                    continue
+                raw_data = line[5:].strip()
+                if raw_data == "[DONE]":
+                    break
+                try:
+                    event = json.loads(raw_data)
+                except json.JSONDecodeError as exc:
+                    raise ProviderError(
+                        "provider emitted invalid streaming JSON", "terminal_internal", False
+                    ) from exc
+                if isinstance(event, dict) and event.get("error"):
+                    raise self._event_error(event["error"])
+                if self._api_format == "responses":
+                    deltas, event_usage, event_stop = self._map_responses_event(
+                        event, tool_arguments
+                    )
+                else:
+                    deltas, event_usage, event_stop = self._map_chat_event(
+                        event, chat_tool_calls
+                    )
+                yield from deltas
+                usage = event_usage or usage
+                stop_reason = event_stop or stop_reason
+        finally:
+            response.close()
+        yield ProviderResult(usage=usage, stop_reason=stop_reason)
+
+    def _request_body(self, request: ProviderRequest) -> dict:
+        common = {
+            "model": request.model or self._model,
+            "stream": True,
+        }
+        if self._api_format == "responses":
+            common["input"] = self._responses_input(request.messages or [])
+            if request.tools:
+                common["tools"] = [self._responses_tool(tool) for tool in request.tools]
+        else:
+            common["messages"] = self._chat_messages(request.messages or [])
+            common["stream_options"] = {"include_usage": True}
+            if request.tools:
+                common["tools"] = [self._chat_tool(tool) for tool in request.tools]
+        return common
+
+    @staticmethod
+    def _chat_messages(messages: list) -> list:
+        mapped = []
+        for message in messages:
+            item = dict(message)
+            if item.get("role") == "assistant" and isinstance(item.get("tool_calls"), list):
+                item["tool_calls"] = [
+                    {
+                        "id": call.get("id") or _new_call_id(),
+                        "type": "function",
+                        "function": {
+                            "name": call.get("name") or "",
+                            "arguments": json.dumps(call.get("args") or {}, ensure_ascii=False),
+                        },
+                    }
+                    for call in item["tool_calls"]
+                ]
+            if item.get("role") == "tool" and not isinstance(item.get("content"), str):
+                item["content"] = json.dumps(item.get("content"), ensure_ascii=False)
+            mapped.append(item)
+        return mapped
+
+    @staticmethod
+    def _responses_input(messages: list) -> list:
+        mapped = []
+        for message in messages:
+            role = message.get("role")
+            if role == "tool":
+                output = message.get("content", "")
+                if not isinstance(output, str):
+                    output = json.dumps(output, ensure_ascii=False)
+                mapped.append(
+                    {
+                        "type": "function_call_output",
+                        "call_id": message.get("tool_call_id") or message.get("id") or "",
+                        "output": output,
+                    }
+                )
+                continue
+            content = message.get("content", "")
+            mapped.append({"role": role, "content": content})
+            if role == "assistant":
+                for call in message.get("tool_calls") or []:
+                    mapped.append(
+                        {
+                            "type": "function_call",
+                            "call_id": call.get("id") or _new_call_id(),
+                            "name": call.get("name") or "",
+                            "arguments": json.dumps(call.get("args") or {}, ensure_ascii=False),
+                        }
+                    )
+        return mapped
+
+    @staticmethod
+    def _chat_tool(tool: dict) -> dict:
+        if tool.get("type") == "function" and isinstance(tool.get("function"), dict):
+            return tool
+        return {
+            "type": "function",
+            "function": {
+                "name": tool.get("name", ""),
+                "description": tool.get("description", ""),
+                "parameters": tool.get("parameters") or {"type": "object", "properties": {}},
+            },
+        }
+
+    @staticmethod
+    def _responses_tool(tool: dict) -> dict:
+        function = tool.get("function") if isinstance(tool.get("function"), dict) else tool
+        return {
+            "type": "function",
+            "name": function.get("name", ""),
+            "description": function.get("description", ""),
+            "parameters": function.get("parameters") or {"type": "object", "properties": {}},
+        }
+
+    def _json_request(self, method: str, url: str) -> dict:
+        response = self._open(method, url)
+        try:
+            return json.loads(response.read().decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ProviderError("provider returned invalid JSON", "terminal_internal", False) from exc
+        finally:
+            response.close()
+
+    def _open(self, method: str, url: str, body: dict | None = None):
+        encoded = json.dumps(body, ensure_ascii=False).encode("utf-8") if body is not None else None
+        headers = {"Accept": "application/json", "Authorization": f"Bearer {self._api_key}"}
+        if encoded is not None:
+            headers["Content-Type"] = "application/json"
+            headers["Accept"] = "text/event-stream"
+        try:
+            return urlopen(Request(url, data=encoded, headers=headers, method=method), timeout=self._timeout)
+        except HTTPError as exc:
+            try:
+                detail = exc.read().decode("utf-8", errors="replace")[:1000]
+            finally:
+                exc.close()
+            retryable = exc.code in {408, 409, 425, 429} or 500 <= exc.code < 600
+            category = "provider_unavailable" if retryable else "provider_rejected"
+            raise ProviderError(
+                self._redact(f"provider HTTP {exc.code}: {detail}"), category, retryable
+            ) from exc
+        except (URLError, TimeoutError, OSError) as exc:
+            raise ProviderError(
+                self._redact(f"provider connection failed: {exc}"),
+                "provider_unavailable",
+                True,
+            ) from exc
+
+    def _event_error(self, error) -> ProviderError:
+        if isinstance(error, dict):
+            message = error.get("message") or error.get("code") or "provider error"
+            code = str(error.get("code") or "").lower()
+        else:
+            message, code = str(error), ""
+        retryable = any(token in code for token in ("rate", "timeout", "overload", "unavailable"))
+        return ProviderError(
+            self._redact(str(message)),
+            "provider_unavailable" if retryable else "provider_rejected",
+            retryable,
+        )
+
+    @staticmethod
+    def _map_chat_event(event: dict, tool_calls: dict[int, dict[str, str]]):
+        deltas = []
+        stop_reason = None
+        for choice in event.get("choices") or []:
+            delta = choice.get("delta") or {}
+            content = delta.get("content")
+            if content:
+                deltas.append(ProviderDelta(text=content))
+            for call in delta.get("tool_calls") or []:
+                function = call.get("function") or {}
+                index = int(call.get("index") or 0)
+                state = tool_calls.setdefault(index, {"id": "", "name": "", "args": ""})
+                state["id"] = call.get("id") or state["id"]
+                state["name"] += function.get("name") or ""
+                state["args"] += function.get("arguments") or ""
+            stop_reason = choice.get("finish_reason") or stop_reason
+            if stop_reason and tool_calls:
+                for index in sorted(tool_calls):
+                    state = tool_calls[index]
+                    try:
+                        args = json.loads(state["args"] or "{}")
+                    except json.JSONDecodeError:
+                        args = {}
+                    deltas.append(
+                        ProviderDelta(
+                            tool_call={
+                                "id": state["id"] or _new_call_id(),
+                                "name": state["name"],
+                                "args": args if isinstance(args, dict) else {},
+                            }
+                        )
+                    )
+                tool_calls.clear()
+        usage_raw = event.get("usage") or {}
+        usage = None
+        if usage_raw:
+            usage = UsageRecord(
+                prompt_tokens=int(usage_raw.get("prompt_tokens") or 0),
+                completion_tokens=int(usage_raw.get("completion_tokens") or 0),
+                total_tokens=int(usage_raw.get("total_tokens") or 0),
+                stop_reason=str(stop_reason or ""),
+            )
+        return deltas, usage, stop_reason
+
+    def _map_responses_event(self, event: dict, tool_arguments: dict[str, dict[str, str]]):
+        event_type = event.get("type")
+        deltas = []
+        usage = None
+        stop_reason = None
+        if event_type == "response.output_text.delta" and event.get("delta"):
+            deltas.append(ProviderDelta(text=event["delta"]))
+        elif event_type == "response.output_item.added":
+            item = event.get("item") or {}
+            if item.get("type") == "function_call":
+                call_id = item.get("call_id") or item.get("id") or ""
+                tool_arguments[call_id] = {
+                    "name": item.get("name") or "",
+                    "args": item.get("arguments") or "",
+                }
+        elif event_type == "response.function_call_arguments.delta":
+            call_id = event.get("call_id") or event.get("item_id") or ""
+            state = tool_arguments.setdefault(call_id, {"name": event.get("name") or "", "args": ""})
+            state["args"] += event.get("delta") or ""
+        elif event_type == "response.function_call_arguments.done":
+            call_id = event.get("call_id") or event.get("item_id") or _new_call_id()
+            state = tool_arguments.pop(call_id, {})
+            raw_args = event.get("arguments") or state.get("args") or "{}"
+            try:
+                args = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
+            except json.JSONDecodeError:
+                args = {}
+            deltas.append(
+                ProviderDelta(
+                    tool_call={
+                        "id": call_id,
+                        "name": event.get("name") or state.get("name") or "",
+                        "args": args if isinstance(args, dict) else {},
+                    }
+                )
+            )
+        elif event_type == "response.completed":
+            response = event.get("response") or {}
+            raw = response.get("usage") or {}
+            usage = UsageRecord(
+                prompt_tokens=int(raw.get("input_tokens") or 0),
+                completion_tokens=int(raw.get("output_tokens") or 0),
+                total_tokens=int(raw.get("total_tokens") or 0),
+                stop_reason=str(response.get("status") or "completed"),
+            )
+            stop_reason = response.get("status") or "completed"
+        elif event_type in {"response.failed", "error"}:
+            error = (event.get("response") or {}).get("error") or event.get("error") or event
+            raise self._event_error(error)
+        return deltas, usage, stop_reason
+
+    def _redact(self, message: str) -> str:
+        return message.replace(self._api_key, "[REDACTED]")
 
 
 def _new_call_id() -> str:

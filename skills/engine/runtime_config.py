@@ -288,6 +288,12 @@ class RuntimeConfigStore:
                     "max_tool_rounds": _positive_int(node.get("max_tool_rounds"), 8, "max_tool_rounds"),
                     "max_retries": _nonnegative_int(node.get("max_retries"), 2, "max_retries"),
                     "instruction": str(node.get("instruction") or ""),
+                    **(
+                        {"provider_profile_id": node["provider_profile_id"]}
+                        if isinstance(node.get("provider_profile_id"), str)
+                        and node["provider_profile_id"]
+                        else {}
+                    ),
                     "declaration_index": index,
                 }
             )

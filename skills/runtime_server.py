@@ -68,9 +68,11 @@ from urllib.request import Request, urlopen
 
 from engine.commands import SessionCommandService
 from engine.provider import runtime_provider_api_key, set_runtime_provider_override
+from engine.provider_profiles import ProviderConnectionError, ProviderProfileService
 from engine.runtime import RuntimeEvent, SessionTurnRuntime
 from engine.runtime_config import CONFIG_ID_RE, RuntimeConfigError, RuntimeConfigStore
 from engine.session_manager import SessionManager, SessionManagerError
+from engine.secret_store import LocalSecretStore
 from engine.studio_library import ProviderProfileError, ProviderProfileStore
 
 SSE_HEARTBEAT_SECONDS = 15.0
@@ -130,7 +132,15 @@ class SessionRuntimeServer:
         repo_root = Path(__file__).resolve().parents[1]
         self.preset_root = Path(preset_root).resolve() if preset_root else ((self.static_root / "presets").resolve() if self.static_root else None)
         self.graph_root = Path(graph_root).resolve() if graph_root else ((self.static_root / "graphs").resolve() if self.static_root else (repo_root / "graphs").resolve())
-        self.provider_profiles = ProviderProfileStore(self.static_root) if self.static_root else None
+        self.provider_profiles = (
+            ProviderProfileService(
+                ProviderProfileStore(self.static_root),
+                LocalSecretStore(self.static_root / "studio" / "secrets.json"),
+                discovery_timeout=MODEL_DISCOVERY_TIMEOUT_SECONDS,
+            )
+            if self.static_root
+            else None
+        )
         self.config_store = (
             RuntimeConfigStore(
                 self.static_root,
@@ -498,17 +508,21 @@ class SessionRuntimeServer:
         if self.provider_profiles is None:
             return {"ok": False, "error": "studio_library_unavailable"}, 501
         try:
-            return {"ok": True, "profile": self.provider_profiles.create_profile(body)}, 201
+            return {"ok": True, **self.provider_profiles.create_profile(body)}, 201
         except ProviderProfileError as exc:
             return self._studio_provider_error(exc)
+        except ValueError as exc:
+            return {"ok": False, "error": "invalid_api_key", "message": str(exc)}, 400
 
     def _studio_provider_update(self, profile_id: str, body: dict) -> tuple[dict[str, Any], int]:
         if self.provider_profiles is None:
             return {"ok": False, "error": "studio_library_unavailable"}, 501
         try:
-            return {"ok": True, "profile": self.provider_profiles.update_profile(profile_id, body)}, 200
+            return {"ok": True, **self.provider_profiles.update_profile(profile_id, body)}, 200
         except ProviderProfileError as exc:
             return self._studio_provider_error(exc)
+        except ValueError as exc:
+            return {"ok": False, "error": "invalid_api_key", "message": str(exc)}, 400
 
     def _studio_provider_delete(self, profile_id: str) -> tuple[dict[str, Any], int]:
         if self.provider_profiles is None:
@@ -516,6 +530,29 @@ class SessionRuntimeServer:
         try:
             self.provider_profiles.delete_profile(profile_id)
             return {"ok": True, "deleted_id": profile_id}, 200
+        except ProviderProfileError as exc:
+            return self._studio_provider_error(exc)
+
+    def _studio_provider_test(self, profile_id: str) -> tuple[dict[str, Any], int]:
+        try:
+            models = self.provider_profiles.test_connection(profile_id)
+            return {"ok": True, "model_ids": models}, 200
+        except ProviderProfileError as exc:
+            return self._studio_provider_error(exc)
+        except ProviderConnectionError as exc:
+            return exc.to_dict(), 502
+
+    def _studio_provider_refresh(self, profile_id: str) -> tuple[dict[str, Any], int]:
+        try:
+            return {"ok": True, "profile": self.provider_profiles.refresh_models(profile_id)}, 200
+        except ProviderProfileError as exc:
+            return self._studio_provider_error(exc)
+        except ProviderConnectionError as exc:
+            return exc.to_dict(), 502
+
+    def _studio_provider_delete_secret(self, profile_id: str) -> tuple[dict[str, Any], int]:
+        try:
+            return {"ok": True, "profile": self.provider_profiles.delete_secret(profile_id)}, 200
         except ProviderProfileError as exc:
             return self._studio_provider_error(exc)
 
@@ -679,6 +716,14 @@ class SessionRuntimeServer:
                             payload, status = server_ref._studio_provider_update(
                                 parts[0], {"enabled": parts[1] == "enable"}
                             )
+                            self._send_json(status, payload)
+                            return
+                        if len(parts) == 2 and parts[1] == "test":
+                            payload, status = server_ref._studio_provider_test(parts[0])
+                            self._send_json(status, payload)
+                            return
+                        if len(parts) == 3 and parts[1:] == ["models", "refresh"]:
+                            payload, status = server_ref._studio_provider_refresh(parts[0])
                             self._send_json(status, payload)
                             return
                         break
@@ -919,8 +964,14 @@ class SessionRuntimeServer:
                 path = parsed.path.rstrip("/") or "/"
                 for prefix in STUDIO_PROVIDER_PATHS:
                     if path.startswith(prefix + "/"):
-                        profile_id = path[len(prefix) + 1:]
-                        if "/" not in profile_id:
+                        suffix = path[len(prefix) + 1:]
+                        parts = suffix.split("/")
+                        if len(parts) == 2 and parts[1] == "secret":
+                            payload, status = server_ref._studio_provider_delete_secret(parts[0])
+                            self._send_json(status, payload)
+                            return
+                        profile_id = suffix
+                        if len(parts) == 1:
                             payload, status = server_ref._studio_provider_delete(profile_id)
                             self._send_json(status, payload)
                             return

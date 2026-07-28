@@ -316,6 +316,8 @@ def main() -> None:
     from engine.runtime import MultiTurnFakeExecutor, SessionTurnRuntime
     from engine.runtime_config import RuntimeConfigStore
     from engine.session_manager import SessionManager
+    from engine.secret_store import LocalSecretStore
+    from engine.studio_library import ProviderProfileStore
 
     config_store = RuntimeConfigStore(styles)
     frozen_config = config_store.freeze().data
@@ -324,7 +326,12 @@ def main() -> None:
         version=f"runtime-v1:{frozen_config['preset_id']}",
         token_budget=frozen_config["preset"]["token_budget"],
     )
-    executor_factory = RuntimeExecutorFactory(mock=mock, base_url="https://api.deepseek.com")
+    executor_factory = RuntimeExecutorFactory(
+        mock=mock,
+        base_url="https://api.deepseek.com",
+        provider_profiles=ProviderProfileStore(styles),
+        secret_store=LocalSecretStore(styles / "studio" / "secrets.json"),
+    )
     database_path = card_folder / ".runtime.sqlite3"
 
     def build_runtime(session_id, *, bootstrap_legacy_history=False):

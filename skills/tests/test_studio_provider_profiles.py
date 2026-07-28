@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import shutil
 import sys
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
@@ -146,7 +148,7 @@ def test_delete_provider_profile_reports_agent_reference_and_preserves_file(tmp_
         assert deleted["deleted_id"] == profile_id
 
 
-def test_provider_profile_rejects_invalid_protocol_and_secret_field(tmp_path):
+def test_provider_profile_rejects_invalid_protocol(tmp_path):
     with _server(tmp_path) as server:
         status, invalid = _json_request(
             "POST",
@@ -155,16 +157,6 @@ def test_provider_profile_rejects_invalid_protocol_and_secret_field(tmp_path):
         )
         assert status == 400
         assert invalid["error"] == "invalid_provider_profile"
-
-        status, secret = _json_request(
-            "POST",
-            f"{server.base_url}/v1/studio/providers",
-            {"name": "No Leak", "base_url": "https://safe.example", "api_key": "never-save"},
-        )
-        assert status == 400
-        assert secret["error"] == "secret_not_supported"
-        assert "never-save" not in json.dumps(secret)
-
 
 def test_studio_providers_view_is_served_from_runtime_and_uses_profile_seam(tmp_path):
     styles = tmp_path / "styles"
@@ -189,4 +181,109 @@ def test_studio_providers_view_is_served_from_runtime_and_uses_profile_seam(tmp_
     assert "payload.references" in page
     assert "Provider profile saved." in page
     assert "Provider profile deleted." in page
-    assert "profile-api-key" not in page
+    assert 'id="profile-api-key"' in page
+    assert 'id="test-profile"' in page
+    assert 'id="refresh-models"' in page
+    assert 'id="delete-key"' in page
+
+
+class _ModelsUpstream:
+    def __init__(self):
+        outer = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, fmt, *args):
+                return
+
+            def do_GET(self):  # noqa: N802
+                if self.headers.get("Authorization") != "Bearer secret-one":
+                    self.send_response(401)
+                    self.end_headers()
+                    return
+                payload = json.dumps(
+                    {"data": [{"id": "deepseek-chat"}, {"id": "deepseek-reasoner"}]}
+                ).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+
+        outer.httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        outer.thread = threading.Thread(target=outer.httpd.serve_forever, daemon=True)
+
+    @property
+    def base_url(self):
+        return f"http://127.0.0.1:{self.httpd.server_address[1]}/v1"
+
+    def __enter__(self):
+        self.thread.start()
+        return self
+
+    def __exit__(self, *_):
+        self.httpd.shutdown()
+        self.httpd.server_close()
+        self.thread.join(timeout=5)
+
+
+def test_profile_secret_discovery_test_refresh_and_delete_are_http_observable(tmp_path):
+    with _ModelsUpstream() as upstream, _server(tmp_path) as server:
+        status, created = _json_request(
+            "POST",
+            f"{server.base_url}/v1/studio/providers",
+            {
+                "name": "DeepSeek",
+                "base_url": upstream.base_url,
+                "api_format": "chat_completions",
+                "api_key": "secret-one",
+            },
+        )
+        assert status == 201
+        profile = created["profile"]
+        profile_id = profile["id"]
+        assert profile["key_configured"] is True
+        assert profile["model_ids"] == ["deepseek-chat", "deepseek-reasoner"]
+        assert created["model_discovery"] == {"ok": True, "model_ids": profile["model_ids"]}
+        assert "secret-one" not in json.dumps(created)
+
+        status, tested = _json_request(
+            "POST", f"{server.base_url}/v1/studio/providers/{profile_id}/test"
+        )
+        assert status == 200
+        assert tested == {"ok": True, "model_ids": ["deepseek-chat", "deepseek-reasoner"]}
+
+        status, refreshed = _json_request(
+            "POST", f"{server.base_url}/v1/studio/providers/{profile_id}/models/refresh"
+        )
+        assert status == 200
+        assert refreshed["profile"]["model_ids"] == ["deepseek-chat", "deepseek-reasoner"]
+
+        status, removed = _json_request(
+            "DELETE", f"{server.base_url}/v1/studio/providers/{profile_id}/secret"
+        )
+        assert status == 200
+        assert removed["profile"]["key_configured"] is False
+
+    secrets = tmp_path / "styles" / "studio" / "secrets.json"
+    assert "secret-one" not in secrets.read_text(encoding="utf-8")
+
+
+def test_discovery_failure_does_not_block_save_or_manual_model_id(tmp_path):
+    with _server(tmp_path) as server:
+        status, created = _json_request(
+            "POST",
+            f"{server.base_url}/v1/studio/providers",
+            {
+                "name": "Offline",
+                "base_url": "http://127.0.0.1:1/v1",
+                "api_format": "responses",
+                "api_key": "offline-secret",
+                "model_ids": ["manual-model"],
+            },
+        )
+        assert status == 201
+        assert created["profile"]["model_ids"] == ["manual-model"]
+        assert created["profile"]["key_configured"] is True
+        assert created["model_discovery"]["ok"] is False
+        assert created["model_discovery"]["error"]["category"] == "provider_unavailable"
+        assert "offline-secret" not in json.dumps(created)

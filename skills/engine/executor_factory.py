@@ -2,7 +2,11 @@ from __future__ import annotations
 
 from engine.agent_graph import SequentialAgentGraph, SequentialGraphNode
 from engine.director import NarrativeDirector, ProviderDrivenDirector
-from engine.provider import RealProviderAdapter, runtime_provider_api_key
+from engine.provider import (
+    OpenAICompatibleProviderAdapter,
+    RealProviderAdapter,
+    runtime_provider_api_key,
+)
 
 
 class DeterministicGraphDirector(NarrativeDirector):
@@ -32,9 +36,18 @@ class DeterministicGraphDirector(NarrativeDirector):
 class RuntimeExecutorFactory:
     """Build one executor from a task's frozen sequential graph."""
 
-    def __init__(self, *, mock: bool, base_url="https://api.deepseek.com"):
+    def __init__(
+        self,
+        *,
+        mock: bool,
+        base_url="https://api.deepseek.com",
+        provider_profiles=None,
+        secret_store=None,
+    ):
         self.mock = bool(mock)
         self.base_url = base_url
+        self.provider_profiles = provider_profiles
+        self.secret_store = secret_store
 
     def __call__(self, runtime_config):
         if not isinstance(runtime_config, dict):
@@ -50,20 +63,40 @@ class RuntimeExecutorFactory:
         if self.mock:
             director = DeterministicGraphDirector(node["id"], node["role"])
         else:
-            provider_settings = (runtime_config.get("settings") or {}).get("provider") or {}
-            adapter = RealProviderAdapter(
-                mock=False,
-                model=node["model"],
-                base_url=provider_settings.get("base_url") or self.base_url,
-                provider=node["provider"],
-                runtime_api_key=runtime_provider_api_key(node["provider"]),
-            )
+            adapter = self._provider_adapter(node, runtime_config)
             director = ProviderDrivenDirector(
                 adapter,
-                max_tool_rounds=node["max_tool_rounds"],
-                max_retries=node["max_retries"],
+                max_tool_rounds=node.get("max_tool_rounds", 8),
+                max_retries=node.get("max_retries", 2),
                 role=node["role"],
                 model=node["model"],
                 instruction=node.get("instruction", ""),
             )
         return SequentialGraphNode(node["id"], node["role"], director)
+
+    def _provider_adapter(self, node, runtime_config):
+        profile_id = node.get("provider_profile_id")
+        if profile_id:
+            if self.provider_profiles is None or self.secret_store is None:
+                raise ValueError("provider profile execution is not configured")
+            profile = self.provider_profiles.get_profile(profile_id)
+            if not profile.get("enabled", True):
+                raise ValueError(f"Provider Profile {profile_id!r} is disabled")
+            api_key = self.secret_store.get(profile_id)
+            if not api_key:
+                raise ValueError(f"Provider Profile {profile_id!r} has no API key")
+            return OpenAICompatibleProviderAdapter(
+                base_url=profile["base_url"],
+                api_key=api_key,
+                api_format=profile["api_format"],
+                model=node["model"],
+            )
+
+        provider_settings = (runtime_config.get("settings") or {}).get("provider") or {}
+        return RealProviderAdapter(
+            mock=False,
+            model=node["model"],
+            base_url=provider_settings.get("base_url") or self.base_url,
+            provider=node["provider"],
+            runtime_api_key=runtime_provider_api_key(node["provider"]),
+        )
