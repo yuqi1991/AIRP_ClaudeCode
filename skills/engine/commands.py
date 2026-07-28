@@ -21,7 +21,7 @@ Design notes (spec Decisions 8–11, 25–28, 34, 35):
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
 from engine.runtime import RuntimeEvent, RuntimeResult, SessionTurnRuntime
@@ -41,6 +41,11 @@ ERROR_CANCELLED = "cancelled"
 ERROR_STALE_REVISION = "stale_revision"
 ERROR_TERMINAL_INTERNAL = "terminal_internal_failure"
 ERROR_GENERATION_BUSY = "generation_busy"
+ERROR_UNKNOWN_GRAPH_RUN = "unknown_graph_run"
+ERROR_GRAPH_NOT_RETRYABLE = "graph_not_retryable"
+ERROR_INVALID_GRAPH_INPUT = "invalid_graph_input"
+ERROR_NODE_RUN_NOT_FOUND = "node_run_not_found"
+ERROR_DEBUG_REPLAY_FAILED = "debug_replay_failed"
 
 # Task statuses treated as already finished for cancel no-ops.
 _TERMINAL_TASK_STATUSES = frozenset(
@@ -74,6 +79,8 @@ class CommandResult:
     error: str | None = None
     retryable: bool = False
     message: str | None = None
+    graph_run_id: str | None = None
+    debug_replay_id: str | None = None
 
     def to_dict(self) -> dict:
         return {
@@ -85,6 +92,8 @@ class CommandResult:
             "error": self.error,
             "retryable": self.retryable,
             "message": self.message,
+            "graph_run_id": self.graph_run_id,
+            "debug_replay_id": self.debug_replay_id,
         }
 
 
@@ -300,6 +309,105 @@ class SessionCommandService:
             return self._from_runtime_error(exc, idempotency_key)
         return self._from_runtime_result(result)
 
+    def retry_graph_run(
+        self,
+        graph_run_id: str | None = None,
+        idempotency_key: str | None = None,
+    ) -> CommandResult:
+        """Retry a failed Graph Run from the latest saved Studio definitions."""
+        if not isinstance(graph_run_id, str) or not graph_run_id.strip():
+            return CommandResult(
+                ok=False,
+                error=ERROR_INVALID_COMMAND,
+                retryable=False,
+                message="missing graph_run_id",
+            )
+        if not isinstance(idempotency_key, str) or not idempotency_key.strip():
+            return CommandResult(
+                ok=False,
+                error=ERROR_INVALID_COMMAND,
+                retryable=False,
+                message="missing idempotency_key",
+            )
+        if self.runtime.generation_active():
+            return CommandResult(
+                ok=False,
+                error=ERROR_GENERATION_BUSY,
+                retryable=True,
+                message="a generation lease is active",
+            )
+        try:
+            result = self.runtime.retry_graph_run(graph_run_id, idempotency_key)
+        except ValueError as exc:
+            return CommandResult(
+                ok=False,
+                error=ERROR_INVALID_COMMAND,
+                retryable=False,
+                message=str(exc),
+            )
+        except RuntimeError as exc:
+            return self._from_runtime_error(exc, idempotency_key)
+        converted = self._from_runtime_result(result)
+        graph_run_id = None
+        if result.task_id and hasattr(self.runtime, "graph_run_id_for_task"):
+            graph_run_id = self.runtime.graph_run_id_for_task(result.task_id)
+        return replace(
+            converted,
+            graph_run_id=graph_run_id,
+        )
+
+    def debug_replay(
+        self,
+        node_run_id: str | None = None,
+        idempotency_key: str | None = None,
+    ) -> CommandResult:
+        """Run an isolated Debug Replay without changing Session story state."""
+        if not isinstance(node_run_id, str) or not node_run_id.strip():
+            return CommandResult(
+                ok=False,
+                error=ERROR_INVALID_COMMAND,
+                retryable=False,
+                message="missing node_run_id",
+            )
+        if not isinstance(idempotency_key, str) or not idempotency_key.strip():
+            return CommandResult(
+                ok=False,
+                error=ERROR_INVALID_COMMAND,
+                retryable=False,
+                message="missing idempotency_key",
+            )
+        try:
+            replay = self.runtime.debug_replay(node_run_id, idempotency_key=idempotency_key)
+        except ValueError as exc:
+            return CommandResult(
+                ok=False,
+                error=ERROR_INVALID_COMMAND,
+                retryable=False,
+                message=str(exc),
+            )
+        if not replay or replay.get("state") != "succeeded":
+            error = (replay or {}).get("error") or {"code": ERROR_DEBUG_REPLAY_FAILED}
+            code = error.get("code") if isinstance(error, dict) else str(error)
+            if code == ERROR_NODE_RUN_NOT_FOUND:
+                return CommandResult(
+                    ok=False,
+                    error=ERROR_NODE_RUN_NOT_FOUND,
+                    retryable=False,
+                    message="Node Run was not found",
+                )
+            return CommandResult(
+                ok=False,
+                error=ERROR_DEBUG_REPLAY_FAILED,
+                retryable=False,
+                message=str(error.get("message") if isinstance(error, dict) else error),
+                debug_replay_id=(replay or {}).get("debug_replay_id"),
+            )
+        return CommandResult(
+            ok=True,
+            status="succeeded",
+            debug_replay_id=replay.get("debug_replay_id"),
+        )
+
     # ── reads ──────────────────────────────────────────────────────────
 
     def snapshot(self) -> SessionSnapshot:
@@ -336,7 +444,11 @@ class SessionCommandService:
     ) -> RuntimeResult | None:
         task_id = None
         for event in reversed(events):
-            if event.type in ("player_message.submitted", "task.reroll_requested"):
+            if event.type in (
+                "player_message.submitted",
+                "task.reroll_requested",
+                "graph.run.retry_requested",
+            ):
                 task_id = event.payload.get("task_id")
                 break
         latest = self.runtime.task(task_id) if task_id else None
@@ -370,6 +482,15 @@ class SessionCommandService:
             error = ERROR_UNKNOWN_REVISION
         elif result.status == "generation_busy":
             error = ERROR_GENERATION_BUSY
+        elif result.status == "unknown_graph_run":
+            error = ERROR_UNKNOWN_GRAPH_RUN
+        elif result.status == "graph_not_retryable":
+            error = ERROR_GRAPH_NOT_RETRYABLE
+        elif result.status == "invalid_graph_input":
+            error = ERROR_INVALID_GRAPH_INPUT
+        graph_run_id = None
+        if result.task_id and hasattr(self.runtime, "graph_run_id_for_task"):
+            graph_run_id = self.runtime.graph_run_id_for_task(result.task_id)
         return CommandResult(
             ok=False,
             task_id=result.task_id or None,
@@ -378,6 +499,7 @@ class SessionCommandService:
             status=result.status,
             error=error,
             retryable=result.status in {"failed_retryable", "generation_busy"},
+            graph_run_id=graph_run_id,
         )
 
     def _from_runtime_error(self, exc: RuntimeError, idempotency_key: str) -> CommandResult:

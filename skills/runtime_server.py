@@ -98,6 +98,7 @@ STUDIO_WORLDBOOK_PATHS = ("/v1/studio/worldbooks", "/api/studio/worldbooks")
 STUDIO_PROJECT_PATHS = ("/v1/studio/projects", "/api/studio/projects")
 STUDIO_GRAPH_RUN_PATHS = ("/v1/studio/graph-runs", "/api/studio/graph-runs")
 STUDIO_NODE_RUN_PATHS = ("/v1/studio/node-runs", "/api/studio/node-runs")
+STUDIO_DEBUG_REPLAY_PATHS = ("/v1/studio/debug-replays", "/api/studio/debug-replays")
 
 
 def _event_to_dict(event: RuntimeEvent) -> dict:
@@ -273,6 +274,32 @@ class SessionRuntimeServer:
             thread_name=f"reroll-{idempotency_key[:24]}",
         )
 
+    def retry_graph_run_async(self, graph_run_id: str, idempotency_key: str) -> dict:
+        """Background complete Graph retry using current saved definitions."""
+        return self._command_async(
+            idempotency_key,
+            worker_fn=lambda: self._run_and_touch(
+                lambda: self.service.retry_graph_run(
+                    graph_run_id=graph_run_id,
+                    idempotency_key=idempotency_key,
+                )
+            ),
+            thread_name=f"graph-retry-{idempotency_key[:24]}",
+        )
+
+    def debug_replay_command(self, node_run_id: str, idempotency_key: str):
+        """Run one isolated replay through the command-service write seam."""
+        result = self.service.debug_replay(
+            node_run_id=node_run_id,
+            idempotency_key=idempotency_key,
+        )
+        detail = (
+            self.runtime.debug_replay_detail(result.debug_replay_id)
+            if result.debug_replay_id
+            else None
+        )
+        return result, detail
+
     def _run_and_touch(self, command):
         result = command()
         if self.session_manager is not None:
@@ -299,6 +326,8 @@ class SessionRuntimeServer:
                     "error": existing.get("error"),
                     "retryable": bool(existing.get("retryable", False)),
                     "message": existing.get("message"),
+                    "graph_run_id": existing.get("graph_run_id"),
+                    "debug_replay_id": existing.get("debug_replay_id"),
                 }
 
             slot: dict[str, Any] = {"finished": False, "task_id": None}
@@ -352,6 +381,8 @@ class SessionRuntimeServer:
                 "error": slot.get("error"),
                 "retryable": bool(slot.get("retryable", False)),
                 "message": slot.get("message"),
+                "graph_run_id": slot.get("graph_run_id"),
+                "debug_replay_id": slot.get("debug_replay_id"),
             }
             if finished and slot.get("ok") is False:
                 payload["ok"] = False
@@ -870,6 +901,25 @@ class SessionRuntimeServer:
                 path = parsed.path.rstrip("/") or "/"
                 query = parse_qs(parsed.query)
 
+                for prefix in STUDIO_DEBUG_REPLAY_PATHS:
+                    if path.startswith(prefix + "/"):
+                        replay_id = path[len(prefix) + 1:]
+                        if "/" not in replay_id:
+                            detail = server_ref.runtime.debug_replay_detail(replay_id)
+                            if detail is None:
+                                self._send_json(404, {"ok": False, "error": "debug_replay_not_found"})
+                            else:
+                                self._send_json(200, {"ok": True, "debug_replay": detail})
+                            return
+
+                for prefix in STUDIO_NODE_RUN_PATHS:
+                    if path.startswith(prefix + "/") and "/replay" in path:
+                        suffix = path[len(prefix) + 1:]
+                        parts = suffix.split("/")
+                        if len(parts) == 2 and parts[1] == "replay":
+                            self._send_json(400, {"ok": False, "error": "debug_replay_requires_post"})
+                            return
+
                 for prefix in STUDIO_NODE_RUN_PATHS:
                     if path == prefix:
                         self._send_json(200, {"ok": True, "node_runs": []})
@@ -1095,6 +1145,70 @@ class SessionRuntimeServer:
                 path = parsed.path.rstrip("/") or "/"
                 body = self._read_json()
 
+                for prefix in STUDIO_GRAPH_RUN_PATHS:
+                    if path.startswith(prefix + "/"):
+                        suffix = path[len(prefix) + 1:]
+                        parts = suffix.split("/")
+                        if len(parts) == 2 and parts[1] in {"retry", "retry-graph", "retry_graph"}:
+                            graph_run_id = parts[0]
+                            key = body.get("idempotency_key")
+                            if not isinstance(key, str) or not key.strip():
+                                self._send_json(
+                                    400,
+                                    {
+                                        "ok": False,
+                                        "error": "invalid_command",
+                                        "message": "missing idempotency_key",
+                                    },
+                                )
+                                return
+                            result = server_ref.retry_graph_run_async(graph_run_id, key)
+                            status = 200 if result.get("finished") else 202
+                            if result.get("error") in {
+                                "unknown_graph_run",
+                                "graph_not_retryable",
+                                "invalid_graph_input",
+                            }:
+                                status = 400
+                            self._send_json(status, result)
+                            return
+
+                for prefix in STUDIO_NODE_RUN_PATHS:
+                    if path.startswith(prefix + "/"):
+                        suffix = path[len(prefix) + 1:]
+                        parts = suffix.split("/")
+                        if len(parts) == 2 and parts[1] in {"replay", "debug-replay", "debug_replay"}:
+                            key = body.get("idempotency_key")
+                            result, detail = server_ref.debug_replay_command(parts[0], key)
+                            payload = result.to_dict()
+                            if detail is not None:
+                                payload["debug_replay"] = detail
+                            status = 200 if result.ok else 422
+                            if result.error == "invalid_command":
+                                status = 400
+                            elif result.error == "node_run_not_found":
+                                status = 404
+                            self._send_json(status, payload)
+                            return
+
+                for prefix in STUDIO_DEBUG_REPLAY_PATHS:
+                    if path == prefix:
+                        node_run_id = body.get("node_run_id") or body.get("source_node_run_id")
+                        result, detail = server_ref.debug_replay_command(
+                            node_run_id,
+                            body.get("idempotency_key"),
+                        )
+                        payload = result.to_dict()
+                        if detail is not None:
+                            payload["debug_replay"] = detail
+                        status = 200 if result.ok else 422
+                        if result.error == "invalid_command":
+                            status = 400
+                        elif result.error == "node_run_not_found":
+                            status = 404
+                        self._send_json(status, payload)
+                        return
+
                 # ── Runtime Studio Provider Profiles ────────────────────
                 if path in STUDIO_PROVIDER_PATHS:
                     payload, status = server_ref._studio_provider_create(body)
@@ -1306,6 +1420,29 @@ class SessionRuntimeServer:
                     if result.error == "unknown_task":
                         code = 404
                     self._send_json(code, result.to_dict())
+                    return
+
+                if path in {
+                    "/v1/session/commands/retry-graph",
+                    "/v1/session/commands/retry_graph",
+                }:
+                    graph_run_id = body.get("graph_run_id") or body.get("run_id")
+                    key = body.get("idempotency_key")
+                    if not isinstance(graph_run_id, str) or not graph_run_id.strip():
+                        self._send_json(400, {"ok": False, "error": "invalid_command", "message": "missing graph_run_id"})
+                        return
+                    if not isinstance(key, str) or not key.strip():
+                        self._send_json(400, {"ok": False, "error": "invalid_command", "message": "missing idempotency_key"})
+                        return
+                    result = server_ref.retry_graph_run_async(graph_run_id, key)
+                    status = 200 if result.get("finished") else 202
+                    if result.get("error") in {
+                        "unknown_graph_run",
+                        "graph_not_retryable",
+                        "invalid_graph_input",
+                    }:
+                        status = 400
+                    self._send_json(status, result)
                     return
 
                 if path == "/v1/session/commands/reroll":

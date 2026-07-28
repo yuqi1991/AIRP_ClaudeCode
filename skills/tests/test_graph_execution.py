@@ -334,6 +334,62 @@ class _FailingCommitRunner:
         return NodeResult.succeeded(AgentArtifact.text("draft"))
 
 
+class _RetryRunner:
+    def __init__(self):
+        self.calls = []
+
+    def run(self, node, input_artifact):
+        self.calls.append((node.node_id, input_artifact.content))
+        if len(self.calls) == 1:
+            return NodeResult.failed("provider unavailable")
+        return NodeResult.succeeded(
+            AgentArtifact.text("<content>retry output</content><summary>retried</summary>")
+        )
+
+
+class _ReplayRunner:
+    def __init__(self):
+        self.calls = []
+
+    def run(self, node, input_artifact):
+        self.calls.append((node.node_id, input_artifact.content))
+        if node.node_id == "first":
+            content = "first output"
+        elif node.node_id == "second" and len(self.calls) == 2:
+            content = "old second output"
+        elif node.node_id == "third":
+            content = "<content>final output</content><summary>done</summary>"
+        else:
+            content = "replayed second output"
+        return NodeResult.succeeded(AgentArtifact.text(content))
+
+
+class _RetentionRunner:
+    def __init__(self):
+        self.count = 0
+
+    def run(self, node, input_artifact):
+        del node, input_artifact
+        self.count += 1
+        return NodeResult.succeeded(
+            AgentArtifact.text(
+                f"<content>retention output {self.count}</content><summary>done</summary>"
+            )
+        )
+
+
+class _BlockingGraphRunner:
+    def __init__(self):
+        self.started = threading.Event()
+        self.release = threading.Event()
+
+    def run(self, node, input_artifact):
+        del node, input_artifact
+        self.started.set()
+        assert self.release.wait(timeout=5)
+        return NodeResult.succeeded(AgentArtifact.text("<content>finished</content>"))
+
+
 def test_graph_output_artifact_uses_existing_runtime_draft_commit_path(tmp_path):
     styles = tmp_path / "styles"
     styles.mkdir()
@@ -415,6 +471,265 @@ def test_graph_node_failure_aborts_session_task_without_story_commit(tmp_path):
     assert result.commit_id is None
     assert runner.calls == ["first-node", "failed-node"]
     assert json.loads((card / "chat_log.json").read_text(encoding="utf-8")) == []
+
+
+def test_graph_retry_recompiles_current_definitions_and_links_failed_run(tmp_path):
+    styles = tmp_path / "styles"
+    styles.mkdir()
+    card = tmp_path / "card"
+    (card / "memory").mkdir(parents=True)
+    (card / ".initvar.json").write_text("{}", encoding="utf-8")
+    (card / "chat_log.json").write_text("[]", encoding="utf-8")
+    (card / ".card_data.json").write_text('{"name":"Test"}', encoding="utf-8")
+    project = {"id": "project", "graph_id": "writing", "worldbook_ids": []}
+    graph = {
+        "id": "writing",
+        "nodes": [{"node_id": "writer-node", "agent_id": "writer"}],
+        "output_node_id": "writer-node",
+    }
+    agent = _agent("writer")
+    stores = {
+        "project": _MemoryStore({"project": project}),
+        "graph": _MemoryStore({"writing": graph}),
+        "agent": _MemoryStore({"writer": agent}),
+    }
+    compiler = ExecutionPlanCompiler(
+        project_store=stores["project"],
+        graph_store=stores["graph"],
+        agent_store=stores["agent"],
+    )
+    runner = _RetryRunner()
+    runtime = SessionTurnRuntime(
+        database_path=tmp_path / "runtime.sqlite3",
+        card_folder=card,
+        projection_root=styles,
+        executor=FakeNarrativeExecutor("unused"),
+        execution_plan_compiler=compiler,
+        graph_runtime=GraphRuntime(runner),
+        project_id="project",
+        bootstrap_legacy_history=False,
+    )
+
+    failed = runtime.submit("Enter", "graph-failure")
+    old_run = runtime.graph_runs_snapshot()["most_recent"]
+    assert failed.status == "failed_terminal"
+    assert old_run["status"] == "failed"
+
+    stores["agent"].values["writer"]["instruction"] = "Write with the saved revision"
+    stores["agent"].values["writer"]["model_id"] = "new-model"
+
+    retried = runtime.retry_graph_run(old_run["graph_run_id"], "graph-retry")
+    assert retried.status == "succeeded"
+    new_run_id = runtime.graph_run_id_for_task(retried.task_id)
+    new_run = runtime.graph_run_detail(new_run_id)
+    assert new_run["graph_run_id"] != old_run["graph_run_id"]
+    assert new_run["retry_of"] == old_run["graph_run_id"]
+    assert new_run["plan_id"] != old_run["plan_id"]
+    assert new_run["plan"]["graph"]["nodes"][0]["agent"]["model_id"] == "new-model"
+    assert new_run["nodes"][0]["node_run_id"] != old_run["nodes"][0]["node_run_id"]
+    assert runner.calls == [("writer-node", "Enter"), ("writer-node", "Enter")]
+
+
+def test_debug_replay_runs_one_node_with_current_agent_and_frozen_input(tmp_path):
+    styles = tmp_path / "styles"
+    styles.mkdir()
+    card = tmp_path / "card"
+    (card / "memory").mkdir(parents=True)
+    (card / ".initvar.json").write_text("{}", encoding="utf-8")
+    (card / "chat_log.json").write_text("[]", encoding="utf-8")
+    (card / ".card_data.json").write_text('{"name":"Test"}', encoding="utf-8")
+    project = {"id": "project", "graph_id": "writing", "worldbook_ids": []}
+    graph = {
+        "id": "writing",
+        "nodes": [
+            {"node_id": "first", "agent_id": "writer"},
+            {"node_id": "second", "agent_id": "writer"},
+            {"node_id": "third", "agent_id": "writer"},
+        ],
+        "output_node_id": "third",
+    }
+    agent = _agent("writer")
+    stores = {
+        "project": _MemoryStore({"project": project}),
+        "graph": _MemoryStore({"writing": graph}),
+        "agent": _MemoryStore({"writer": agent}),
+    }
+    compiler = ExecutionPlanCompiler(
+        project_store=stores["project"],
+        graph_store=stores["graph"],
+        agent_store=stores["agent"],
+    )
+    runner = _ReplayRunner()
+    runtime = SessionTurnRuntime(
+        database_path=tmp_path / "runtime.sqlite3",
+        card_folder=card,
+        projection_root=styles,
+        executor=FakeNarrativeExecutor("unused"),
+        execution_plan_compiler=compiler,
+        graph_runtime=GraphRuntime(runner),
+        project_id="project",
+        bootstrap_legacy_history=False,
+    )
+
+    result = runtime.submit("Enter", "replay-source")
+    assert result.status == "succeeded"
+    original = runtime.graph_runs_snapshot()["most_recent"]
+    source = next(node for node in original["nodes"] if node["node_id"] == "second")
+    chat_before = (card / "chat_log.json").read_bytes()
+    revision_before = runtime.active_revision()
+
+    stores["agent"].values["writer"]["instruction"] = "Current replay instruction"
+    stores["agent"].values["writer"]["model_id"] = "current-model"
+    stores["agent"].values["writer"]["prompt"] = [{"role": "system", "content": "Current prompt"}]
+
+    replay = runtime.debug_replay(source["node_run_id"], idempotency_key="replay-default")
+
+    assert replay["state"] == "succeeded"
+    assert replay["source_node_run_id"] == source["node_run_id"]
+    assert replay["old_output"] == "old second output"
+    assert replay["new_output"] == "replayed second output"
+    assert replay["old_effective_config"]["model_id"] == "model"
+    assert replay["new_effective_config"]["model_id"] == "current-model"
+    assert replay["effective_config_diff"]["model_id"]["old"] == "model"
+    assert replay["effective_config_diff"]["model_id"]["new"] == "current-model"
+    assert replay["input_artifact"]["content"] == "first output"
+    assert replay["upstream_artifacts"][0]["content"] == "first output"
+    assert runtime.active_revision() == revision_before
+    assert (card / "chat_log.json").read_bytes() == chat_before
+    assert runner.calls == [
+        ("first", "Enter"),
+        ("second", "first output"),
+        ("third", "old second output"),
+        ("second", "first output"),
+    ]
+
+    keyed = runtime.debug_replay(source["node_run_id"], idempotency_key="replay-once")
+    repeated = runtime.debug_replay(source["node_run_id"], idempotency_key="replay-once")
+    assert repeated["debug_replay_id"] == keyed["debug_replay_id"]
+    assert len(runner.calls) == 5
+
+
+def test_graph_trace_survives_restart_and_prunes_older_terminal_runs(tmp_path):
+    styles = tmp_path / "styles"
+    styles.mkdir()
+    card = tmp_path / "card"
+    (card / "memory").mkdir(parents=True)
+    (card / ".initvar.json").write_text("{}", encoding="utf-8")
+    (card / "chat_log.json").write_text("[]", encoding="utf-8")
+    (card / ".card_data.json").write_text('{"name":"Test"}', encoding="utf-8")
+    stores = {
+        "project": _MemoryStore({"project": {"id": "project", "graph_id": "writing"}}),
+        "graph": _MemoryStore(
+            {
+                "writing": {
+                    "id": "writing",
+                    "nodes": [{"node_id": "writer-node", "agent_id": "writer"}],
+                    "output_node_id": "writer-node",
+                }
+            }
+        ),
+        "agent": _MemoryStore({"writer": _agent("writer")}),
+    }
+    compiler = ExecutionPlanCompiler(
+        project_store=stores["project"],
+        graph_store=stores["graph"],
+        agent_store=stores["agent"],
+    )
+    runner = _RetentionRunner()
+    runtime = SessionTurnRuntime(
+        database_path=tmp_path / "runtime.sqlite3",
+        card_folder=card,
+        projection_root=styles,
+        executor=FakeNarrativeExecutor("unused"),
+        execution_plan_compiler=compiler,
+        graph_runtime=GraphRuntime(runner),
+        project_id="project",
+        bootstrap_legacy_history=False,
+    )
+
+    first = runtime.submit("one", "retention-1")
+    first_id = runtime.graph_run_id_for_task(first.task_id)
+    restarted = SessionTurnRuntime(
+        database_path=tmp_path / "runtime.sqlite3",
+        card_folder=card,
+        projection_root=styles,
+        executor=FakeNarrativeExecutor("unused"),
+        execution_plan_compiler=compiler,
+        graph_runtime=GraphRuntime(runner),
+        project_id="project",
+        bootstrap_legacy_history=False,
+    )
+    assert restarted.graph_run_detail(first_id)["nodes"][0]["state"] == "succeeded"
+
+    second = restarted.submit("two", "retention-2")
+    second_id = restarted.graph_run_id_for_task(second.task_id)
+    third = restarted.submit("three", "retention-3")
+    third_id = restarted.graph_run_id_for_task(third.task_id)
+
+    assert restarted.graph_run_detail(third_id)["status"] == "succeeded"
+    assert restarted.graph_run_detail(second_id) is None
+    assert restarted.graph_run_detail(first_id) is None
+
+
+def test_restart_marks_in_flight_graph_run_interrupted(tmp_path):
+    styles = tmp_path / "styles"
+    styles.mkdir()
+    card = tmp_path / "card"
+    (card / "memory").mkdir(parents=True)
+    (card / ".initvar.json").write_text("{}", encoding="utf-8")
+    (card / "chat_log.json").write_text("[]", encoding="utf-8")
+    (card / ".card_data.json").write_text('{"name":"Test"}', encoding="utf-8")
+    stores = {
+        "project": _MemoryStore({"project": {"id": "project", "graph_id": "writing"}}),
+        "graph": _MemoryStore(
+            {
+                "writing": {
+                    "id": "writing",
+                    "nodes": [{"node_id": "writer-node", "agent_id": "writer"}],
+                    "output_node_id": "writer-node",
+                }
+            }
+        ),
+        "agent": _MemoryStore({"writer": _agent("writer")}),
+    }
+    compiler = ExecutionPlanCompiler(
+        project_store=stores["project"],
+        graph_store=stores["graph"],
+        agent_store=stores["agent"],
+    )
+    runner = _BlockingGraphRunner()
+    runtime = SessionTurnRuntime(
+        database_path=tmp_path / "runtime.sqlite3",
+        card_folder=card,
+        projection_root=styles,
+        executor=FakeNarrativeExecutor("unused"),
+        execution_plan_compiler=compiler,
+        graph_runtime=GraphRuntime(runner),
+        project_id="project",
+        bootstrap_legacy_history=False,
+    )
+    worker = threading.Thread(target=runtime.submit, args=("in flight", "restart-active"))
+    worker.start()
+    assert runner.started.wait(timeout=3)
+
+    restarted = SessionTurnRuntime(
+        database_path=tmp_path / "runtime.sqlite3",
+        card_folder=card,
+        projection_root=styles,
+        executor=FakeNarrativeExecutor("unused"),
+        execution_plan_compiler=compiler,
+        graph_runtime=GraphRuntime(_RetentionRunner()),
+        project_id="project",
+        bootstrap_legacy_history=False,
+    )
+    recovered = restarted.graph_runs_snapshot()["most_recent"]
+    assert recovered["status"] == "interrupted"
+    assert recovered["nodes"][0]["state"] == "failed"
+
+    runner.release.set()
+    worker.join(timeout=5)
+    assert not worker.is_alive()
+    assert restarted.graph_run_detail(recovered["graph_run_id"])["status"] == "interrupted"
 
 
 class _BlockingStreamingProvider(FakeProvider):
@@ -541,3 +856,82 @@ def test_session_graph_events_and_node_detail_are_live_and_persisted(tmp_path):
         assert finished_detail["node_run"]["final_output"] == "partial output"
         assert finished_detail["node_run"]["artifact"]["content"] == "partial output"
         assert "sk-node-secret" not in json.dumps(finished_detail, ensure_ascii=False)
+
+
+def test_studio_http_exposes_graph_retry_and_isolated_node_replay(tmp_path):
+    styles = tmp_path / "styles"
+    styles.mkdir()
+    card = tmp_path / "card"
+    (card / "memory").mkdir(parents=True)
+    (card / ".initvar.json").write_text("{}", encoding="utf-8")
+    (card / "chat_log.json").write_text("[]", encoding="utf-8")
+    (card / ".card_data.json").write_text('{"name":"Test"}', encoding="utf-8")
+    stores = {
+        "project": _MemoryStore({"project": {"id": "project", "graph_id": "writing"}}),
+        "graph": _MemoryStore(
+            {
+                "writing": {
+                    "id": "writing",
+                    "nodes": [{"node_id": "writer-node", "agent_id": "writer"}],
+                    "output_node_id": "writer-node",
+                }
+            }
+        ),
+        "agent": _MemoryStore({"writer": _agent("writer")}),
+    }
+    compiler = ExecutionPlanCompiler(
+        project_store=stores["project"],
+        graph_store=stores["graph"],
+        agent_store=stores["agent"],
+    )
+    runner = _RetryRunner()
+    runtime = SessionTurnRuntime(
+        database_path=tmp_path / "runtime.sqlite3",
+        card_folder=card,
+        projection_root=styles,
+        executor=FakeNarrativeExecutor("unused"),
+        execution_plan_compiler=compiler,
+        graph_runtime=GraphRuntime(runner),
+        project_id="project",
+        bootstrap_legacy_history=False,
+    )
+
+    with SessionRuntimeServer(runtime, static_root=styles) as server:
+        status, accepted = _json_request(
+            "POST",
+            f"{server.base_url}/v1/session/commands/submit",
+            {"text": "Enter", "idempotency_key": "http-graph-failure"},
+        )
+        assert status in {200, 202}
+        assert accepted["task_id"]
+        failed = _wait_for_http_json(
+            f"{server.base_url}/v1/studio/graph-runs",
+            lambda payload: (payload.get("most_recent") or {}).get("status") == "failed",
+        )
+        old_id = failed["most_recent"]["graph_run_id"]
+
+        stores["agent"].values["writer"]["model_id"] = "http-current-model"
+        status, retry = _json_request(
+            "POST",
+            f"{server.base_url}/v1/studio/graph-runs/{old_id}/retry",
+            {"idempotency_key": "http-graph-retry"},
+        )
+        assert status in {200, 202}
+        latest = _wait_for_http_json(
+            f"{server.base_url}/v1/studio/graph-runs",
+            lambda payload: (payload.get("most_recent") or {}).get("status") == "succeeded",
+        )
+        retried = latest["most_recent"]
+        assert retried["retry_of"] == old_id
+        node_run_id = retried["nodes"][0]["node_run_id"]
+        revision_before = runtime.active_revision()
+
+        status, replay = _json_request(
+            "POST",
+            f"{server.base_url}/v1/studio/node-runs/{node_run_id}/replay",
+            {"idempotency_key": "http-node-replay"},
+        )
+        assert status == 200
+        assert replay["debug_replay"]["state"] == "succeeded"
+        assert replay["debug_replay"]["new_effective_config"]["model_id"] == "http-current-model"
+        assert runtime.active_revision() == revision_before

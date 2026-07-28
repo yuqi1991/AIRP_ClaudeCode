@@ -1,5 +1,6 @@
 import copy
 import hashlib
+import inspect
 import json
 import re
 import sqlite3
@@ -20,7 +21,15 @@ from engine.context_compiler import (
     replay_payload,
 )
 from engine.director import DirectorHandle, NarrativeDirector
-from engine.graph_runtime import ExecutionPlan, ExecutionPlanCompiler, GraphExecutionError, GraphRuntime, GraphRuntimeExecutor
+from engine.graph_runtime import (
+    AgentArtifact,
+    ExecutionPlan,
+    ExecutionPlanCompiler,
+    GraphExecutionError,
+    GraphRuntime,
+    GraphRuntimeExecutor,
+    NodeResult,
+)
 from engine.mvu import execute_commands, extract_commands, generate_schema, validate_command_strict
 from engine.provider import AbortSignal, ProviderAborted, ProviderError
 from engine.quality import DefaultQualityGate, QualityContext, QualityGate, QualityPolicy
@@ -137,11 +146,12 @@ def _load_trace_json(value: str | None, fallback: Any) -> Any:
 class GraphRunObserver:
     """Persist one Graph Run while keeping Graph Runtime provider-agnostic."""
 
-    def __init__(self, runtime: "SessionTurnRuntime", task, plan: ExecutionPlan) -> None:
+    def __init__(self, runtime: "SessionTurnRuntime", task, plan: ExecutionPlan, *, retry_of: str | None = None) -> None:
         self.runtime = runtime
         self.task = task
         self.plan = plan
         self.task_id = task["id"]
+        self.retry_of = retry_of
         self.graph_run_id: str | None = None
         self.node_run_ids: dict[str, str] = {}
 
@@ -156,6 +166,8 @@ class GraphRunObserver:
         now = int(time.time())
         with self.runtime._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
+            if not self._can_persist(connection):
+                return
             connection.execute(
                 "UPDATE node_runs SET state = ?, input_artifact_json = ?, started_at = COALESCE(started_at, ?) "
                 "WHERE id = ? AND session_id = ?",
@@ -177,11 +189,15 @@ class GraphRunObserver:
             return
         with self.runtime._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
+            if not self._can_persist(connection):
+                return
             row = connection.execute(
-                "SELECT streamed_output FROM node_runs WHERE id = ? AND session_id = ?",
+                "SELECT state, streamed_output FROM node_runs WHERE id = ? AND session_id = ?",
                 (node_run_id, self.runtime.session_id),
             ).fetchone()
-            streamed = (row["streamed_output"] if row else "") or ""
+            if row is None or row["state"] != "running":
+                return
+            streamed = row["streamed_output"] or ""
             streamed += delta
             connection.execute(
                 "UPDATE node_runs SET streamed_output = ? WHERE id = ? AND session_id = ?",
@@ -206,6 +222,8 @@ class GraphRunObserver:
         }
         with self.runtime._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
+            if not self._can_persist(connection):
+                return
             calls = self._column_json(connection, node_run_id, "model_calls_json", [])
             calls.append(call)
             connection.execute(
@@ -226,6 +244,8 @@ class GraphRunObserver:
         stop_reason = getattr(result, "stop_reason", "") if result is not None else ""
         with self.runtime._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
+            if not self._can_persist(connection):
+                return
             calls = self._column_json(connection, node_run_id, "model_calls_json", [])
             call = next((item for item in calls if item.get("call_ordinal") == call_ordinal), None)
             if call is None:
@@ -263,6 +283,8 @@ class GraphRunObserver:
             return
         with self.runtime._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
+            if not self._can_persist(connection):
+                return
             calls = self._column_json(connection, node_run_id, "tool_calls_json", [])
             calls.append({"id": call.get("id"), "name": call.get("name"), "args": _redact_trace(call.get("args") or {}), "status": "running"})
             connection.execute(
@@ -280,6 +302,8 @@ class GraphRunObserver:
             return
         with self.runtime._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
+            if not self._can_persist(connection):
+                return
             calls = self._column_json(connection, node_run_id, "tool_calls_json", [])
             matching = next((item for item in reversed(calls) if item.get("id") == call.get("id")), None)
             if matching is None:
@@ -308,6 +332,8 @@ class GraphRunObserver:
         now = int(time.time())
         with self.runtime._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
+            if not self._can_persist(connection):
+                return
             connection.execute(
                 "UPDATE node_runs SET state = ?, final_output = ?, artifact_json = ?, error_json = ?, diagnostics_ref = ?, finished_at = ? "
                 "WHERE id = ? AND session_id = ?",
@@ -328,11 +354,15 @@ class GraphRunObserver:
         now = int(time.time())
         with self.runtime._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
-            connection.execute(
+            if not self._can_persist(connection):
+                return
+            updated = connection.execute(
                 "UPDATE graph_runs SET status = ?, failed_node_id = ?, error_json = ?, finished_at = ? "
-                "WHERE id = ? AND session_id = ?",
+                "WHERE id = ? AND session_id = ? AND status = 'running'",
                 (state, result.failed_node_id, _trace_json(getattr(result, "error", None)), now, self.graph_run_id, self.runtime.session_id),
             )
+            if not updated.rowcount:
+                return
             self.runtime._event(
                 connection,
                 "graph.run.finished",
@@ -341,6 +371,7 @@ class GraphRunObserver:
                     "graph_run_id": self.graph_run_id,
                     "run_id": self.graph_run_id,
                     "plan_id": result.plan_id,
+                    "retry_of": self.retry_of,
                     "state": state,
                     "status": state,
                     "failed_node_id": result.failed_node_id,
@@ -382,16 +413,17 @@ class GraphRunObserver:
                 return
             self.graph_run_id = self.runtime._id()
             now = int(time.time())
+            tool_snapshot = self.runtime._graph_tool_snapshot(plan, self.task)
             connection.execute(
-                "INSERT INTO graph_runs (id, session_id, task_id, plan_id, graph_id, status, player_input, plan_json, created_at, started_at) VALUES (?, ?, ?, ?, ?, 'running', ?, ?, ?, ?)",
-                (self.graph_run_id, self.runtime.session_id, self.task_id, plan.plan_id, plan.graph.graph_id, "" if self.task is None else self.task["text"], _trace_json(plan.to_dict()), now, now),
+                "INSERT INTO graph_runs (id, session_id, task_id, plan_id, graph_id, retry_of, status, player_input, plan_json, created_at, started_at) VALUES (?, ?, ?, ?, ?, ?, 'running', ?, ?, ?, ?)",
+                (self.graph_run_id, self.runtime.session_id, self.task_id, plan.plan_id, plan.graph.graph_id, self.retry_of, "" if self.task is None else self.task["text"], _trace_json(plan.to_dict()), now, now),
             )
             for node in plan.graph.nodes:
                 node_run_id = self.runtime._id()
                 self.node_run_ids[node.node_id] = node_run_id
                 effective = _redact_trace(node.agent.effective_config)
                 connection.execute(
-                    "INSERT INTO node_runs (id, session_id, graph_run_id, task_id, node_id, agent_id, label, order_index, state, prompt_json, prompt_provenance_json, effective_config_json, model_calls_json, tool_calls_json, streamed_output) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'idle', ?, ?, ?, '[]', '[]', '')",
+                    "INSERT INTO node_runs (id, session_id, graph_run_id, task_id, node_id, agent_id, label, order_index, state, prompt_json, prompt_provenance_json, effective_config_json, model_calls_json, tool_calls_json, streamed_output, tool_snapshot_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'idle', ?, ?, ?, '[]', '[]', '', ?)",
                     (
                         node_run_id,
                         self.runtime.session_id,
@@ -404,6 +436,7 @@ class GraphRunObserver:
                         _trace_json(list(node.agent.prompt)),
                         _trace_json(list(node.agent.prompt_provenance)),
                         _trace_json(effective),
+                        _trace_json(tool_snapshot),
                     ),
                 )
             self.runtime._event(
@@ -415,11 +448,22 @@ class GraphRunObserver:
                     "run_id": self.graph_run_id,
                     "plan_id": plan.plan_id,
                     "graph_id": plan.graph.graph_id,
+                    "retry_of": self.retry_of,
                     "state": "running",
                     "status": "running",
                     "nodes": [node.node_id for node in plan.graph.nodes if node.enabled],
                 },
             )
+
+    def _can_persist(self, connection) -> bool:
+        """Reject callbacks from a worker superseded by restart recovery."""
+        if not self.runtime._lease_is_authoritative(connection, self.task):
+            return False
+        row = connection.execute(
+            "SELECT status FROM graph_runs WHERE id = ? AND session_id = ?",
+            (self.graph_run_id, self.runtime.session_id),
+        ).fetchone()
+        return bool(row and row["status"] == "running")
 
     def _node_payload(self, node, node_run_id: str, *, state: str) -> dict[str, Any]:
         return {
@@ -1060,6 +1104,48 @@ class SessionTurnRuntime:
             ).fetchall()
         return [RuntimeEvent(row["sequence"], row["type"], json.loads(row["payload"])) for row in rows]
 
+    def graph_run_id_for_task(self, task_id):
+        """Return the persisted Graph Run identity for a task, if any."""
+        if not task_id:
+            return None
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT id FROM graph_runs WHERE task_id = ? AND session_id = ?",
+                (task_id, self.session_id),
+            ).fetchone()
+        return row["id"] if row else None
+
+    def retry_graph_run(self, graph_run_id, idempotency_key):
+        """Run a failed Graph again from current saved definitions.
+
+        The failed run supplies only its original player input.  The new task
+        snapshots the current Project, Graph, Agent, Provider and Worldbook
+        stores, so no execution artifact or frozen plan from the failed run is
+        reused.  The new Graph Run records ``retry_of`` for auditability.
+        """
+        if not isinstance(graph_run_id, str) or not graph_run_id.strip():
+            raise ValueError("missing graph_run_id")
+        if not isinstance(idempotency_key, str) or not idempotency_key.strip():
+            raise ValueError("missing idempotency_key")
+        if self.generation_active():
+            return RuntimeResult("", None, self.active_revision(), "generation_busy")
+
+        previous = self.graph_run_detail(graph_run_id)
+        if previous is None:
+            return RuntimeResult("", None, self.active_revision(), "unknown_graph_run")
+        if previous.get("status") not in {"failed", "interrupted"}:
+            return RuntimeResult("", None, self.active_revision(), "graph_not_retryable")
+        text = (previous.get("player_input") or "").strip()
+        if not text:
+            return RuntimeResult("", None, self.active_revision(), "invalid_graph_input")
+
+        task = self._create_or_get_task(
+            text,
+            idempotency_key,
+            graph_retry_of=graph_run_id,
+        )
+        return self._submit_queued_task(task)
+
     def node_run_detail(self, node_run_id):
         """Return the complete safe debug record for one Node Run."""
         with self._connect() as connection:
@@ -1090,6 +1176,8 @@ class SessionTurnRuntime:
             "task_id": graph["task_id"],
             "plan_id": graph["plan_id"],
             "graph_id": graph["graph_id"],
+            "retry_of": graph["retry_of"],
+            "retry_of_run_id": graph["retry_of"],
             "status": graph["status"],
             "state": graph["status"],
             "player_input": graph["player_input"],
@@ -1107,17 +1195,332 @@ class SessionTurnRuntime:
         """Return the active run and latest terminal run for refresh/reconnect."""
         with self._connect() as connection:
             current = connection.execute(
-                "SELECT id FROM graph_runs WHERE session_id = ? AND status = 'running' ORDER BY created_at DESC LIMIT 1",
+                "SELECT id FROM graph_runs WHERE session_id = ? AND status = 'running' ORDER BY created_at DESC, rowid DESC LIMIT 1",
                 (self.session_id,),
             ).fetchone()
             recent = connection.execute(
-                "SELECT id FROM graph_runs WHERE session_id = ? AND status IN ('succeeded', 'failed', 'interrupted') ORDER BY finished_at DESC, created_at DESC LIMIT 1",
+                "SELECT id FROM graph_runs WHERE session_id = ? AND status IN ('succeeded', 'failed', 'interrupted') ORDER BY finished_at DESC, created_at DESC, rowid DESC LIMIT 1",
                 (self.session_id,),
             ).fetchone()
         return {
             "current": self.graph_run_detail(current["id"]) if current else None,
             "most_recent": self.graph_run_detail(recent["id"]) if recent else None,
         }
+
+    def debug_replay(self, node_run_id, idempotency_key=None):
+        """Execute one retained Node Run input against the current Agent config.
+
+        Replay is deliberately outside Graph Runtime: it invokes exactly one
+        Node Runner with the persisted input Artifact and read-only tool data.
+        It never creates a Session task, commit, Graph Run or story projection.
+        """
+        if not isinstance(node_run_id, str) or not node_run_id.strip():
+            raise ValueError("missing node_run_id")
+        if not isinstance(idempotency_key, str) or not idempotency_key.strip():
+            raise ValueError("missing idempotency_key")
+        source = self.node_run_detail(node_run_id)
+        if source is None:
+            return {"ok": False, "state": "failed", "error": {"code": "node_run_not_found"}}
+        graph = self.graph_run_detail(source["graph_run_id"])
+        if graph is None:
+            return {"ok": False, "state": "failed", "error": {"code": "graph_run_not_found"}}
+
+        replay_id, created = self._create_debug_replay(source, graph, idempotency_key)
+        existing = self.debug_replay_detail(replay_id)
+        if not created:
+            return existing
+
+        input_payload = source.get("input_artifact") or source.get("input")
+        try:
+            input_artifact = AgentArtifact.from_dict(input_payload) if isinstance(input_payload, dict) else None
+            if input_artifact is None:
+                raise ValueError("source Node Run has no frozen input Artifact")
+            current_plan = self._compile_replay_plan(graph, source)
+            current_node = next(
+                node for node in current_plan.graph.nodes if node.node_id == source["node_id"]
+            )
+            old_config = source.get("effective_config") or {}
+            new_config = _redact_trace(dict(current_node.agent.effective_config))
+            diff = self._effective_config_diff(old_config, new_config)
+            self._update_debug_replay(
+                replay_id,
+                new_effective_config=new_config,
+                effective_config_diff=diff,
+            )
+
+            if self.graph_runtime is None:
+                raise RuntimeError("Graph Runtime is unavailable for Debug Replay")
+            runner = self._replay_node_runner(source.get("tool_snapshot") or {})
+            result = self._run_replay_node(runner, current_node, input_artifact)
+            if isinstance(result, AgentArtifact):
+                result = NodeResult.succeeded(result)
+            if not isinstance(result, NodeResult):
+                result = NodeResult.failed("Node Runner returned an invalid Node Result")
+            state = "succeeded" if result.ok else "failed"
+            artifact = result.primary_artifact.to_dict() if result.primary_artifact else None
+            new_output = artifact.get("content") if isinstance(artifact, dict) else None
+            if new_output is not None and not isinstance(new_output, str):
+                new_output = json.dumps(new_output, ensure_ascii=False)
+            self._update_debug_replay(
+                replay_id,
+                state=state,
+                new_output=new_output,
+                error=None if result.ok else _redact_trace(result.error),
+            )
+        except Exception as exc:
+            self._update_debug_replay(
+                replay_id,
+                state="failed",
+                error={"code": "debug_replay_failed", "message": str(exc)},
+            )
+        self._prune_debug_replays()
+        return self.debug_replay_detail(replay_id)
+
+    def debug_replay_detail(self, replay_id):
+        """Return one persisted isolated Debug Replay result."""
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM debug_replays WHERE id = ? AND session_id = ?",
+                (replay_id, self.session_id),
+            ).fetchone()
+        if row is None:
+            return None
+        old_output = row["old_output"]
+        new_output = row["new_output"]
+        diff = _load_trace_json(row["effective_config_diff_json"], {})
+        return _redact_trace(
+            {
+                "ok": row["state"] == "succeeded",
+                "debug_replay_id": row["id"],
+                "replay_id": row["id"],
+                "id": row["id"],
+                "state": row["state"],
+                "status": row["state"],
+                "source_node_run_id": row["source_node_run_id"],
+                "source_graph_run_id": row["source_graph_run_id"],
+                "node_id": row["node_id"],
+                "agent_id": row["agent_id"],
+                "input_artifact": _load_trace_json(row["input_artifact_json"], None),
+                "frozen_input": _load_trace_json(row["input_artifact_json"], None),
+                "upstream_artifacts": _load_trace_json(row["upstream_artifacts_json"], []),
+                "tool_snapshot": _load_trace_json(row["tool_snapshot_json"], {}),
+                "old_output": old_output,
+                "old_final_output": old_output,
+                "new_output": new_output,
+                "new_final_output": new_output,
+                "old_effective_config": _load_trace_json(row["old_effective_config_json"], {}),
+                "new_effective_config": _load_trace_json(row["new_effective_config_json"], {}),
+                "effective_config_diff": diff,
+                "config_diff": diff,
+                "error": _load_trace_json(row["error_json"], None),
+                "created_at": row["created_at"],
+                "started_at": row["started_at"],
+                "finished_at": row["finished_at"],
+            }
+        )
+
+    def _create_debug_replay(self, source, graph, idempotency_key):
+        if idempotency_key:
+            with self._connect() as connection:
+                existing = connection.execute(
+                    "SELECT id FROM debug_replays WHERE session_id = ? AND idempotency_key = ?",
+                    (self.session_id, idempotency_key),
+                ).fetchone()
+            if existing:
+                return existing["id"], False
+        source_nodes = sorted(graph.get("nodes") or [], key=lambda item: item.get("order", 0))
+        source_order = source.get("order", 0)
+        upstream = [
+            node.get("artifact")
+            for node in source_nodes
+            if node.get("order", 0) < source_order and isinstance(node.get("artifact"), dict)
+        ]
+        old_output = source.get("final_output")
+        if old_output is None:
+            artifact = source.get("artifact")
+            old_output = artifact.get("content") if isinstance(artifact, dict) else source.get("streamed_output")
+        now = int(time.time())
+        replay_id = self._id()
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                connection.execute(
+                    "INSERT INTO debug_replays (id, session_id, idempotency_key, source_node_run_id, source_graph_run_id, node_id, agent_id, state, input_artifact_json, upstream_artifacts_json, tool_snapshot_json, old_output, new_output, old_effective_config_json, new_effective_config_json, effective_config_diff_json, created_at, started_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'running', ?, ?, ?, ?, NULL, ?, '{}', '{}', ?, ?)",
+                    (
+                        replay_id,
+                        self.session_id,
+                        idempotency_key,
+                        source["node_run_id"],
+                        source["graph_run_id"],
+                        source["node_id"],
+                        source["agent_id"],
+                        _trace_json(source.get("input_artifact") or source.get("input")),
+                        _trace_json(upstream),
+                        _trace_json(source.get("tool_snapshot") or {}),
+                        _redact_trace(old_output),
+                        _trace_json(source.get("effective_config") or {}),
+                        now,
+                        now,
+                    ),
+                )
+            except sqlite3.IntegrityError:
+                if not idempotency_key:
+                    raise
+                existing = connection.execute(
+                    "SELECT id FROM debug_replays WHERE session_id = ? AND idempotency_key = ?",
+                    (self.session_id, idempotency_key),
+                ).fetchone()
+                if existing:
+                    return existing["id"], False
+                raise
+        return replay_id, True
+
+    def _update_debug_replay(
+        self,
+        replay_id,
+        *,
+        state=None,
+        new_output=None,
+        new_effective_config=None,
+        effective_config_diff=None,
+        error=None,
+    ):
+        updates = []
+        values = []
+        if state is not None:
+            updates.append("state = ?")
+            values.append(state)
+        if new_output is not None:
+            updates.append("new_output = ?")
+            values.append(_redact_trace(new_output))
+        if new_effective_config is not None:
+            updates.append("new_effective_config_json = ?")
+            values.append(_trace_json(new_effective_config))
+        if effective_config_diff is not None:
+            updates.append("effective_config_diff_json = ?")
+            values.append(_trace_json(effective_config_diff))
+        if error is not None or state in {"succeeded", "failed"}:
+            updates.append("error_json = ?")
+            values.append(_trace_json(error))
+        if state in {"succeeded", "failed"}:
+            updates.append("finished_at = ?")
+            values.append(int(time.time()))
+        if not updates:
+            return
+        values.extend([replay_id, self.session_id])
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute(
+                f"UPDATE debug_replays SET {', '.join(updates)} WHERE id = ? AND session_id = ? AND state = 'running'",
+                values,
+            )
+
+    def _compile_replay_plan(self, graph, source):
+        plan_data = graph.get("plan") or {}
+        old_graph = plan_data.get("graph") or {}
+        old_node = next(
+            (node for node in old_graph.get("nodes") or [] if node.get("node_id") == source["node_id"]),
+            None,
+        )
+        if old_node is None:
+            raise ValueError("source Node Run is absent from its frozen Graph plan")
+        agent_id = source.get("agent_id") or old_node.get("agent_id")
+        compiler = self.execution_plan_compiler
+        agent_store = getattr(compiler, "agent_store", None) if compiler is not None else None
+        if compiler is None or not callable(getattr(agent_store, "get_agent", None)):
+            raise RuntimeError("current Agent Definition compiler is unavailable for Debug Replay")
+        try:
+            current_agent = agent_store.get_agent(agent_id)
+        except Exception as exc:
+            raise RuntimeError(f"current Agent Definition {agent_id!r} is unavailable") from exc
+        if not isinstance(current_agent, dict):
+            raise RuntimeError(f"current Agent Definition {agent_id!r} is invalid")
+        current_agent = copy.deepcopy(current_agent)
+        node = copy.deepcopy(old_node)
+        node["agent_id"] = agent_id
+        replay_graph = {
+            "id": old_graph.get("graph_id") or old_graph.get("id") or graph.get("graph_id"),
+            "name": old_graph.get("name") or graph.get("graph_id") or "Graph Replay",
+            "nodes": [node],
+            "output_node_id": node.get("node_id") or source["node_id"],
+        }
+        return compiler.compile(
+            project=copy.deepcopy(plan_data.get("project") or {}),
+            graph=replay_graph,
+            agents={agent_id: current_agent},
+            worldbooks=copy.deepcopy(plan_data.get("worldbooks") or []),
+            player_input=plan_data.get("player_input") or graph.get("player_input") or "",
+        )
+
+    def _replay_node_runner(self, tool_snapshot):
+        runner = self.graph_runtime.node_runner
+        read_only_tools = self._read_only_tool_handler(tool_snapshot)
+        if hasattr(runner, "tool_handler"):
+            isolated = copy.copy(runner)
+            isolated.tool_handler = read_only_tools
+            return isolated
+        return runner
+
+    @staticmethod
+    def _run_replay_node(runner, node, input_artifact):
+        run = runner.run
+        try:
+            parameters = inspect.signature(run).parameters
+        except (TypeError, ValueError):
+            parameters = {}
+        if "observer" in parameters:
+            return run(node, input_artifact, observer=None)
+        return run(node, input_artifact)
+
+    @staticmethod
+    def _read_only_tool_handler(snapshot):
+        snapshot = copy.deepcopy(snapshot or {})
+
+        def handle(name, args):
+            normalized = str(name or "").casefold()
+            if normalized in {"get_recent_memory", "recent_memory", "read_memory"}:
+                memory = snapshot.get("recent_memory", "")
+                max_chars = (args or {}).get("max_chars", 3000) if isinstance(args, dict) else 3000
+                if not isinstance(max_chars, int) or max_chars <= 0:
+                    max_chars = 3000
+                truncated = len(memory) > max_chars
+                return {
+                    "memory": memory[-max_chars:] if truncated else memory,
+                    "truncated": truncated,
+                }
+            if normalized in {"get_session_snapshot", "session_snapshot", "get_state", "read_state"}:
+                return {
+                    "current_state": copy.deepcopy(snapshot.get("current_state", {})),
+                    "recent_turns": copy.deepcopy(snapshot.get("recent_turns", [])),
+                }
+            if normalized in {"load_worldbook_entry", "load_worldbook", "read_worldbook", "get_worldbook"}:
+                title = (args or {}).get("title") if isinstance(args, dict) else None
+                books = snapshot.get("worldbooks") or []
+                for book in books:
+                    for entry in book.get("entries", []) if isinstance(book, dict) else []:
+                        if not title or entry.get("title") == title:
+                            return {
+                                "title": entry.get("title"),
+                                "content": entry.get("content", ""),
+                                "content_hash": entry.get("content_hash"),
+                            }
+                return {"error": "worldbook_entry_not_found", "title": title}
+            return {"error": "replay_tool_read_only", "tool": str(name)}
+
+        return handle
+
+    @staticmethod
+    def _effective_config_diff(old, new):
+        old = old if isinstance(old, dict) else {}
+        new = new if isinstance(new, dict) else {}
+        diff = {}
+        for key in sorted(set(old) | set(new)):
+            before = old.get(key)
+            after = new.get(key)
+            if before == after:
+                continue
+            diff[key] = {"old": copy.deepcopy(before), "new": copy.deepcopy(after)}
+        return diff
 
     def _node_run_payload(self, row) -> dict[str, Any]:
         artifact = _load_trace_json(row["artifact_json"], None)
@@ -1139,6 +1542,7 @@ class SessionTurnRuntime:
                 "prompt": _load_trace_json(row["prompt_json"], []),
                 "prompt_provenance": _load_trace_json(row["prompt_provenance_json"], []),
                 "effective_config": _load_trace_json(row["effective_config_json"], {}),
+                "tool_snapshot": _load_trace_json(row["tool_snapshot_json"], {}),
                 "model_calls": _load_trace_json(row["model_calls_json"], []),
                 "tool_calls": _load_trace_json(row["tool_calls_json"], []),
                 "streamed_output": row["streamed_output"] or "",
@@ -1160,23 +1564,51 @@ class SessionTurnRuntime:
                 (self.session_id,),
             ).fetchall()
             terminal = connection.execute(
-                "SELECT id FROM graph_runs WHERE session_id = ? AND status IN ('succeeded', 'failed', 'interrupted') ORDER BY finished_at DESC, created_at DESC LIMIT 1",
+                "SELECT id FROM graph_runs WHERE session_id = ? AND status IN ('succeeded', 'failed', 'interrupted') ORDER BY finished_at DESC, created_at DESC, rowid DESC LIMIT 1",
                 (self.session_id,),
             ).fetchone()
             keep = {row["id"] for row in running if row["id"]}
             if terminal:
                 keep.add(terminal["id"])
-            if not keep:
-                return
-            placeholders = ",".join("?" for _ in keep)
-            params = [self.session_id, *keep]
-            old = connection.execute(
-                f"SELECT id FROM graph_runs WHERE session_id = ? AND id NOT IN ({placeholders})",
-                params,
+            if keep:
+                placeholders = ",".join("?" for _ in keep)
+                params = [self.session_id, *keep]
+                old = connection.execute(
+                    f"SELECT id FROM graph_runs WHERE session_id = ? AND id NOT IN ({placeholders})",
+                    params,
+                ).fetchall()
+                for row in old:
+                    connection.execute("DELETE FROM node_runs WHERE graph_run_id = ? AND session_id = ?", (row["id"], self.session_id))
+                    connection.execute("DELETE FROM graph_runs WHERE id = ? AND session_id = ?", (row["id"], self.session_id))
+        self._prune_debug_replays()
+
+    def _prune_debug_replays(self) -> None:
+        """Keep active and latest terminal Debug Replay traces only."""
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            running = connection.execute(
+                "SELECT id FROM debug_replays WHERE session_id = ? AND state = 'running'",
+                (self.session_id,),
             ).fetchall()
-            for row in old:
-                connection.execute("DELETE FROM node_runs WHERE graph_run_id = ? AND session_id = ?", (row["id"], self.session_id))
-                connection.execute("DELETE FROM graph_runs WHERE id = ? AND session_id = ?", (row["id"], self.session_id))
+            terminal = connection.execute(
+                "SELECT id FROM debug_replays WHERE session_id = ? AND state IN ('succeeded', 'failed', 'interrupted') "
+                "ORDER BY finished_at DESC, created_at DESC, rowid DESC LIMIT 1",
+                (self.session_id,),
+            ).fetchone()
+            keep = {row["id"] for row in running if row["id"]}
+            if terminal:
+                keep.add(terminal["id"])
+            if keep:
+                placeholders = ",".join("?" for _ in keep)
+                connection.execute(
+                    f"DELETE FROM debug_replays WHERE session_id = ? AND id NOT IN ({placeholders})",
+                    [self.session_id, *keep],
+                )
+            else:
+                connection.execute(
+                    "DELETE FROM debug_replays WHERE session_id = ?",
+                    (self.session_id,),
+                )
 
     def projection_checkpoint(self, commit_id):
         with self._connect() as connection:
@@ -1254,7 +1686,7 @@ class SessionTurnRuntime:
                 self._event(connection, "worldbook.loaded", {"task_id": task_id, "title": entry.title, "content_hash": entry.content_hash})
         return entry
 
-    def _create_or_get_task(self, text, idempotency_key):
+    def _create_or_get_task(self, text, idempotency_key, *, graph_retry_of: str | None = None):
         # Snapshot reads open their own connections; never nest them under
         # BEGIN IMMEDIATE or the process deadlocks against itself. Loop until
         # the base we snapshotted still matches the head at insert time.
@@ -1265,6 +1697,8 @@ class SessionTurnRuntime:
                     return task
                 base_revision = self._active_revision(connection)
             source_snapshot = self._source_snapshot(base_revision, player_input=text)
+            if graph_retry_of:
+                source_snapshot["graph_retry_of"] = graph_retry_of
             with self._connect() as connection:
                 connection.execute("BEGIN IMMEDIATE")
                 task = self._task_for_key(connection, idempotency_key)
@@ -1293,7 +1727,19 @@ class SessionTurnRuntime:
                         ).fetchone()["next_sequence"],
                     ),
                 )
-                self._event(connection, "player_message.submitted", {"task_id": task_id, "text": text})
+                if graph_retry_of:
+                    self._event(
+                        connection,
+                        "graph.run.retry_requested",
+                        {
+                            "task_id": task_id,
+                            "retry_of": graph_retry_of,
+                            "text": text,
+                            "base_revision": base_revision,
+                        },
+                    )
+                else:
+                    self._event(connection, "player_message.submitted", {"task_id": task_id, "text": text})
                 self._event(connection, "task.queued", {"task_id": task_id, "base_revision": base_revision})
                 return self._task_for_key(connection, idempotency_key)
 
@@ -1465,7 +1911,12 @@ class SessionTurnRuntime:
         plan_data = snapshot.get("execution_plan")
         if plan_data and self.graph_runtime is not None:
             plan = ExecutionPlan.from_dict(plan_data)
-            observer = GraphRunObserver(self, task, plan)
+            observer = GraphRunObserver(
+                self,
+                task,
+                plan,
+                retry_of=snapshot.get("graph_retry_of"),
+            )
             return GraphRuntimeExecutor(self.graph_runtime, plan, observer=observer)
         if self.executor_factory is None:
             return self.executor
@@ -1544,7 +1995,7 @@ class SessionTurnRuntime:
                 "SELECT commit_id, revision, status FROM tasks WHERE id = ?",
                 (task["id"],),
             ).fetchone()
-            if row and not row["commit_id"]:
+            if row and not row["commit_id"] and self._lease_is_authoritative(connection, task):
                 connection.execute(
                     "UPDATE tasks SET status = ? WHERE id = ? AND commit_id IS NULL",
                     ("failed_terminal", task["id"]),
@@ -2264,6 +2715,26 @@ class SessionTurnRuntime:
             },
         }
 
+    def _graph_tool_snapshot(self, plan: ExecutionPlan, task) -> dict[str, Any]:
+        """Freeze the read-only data exposed to a Graph node's tools."""
+        try:
+            source = json.loads(task["source_snapshot"]) if task is not None and task["source_snapshot"] else {}
+        except (TypeError, json.JSONDecodeError):
+            source = {}
+        return _redact_trace(
+            {
+                "project": plan.project,
+                "worldbooks": list(plan.worldbooks),
+                "card_facts": source.get("card_facts", {}),
+                "worldbook_catalog": source.get("worldbook_catalog", []),
+                "worldbook_reference": source.get("worldbook_reference", ""),
+                "worldbook_user": source.get("worldbook_user", ""),
+                "current_state": source.get("current_state", {}),
+                "recent_memory": source.get("recent_memory", ""),
+                "recent_turns": source.get("recent_turns", []),
+            }
+        )
+
     def _worldbook_snapshot(self, catalog_path, reference_path, user_path):
         if self.worldbook_snapshot_provider is not None:
             snapshot = self.worldbook_snapshot_provider(self.project_id)
@@ -2844,13 +3315,14 @@ class SessionTurnRuntime:
             except Exception:
                 pass
         self._recover_graph_runs()
+        self._recover_debug_replays()
 
     def _recover_graph_runs(self) -> None:
         """Classify persisted in-flight graph traces after a process restart."""
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             rows = connection.execute(
-                "SELECT id, task_id, plan_id FROM graph_runs WHERE session_id = ? AND status = 'running'",
+                "SELECT id, task_id, plan_id, retry_of FROM graph_runs WHERE session_id = ? AND status = 'running'",
                 (self.session_id,),
             ).fetchall()
             for row in rows:
@@ -2872,11 +3344,29 @@ class SessionTurnRuntime:
                         "graph_run_id": row["id"],
                         "run_id": row["id"],
                         "plan_id": row["plan_id"],
+                        "retry_of": row["retry_of"],
                         "state": "interrupted",
                         "status": "interrupted",
                         "error": error,
                     },
                 )
+        self._prune_graph_runs()
+
+    def _recover_debug_replays(self) -> None:
+        """Classify in-flight Debug Replays after a process restart."""
+        now = int(time.time())
+        error = {
+            "code": "interrupted",
+            "message": "Debug Replay interrupted by runtime restart",
+        }
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute(
+                "UPDATE debug_replays SET state = 'interrupted', error_json = ?, finished_at = ? "
+                "WHERE session_id = ? AND state = 'running'",
+                (_trace_json(error), now, self.session_id),
+            )
+        self._prune_debug_replays()
 
     def _lineage_commits(self, head_revision):
         """Full parent-chain walk from head (oldest→newest), no limit.
@@ -2962,7 +3452,7 @@ class SessionTurnRuntime:
                 );
                 CREATE TABLE IF NOT EXISTS graph_runs (
                     id TEXT PRIMARY KEY, session_id TEXT NOT NULL, task_id TEXT NOT NULL UNIQUE,
-                    plan_id TEXT NOT NULL, graph_id TEXT NOT NULL, status TEXT NOT NULL,
+                    plan_id TEXT NOT NULL, graph_id TEXT NOT NULL, retry_of TEXT, status TEXT NOT NULL,
                     player_input TEXT NOT NULL, plan_json TEXT NOT NULL, failed_node_id TEXT,
                     error_json TEXT, created_at INTEGER NOT NULL, started_at INTEGER,
                     finished_at INTEGER
@@ -2974,10 +3464,20 @@ class SessionTurnRuntime:
                     input_artifact_json TEXT, prompt_json TEXT NOT NULL,
                     prompt_provenance_json TEXT NOT NULL, effective_config_json TEXT NOT NULL,
                     model_calls_json TEXT NOT NULL, tool_calls_json TEXT NOT NULL,
-                    streamed_output TEXT NOT NULL, final_output TEXT,
+                    streamed_output TEXT NOT NULL, tool_snapshot_json TEXT NOT NULL DEFAULT '{}', final_output TEXT,
                     artifact_json TEXT, error_json TEXT, diagnostics_ref TEXT,
                     started_at INTEGER, finished_at INTEGER,
                     UNIQUE(graph_run_id, node_id)
+                );
+                CREATE TABLE IF NOT EXISTS debug_replays (
+                    id TEXT PRIMARY KEY, session_id TEXT NOT NULL, idempotency_key TEXT UNIQUE,
+                    source_node_run_id TEXT NOT NULL, source_graph_run_id TEXT NOT NULL,
+                    node_id TEXT NOT NULL, agent_id TEXT NOT NULL, state TEXT NOT NULL,
+                    input_artifact_json TEXT NOT NULL, upstream_artifacts_json TEXT NOT NULL,
+                    tool_snapshot_json TEXT NOT NULL, old_output TEXT, new_output TEXT,
+                    old_effective_config_json TEXT NOT NULL, new_effective_config_json TEXT NOT NULL,
+                    effective_config_diff_json TEXT NOT NULL, error_json TEXT,
+                    created_at INTEGER NOT NULL, started_at INTEGER, finished_at INTEGER
                 );
                 """
             )
@@ -3010,6 +3510,14 @@ class SessionTurnRuntime:
                 connection.execute("ALTER TABLE tasks ADD COLUMN queue_sequence INTEGER")
             if "lease_fence" not in task_columns:
                 connection.execute("ALTER TABLE tasks ADD COLUMN lease_fence INTEGER")
+            graph_run_columns = {row["name"] for row in connection.execute("PRAGMA table_info(graph_runs)")}
+            if "retry_of" not in graph_run_columns:
+                connection.execute("ALTER TABLE graph_runs ADD COLUMN retry_of TEXT")
+            node_run_columns = {row["name"] for row in connection.execute("PRAGMA table_info(node_runs)")}
+            if "tool_snapshot_json" not in node_run_columns:
+                connection.execute(
+                    "ALTER TABLE node_runs ADD COLUMN tool_snapshot_json TEXT NOT NULL DEFAULT '{}'"
+                )
             connection.execute(
                 "UPDATE tasks SET queue_sequence = rowid WHERE queue_sequence IS NULL"
             )
