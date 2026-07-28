@@ -83,13 +83,21 @@ def bootstrap_legacy_runtime_library(
     agent_ids: dict[tuple[str, str], str] = {}
     agents_created = 0
     for graph_id, graph in legacy_graphs.items():
+        enabled_nodes = [node for node in graph["nodes"] if node.get("enabled", True) is not False]
+        final_node_id = (enabled_nodes[-1].get("id") or enabled_nodes[-1].get("node_id")) if enabled_nodes else None
         for node in graph["nodes"]:
             node_id = _safe_id(node.get("id") or node.get("node_id") or f"node-{node.get('order', 0)}")
             explicit_agent_id = node.get("agent_id") or node.get("agent_definition_id")
             agent_id = _safe_id(explicit_agent_id) if isinstance(explicit_agent_id, str) else _safe_id(f"legacy-{graph_id}-{node_id}")
             agent_ids[(graph_id, node_id)] = agent_id
+            is_director = node.get("role") == "narrative_director" or node_id == _safe_id(final_node_id)
+            legacy_instruction = _legacy_agent_instruction(settings) if is_director else ""
+            node_instruction = node.get("instruction") if isinstance(node.get("instruction"), str) else ""
+            effective_instruction = node_instruction.strip() or legacy_instruction
             try:
-                agent_store.get_agent(agent_id)
+                existing = agent_store.get_agent(agent_id)
+                if effective_instruction and not str(existing.get("instruction") or "").strip():
+                    agent_store.update_agent(agent_id, {"instruction": effective_instruction})
                 continue
             except Exception:
                 pass
@@ -105,7 +113,7 @@ def bootstrap_legacy_runtime_library(
             payload = {
                 "agent_id": agent_id,
                 "name": str(node.get("name") or node.get("label") or node.get("role") or node_id),
-                "instruction": node.get("instruction") if isinstance(node.get("instruction"), str) else "",
+                "instruction": effective_instruction,
                 "prompt_preset_id": selected_preset_id,
                 "provider_profile_id": provider_ids.get(provider_key),
                 "model_id": node.get("model") if isinstance(node.get("model"), str) else None,
@@ -191,6 +199,31 @@ def bootstrap_legacy_runtime_library(
         "providers": providers_created,
         "project": project_created,
     }
+
+
+def _legacy_agent_instruction(settings: dict[str, Any]) -> str:
+    """Turn the removed game-side writing controls into editable Agent text."""
+    preferences: list[str] = []
+    labels = (
+        ("style", "文风偏好"),
+        ("nsfw", "NSFW尺度"),
+        ("person", "叙事人称"),
+        ("wordCount", "目标回复长度"),
+    )
+    for key, label in labels:
+        value = settings.get(key)
+        if value not in (None, ""):
+            preferences.append(f"- {label}: {value}")
+    if settings.get("antiImpersonation") is True:
+        preferences.append("- 不代替玩家发言、行动或决定")
+    if settings.get("bgNpc") is True:
+        preferences.append("- 在场景需要时保持背景 NPC 活跃")
+    if not preferences:
+        return ""
+    return (
+        "遵循以下写作偏好。这些都是软约束：优先服从项目卡、世界书、当前上下文和用户当轮指令；"
+        "在不冲突时尽量满足。\n" + "\n".join(preferences)
+    )
 
 
 def _legacy_graphs(root: Path) -> dict[str, dict[str, Any]]:

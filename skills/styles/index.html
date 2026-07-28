@@ -202,8 +202,6 @@ body {
 }
 .toggle-switch input:checked + .toggle-slider { background: var(--accent2); }
 .toggle-switch input:checked + .toggle-slider:before { transform: translateX(20px); }
-#settings-saved { font-size: 0.7em; color: var(--accent2); opacity: 0; transition: opacity 0.3s; }
-#settings-saved.show { opacity: 1; }
 .side-card textarea,
 .side-card .config-select {
   width: 100%;
@@ -423,7 +421,6 @@ body {
 [data-theme="dark"] .chip-hot { color: #1b1b26; }
 [data-theme="dark"] .toggle-slider:before { background: #d4c5b9; }
 [data-theme="dark"] input[type="range"] { accent-color: var(--accent); }
-[data-theme="dark"] #settings-saved { color: #7aaa7a; }
 [data-theme="dark"] #theme-toggle:hover { background: var(--surface); }
 [data-theme="dark"] .btn-reroll:hover { color: #1b1b26; }
 [data-theme="dark"] .btn-turn-del:hover,
@@ -967,8 +964,6 @@ body {
   <span id="conn-dot" class="dot red" title="服务器未连接"></span>
   <span class="dim" id="tb-count">已生成: 0</span>
   <span class="sep">|</span>
-  <span class="dim" id="tb-wordcount" title="最新回复字数 / 目标字数">字数: —</span>
-  <span class="sep">|</span>
   <span class="dim" id="tb-tokens" title="本轮Token / 累计Token">Token: —</span>
   <span class="sep">|</span>
   <a id="studio-link" href="/studio" aria-label="打开 Agent Studio">Studio</a>
@@ -998,44 +993,6 @@ body {
         <button class="session-tool" id="session-delete" title="删除存档" aria-label="删除存档" onclick="deleteSession()">×</button>
       </div>
       <div class="side-note" id="session-meta">正在读取存档…</div>
-    </div>
-    <div class="side-card">
-      <h4>⚙️ 预设配置 <span id="settings-saved" style="margin-left:4px;">已保存</span></h4>
-      <div class="setting-row">
-        <span class="label">文风</span>
-        <select id="set-style" onchange="saveSettings(); updateStyleDescription()"></select>
-        <div id="style-desc" style="font-size:0.7em;color:var(--muted);margin-top:2px;line-height:1.4;"></div>
-      </div>
-      <div class="setting-row">
-        <span class="label">NSFW</span>
-        <select id="set-nsfw" onchange="saveSettings()">
-          <option>直白</option><option>舒缓</option><option>关闭</option>
-        </select>
-      </div>
-      <div class="setting-row">
-        <span class="label">人称</span>
-        <select id="set-person" onchange="saveSettings()">
-          <option>第二人称</option><option>第三人称</option>
-        </select>
-      </div>
-      <div class="setting-row">
-        <span class="label">字数控制</span>
-        <input type="number" id="set-wordcount" onchange="saveSettings()" min="100" max="6000" step="100" style="width:80px;text-align:center;background:var(--input-bg);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:2px 6px;font-size:0.78em;font-family:var(--font-ui);outline:none;">
-      </div>
-      <div class="setting-row">
-        <span class="label">防抢话</span>
-        <label class="toggle-switch">
-          <input type="checkbox" id="set-antiimp" onchange="saveSettings()" checked>
-          <span class="toggle-slider"></span>
-        </label>
-      </div>
-      <div class="setting-row">
-        <span class="label">背景NPC</span>
-        <label class="toggle-switch">
-          <input type="checkbox" id="set-bgnpc" onchange="saveSettings()">
-          <span class="toggle-slider"></span>
-        </label>
-      </div>
     </div>
     <div class="side-card" id="runtime-config-card">
       <h4>🧩 Runtime Config</h4>
@@ -1177,45 +1134,6 @@ function reloadData() {
     document.head.appendChild(c);
   };
   document.head.appendChild(s);
-}
-
-function countChineseChars(html) {
-  // Strip HTML tags, entities, whitespace, and punctuation
-  const text = html
-    .replace(/<[^>]*>/g, '')
-    .replace(/&[^;]+;/g, '')
-    .replace(/[\s\n\r]/g, '');
-  // Count CJK characters (Chinese, Japanese kanji) + letters/numbers as words
-  const cjk = text.match(/[一-鿿㐀-䶿]/g);
-  const alpha = text.match(/[a-zA-Z0-9]+/g);
-  return (cjk ? cjk.length : 0) + (alpha ? alpha.length : 0);
-}
-
-function updateWordCount() {
-  const el = document.getElementById('tb-wordcount');
-  if (!el) return;
-  const target = parseInt(document.getElementById('set-wordcount').value) || 600;
-  const threshold = Math.floor(target * 0.8);
-
-  // Get last AI turn text
-  const turns = document.querySelectorAll('.turn-ai .turn-text');
-  if (turns.length === 0) { el.textContent = '字数: —'; el.style.color = ''; return; }
-  const lastTurn = turns[turns.length - 1];
-  const count = countChineseChars(lastTurn.innerHTML);
-
-  let color;
-  if (count >= target) {
-    color = '#5a7a5a'; // green - met or exceeded
-  } else if (count >= threshold) {
-    color = '#cc9a56'; // amber - within 80%
-  } else {
-    color = '#b0624a'; // red - below 80%
-  }
-  el.textContent = '字数: ' + count + '/' + target;
-  el.style.color = color;
-  el.title = count >= target ? '已达到目标字数' :
-    count >= threshold ? '接近目标字数 (≥80%)' :
-    '⚠ 未达目标字数的80%，建议重roll';
 }
 
 function userName() {
@@ -1475,9 +1393,6 @@ function render() {
 
   // Inject per-turn delete buttons
   injectTurnButtons();
-
-  // Word count check
-  updateWordCount();
 
   // Token count display
   updateTokenCount();
@@ -2465,84 +2380,6 @@ document.getElementById('user-input').addEventListener('keydown', function(e) {
   if (e.ctrlKey && e.key === 'Enter') { e.preventDefault(); doSubmit(); }
 });
 
-// ═══ Settings ═══
-let styleProfiles = [];
-
-async function loadStyleProfiles() {
-  try {
-    const r = await fetch(apiUrl('/api/style-profiles'))
-    if (!r.ok) return;
-    styleProfiles = await r.json();
-    const sel = document.getElementById('set-style');
-    const currentValue = sel.value;
-    sel.innerHTML = styleProfiles.map(function(p) {
-      return '<option value="' + p.name + '">' + p.title + '</option>';
-    }).join('');
-    if (currentValue) sel.value = currentValue;
-    updateStyleDescription();
-  } catch(e) { /* server not ready */ }
-}
-
-function updateStyleDescription() {
-  const sel = document.getElementById('set-style');
-  const name = sel ? sel.value : '';
-  const profile = styleProfiles.find(function(p) { return p.name === name; });
-  const desc = document.getElementById('style-desc');
-  if (desc) desc.textContent = profile ? profile.description : '';
-}
-
-async function loadSettings() {
-  try {
-    const r = await fetch(apiUrl('/api/settings'))
-    if (!r.ok) return;
-    const s = await r.json();
-    await loadStyleProfiles();
-    document.getElementById('set-style').value = s.style || '北棱特调';
-    updateStyleDescription();
-    document.getElementById('set-nsfw').value = s.nsfw || '直白';
-    document.getElementById('set-person').value = s.person || '第二人称';
-    document.getElementById('set-antiimp').checked = s.antiImpersonation !== false;
-    document.getElementById('set-bgnpc').checked = s.bgNpc === true;
-    document.getElementById('set-wordcount').value = s.wordCount || 600;
-    if (s.charName) document.getElementById('player-name-input').value = s.charName;
-    render();
-  } catch(e) { /* server may not be ready yet */ }
-}
-
-async function saveSettings() {
-  const data = {
-    style: document.getElementById('set-style').value,
-    nsfw: document.getElementById('set-nsfw').value,
-    person: document.getElementById('set-person').value,
-    antiImpersonation: document.getElementById('set-antiimp').checked,
-    bgNpc: document.getElementById('set-bgnpc').checked,
-    wordCount: parseInt(document.getElementById('set-wordcount').value) || 600,
-    charName: document.getElementById('player-name-input').value.trim()
-  };
-  try {
-    await fetch(apiUrl('/api/settings'), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(data)
-    });
-    updateStyleDescription();
-    const badge = document.getElementById('settings-saved');
-    badge.classList.add('show');
-    setTimeout(() => badge.classList.remove('show'), 1500);
-  } catch(e) { /* offline */ }
-}
-
-// Also save char name when it changes
-function onCharNameChange() {
-  saveSettings();
-  render();
-}
-document.getElementById('player-name-input').addEventListener('input', function() {
-  // Debounce
-  clearTimeout(this._timer);
-  this._timer = setTimeout(onCharNameChange, 600);
-});
-
 function updateTokenCount() {
   var el = document.getElementById('tb-tokens');
   if (!el) return;
@@ -2931,13 +2768,11 @@ reloadData();
 checkBridge();
 hydrateRuntimeSnapshot().finally(connectRuntimeEvents);
 loadSessions();
-loadSettings();
 loadOpenings();
 loadRuntimeConfigPanel();
 renderAgentTrace();
 pollTimer = setInterval(reloadData, 3000);
 setInterval(checkBridge, 5000);
-setInterval(loadStyleProfiles, 15000);
 setInterval(loadRuntimeConfigPanel, 20000);
 
 // ═══ Dark Mode Toggle ═══
@@ -2958,8 +2793,6 @@ setInterval(loadRuntimeConfigPanel, 20000);
       this.textContent = '☀️';
       localStorage.setItem('theme', 'dark');
     }
-    // Re-check word count colors for current theme
-    if (typeof updateWordCount === 'function') updateWordCount();
     if (typeof updateTokenCount === 'function') updateTokenCount();
   });
 })();

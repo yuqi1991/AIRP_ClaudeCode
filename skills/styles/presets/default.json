@@ -43,20 +43,7 @@
       "order": 20,
       "stability": "stable",
       "inclusion_reason": "user-selected writing strategy",
-      "content": "Write immersive Chinese roleplay using style {{style}}, person {{person}}, and NSFW level {{nsfw}}. Do not speak or act for the user's character. Keep off-scene NPCs active when relevant. Aim near the user's wordCount preference when present. Return <polished_input>, <content>, optional <UpdateVariable>, <summary>, and <options> with three distinct next actions. These are editable defaults, not runtime commit requirements."
-    },
-    {
-      "id": "settings",
-      "name": "Session settings",
-      "kind": "settings",
-      "enabled": true,
-      "role": "user",
-      "placement": "relative",
-      "depth": 0,
-      "order": 30,
-      "stability": "stable",
-      "inclusion_reason": "session settings",
-      "content": "{{settings}}"
+      "content": "Follow the selected Agent Definition instruction as the primary writing behavior. Treat its style, safety, point-of-view, length, player-agency, and background-NPC guidance as soft preferences. Return <polished_input>, <content>, optional <UpdateVariable>, <summary>, and <options> with three distinct next actions. These are editable defaults, not runtime commit requirements."
     },
     {
       "id": "worldbook-catalog",

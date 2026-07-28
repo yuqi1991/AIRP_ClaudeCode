@@ -22,7 +22,18 @@ def test_server_bootstraps_legacy_runtime_into_studio_and_binds_project(tmp_path
     (styles / "graphs").mkdir(parents=True)
     (styles / "presets").mkdir()
     (styles / "settings.json").write_text(
-        json.dumps({"runtime": {"preset_id": "default", "graph_id": "default"}, "provider": {"base_url": "https://api.deepseek.com"}}),
+        json.dumps(
+            {
+                "style": "北棱特调",
+                "nsfw": "直白",
+                "person": "第二人称",
+                "wordCount": 1200,
+                "antiImpersonation": True,
+                "bgNpc": True,
+                "runtime": {"preset_id": "default", "graph_id": "default"},
+                "provider": {"base_url": "https://api.deepseek.com"},
+            }
+        ),
         encoding="utf-8",
     )
     (styles / "presets" / "default.json").write_text(
@@ -56,7 +67,11 @@ def test_server_bootstraps_legacy_runtime_into_studio_and_binds_project(tmp_path
 
     with SessionRuntimeServer(runtime, static_root=styles) as server:
         assert [item["id"] for item in server.provider_profiles.list_profiles()] == ["legacy-deepseek"]
-        assert [item["agent_id"] for item in server.agent_definitions.list_agents()] == ["legacy-default-director"]
+        agents = server.agent_definitions.list_agents()
+        assert [item["agent_id"] for item in agents] == ["legacy-default-director"]
+        assert "北棱特调" in agents[0]["instruction"]
+        assert "第二人称" in agents[0]["instruction"]
+        assert "不代替玩家发言" in agents[0]["instruction"]
         assert [item["id"] for item in server.graph_definitions.list_graphs()] == ["default"]
         project = server.projects.get_project(runtime.project_id)
         assert project["graph_id"] == "default"
@@ -66,6 +81,10 @@ def test_server_bootstraps_legacy_runtime_into_studio_and_binds_project(tmp_path
 def test_game_page_only_exposes_graph_activation_selector():
     page = (Path(__file__).resolve().parents[1] / "styles" / "index.html").read_text(encoding="utf-8")
     assert 'id="runtime-graph-select"' in page
+    assert 'id="set-style"' not in page
+    assert 'id="set-nsfw"' not in page
+    assert 'id="set-person"' not in page
+    assert 'id="set-wordcount"' not in page
     assert 'id="runtime-preset-editor"' not in page
     assert 'id="runtime-graph-editor"' not in page
     assert 'id="provider-card"' not in page
