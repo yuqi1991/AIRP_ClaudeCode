@@ -96,6 +96,7 @@ class SessionSnapshot:
     active_revision: int
     last_event_sequence: int
     current_task: RuntimeResult | None = None
+    graph_runs: dict | None = None
 
     def to_dict(self) -> dict:
         task = None
@@ -118,6 +119,7 @@ class SessionSnapshot:
             "active_revision": self.active_revision,
             "last_event_sequence": self.last_event_sequence,
             "current_task": task,
+            "graph_runs": self.graph_runs or {"current": None, "most_recent": None},
         }
 
 
@@ -320,6 +322,7 @@ class SessionCommandService:
             active_revision=active,
             last_event_sequence=last_seq,
             current_task=current,
+            graph_runs=(self.runtime.graph_runs_snapshot() if hasattr(self.runtime, "graph_runs_snapshot") else None),
         )
 
     def events_after(self, sequence: int) -> list[RuntimeEvent]:

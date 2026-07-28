@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import inspect
 import json
 import time
 from dataclasses import dataclass, field
@@ -46,6 +47,18 @@ def _redact_secrets(value: Any) -> Any:
     if isinstance(value, list):
         return [_redact_secrets(item) for item in value]
     return _copy(value)
+
+
+def _notify(observer: Any, method: str, *args: Any) -> None:
+    """Notify an optional observer without coupling Graph Runtime to storage."""
+    callback = getattr(observer, method, None) if observer is not None else None
+    if not callable(callback):
+        return
+    try:
+        callback(*args)
+    except Exception:
+        # Observability must never change graph execution semantics.
+        return
 
 
 @dataclass(frozen=True)
@@ -213,11 +226,11 @@ class ResolvedAgent:
             provider_profile_id=definition.get("provider_profile_id"),
             model_id=definition.get("model_id"),
             generation=_copy(definition.get("generation") or {}),
-            advanced=_copy(definition.get("advanced") or {}),
+            advanced=_redact_secrets(definition.get("advanced") or {}),
             tool_allowlist=tuple(str(item) for item in tool_allowlist),
-            prompt=tuple(_copy(item) for item in raw_prompt if isinstance(item, Mapping)),
-            prompt_provenance=tuple(_copy(item) for item in raw_provenance if isinstance(item, Mapping)),
-            effective_config=_copy(dict(effective)),
+            prompt=tuple(_redact_secrets(item) for item in raw_prompt if isinstance(item, Mapping)),
+            prompt_provenance=tuple(_redact_secrets(item) for item in raw_provenance if isinstance(item, Mapping)),
+            effective_config=_redact_secrets(dict(effective)),
         )
 
     @classmethod
@@ -230,11 +243,11 @@ class ResolvedAgent:
             provider_profile_id=payload.get("provider_profile_id"),
             model_id=payload.get("model_id"),
             generation=_copy(payload.get("generation") or {}),
-            advanced=_copy(payload.get("advanced") or {}),
+            advanced=_redact_secrets(payload.get("advanced") or {}),
             tool_allowlist=tuple(str(item) for item in payload.get("tool_allowlist") or []),
-            prompt=tuple(_copy(item) for item in payload.get("prompt") or []),
-            prompt_provenance=tuple(_copy(item) for item in payload.get("prompt_provenance") or []),
-            effective_config=_copy(payload.get("effective_config") or {}),
+            prompt=tuple(_redact_secrets(item) for item in payload.get("prompt") or []),
+            prompt_provenance=tuple(_redact_secrets(item) for item in payload.get("prompt_provenance") or []),
+            effective_config=_redact_secrets(payload.get("effective_config") or {}),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -632,14 +645,18 @@ class GraphRuntime:
         self,
         plan: ExecutionPlan,
         initial_artifact: AgentArtifact | None = None,
+        *,
+        observer: Any = None,
     ) -> GraphRunResult:
         current = initial_artifact or AgentArtifact.input(plan.player_input)
         outcomes: list[NodeRunOutcome] = []
+        _notify(observer, "graph_started", plan)
         for node in plan.graph.nodes:
             if not node.enabled:
                 continue
+            _notify(observer, "node_started", node, current)
             try:
-                result = self.node_runner.run(node, current)
+                result = self._run_node(node, current, observer)
             except Exception as exc:  # Runner failures are Graph failures.
                 result = NodeResult.failed(str(exc))
             if isinstance(result, AgentArtifact):
@@ -647,8 +664,11 @@ class GraphRuntime:
             if not isinstance(result, NodeResult):
                 result = NodeResult.failed("Node Runner returned an invalid Node Result")
             outcomes.append(NodeRunOutcome(node.node_id, result))
+            _notify(observer, "node_finished", node, current, result)
             if not result.ok:
-                return GraphRunResult("failed", plan.plan_id, None, tuple(outcomes), node.node_id)
+                graph_result = GraphRunResult("failed", plan.plan_id, None, tuple(outcomes), node.node_id)
+                _notify(observer, "graph_finished", graph_result)
+                return graph_result
             current = result.primary_artifact
         output = next(
             (
@@ -659,8 +679,24 @@ class GraphRuntime:
             None,
         )
         if output is None:
-            return GraphRunResult("failed", plan.plan_id, None, tuple(outcomes), plan.graph.output_node_id)
-        return GraphRunResult("succeeded", plan.plan_id, output, tuple(outcomes))
+            graph_result = GraphRunResult("failed", plan.plan_id, None, tuple(outcomes), plan.graph.output_node_id)
+            _notify(observer, "graph_finished", graph_result)
+            return graph_result
+        graph_result = GraphRunResult("succeeded", plan.plan_id, output, tuple(outcomes))
+        _notify(observer, "graph_finished", graph_result)
+        return graph_result
+
+    def _run_node(self, node: GraphNodePlan, input_artifact: AgentArtifact, observer: Any) -> NodeResult:
+        runner = self.node_runner.run
+        if observer is None:
+            return runner(node, input_artifact)
+        try:
+            parameters = inspect.signature(runner).parameters
+        except (TypeError, ValueError):
+            parameters = {}
+        if "observer" in parameters:
+            return runner(node, input_artifact, observer=observer)
+        return runner(node, input_artifact)
 
 
 class GraphExecutionError(RuntimeError):
@@ -675,13 +711,18 @@ class GraphExecutionError(RuntimeError):
 class GraphRuntimeExecutor:
     """Adapter that feeds a Graph output Artifact into the legacy TurnDraft seam."""
 
-    def __init__(self, graph_runtime: GraphRuntime, plan: ExecutionPlan):
+    def __init__(self, graph_runtime: GraphRuntime, plan: ExecutionPlan, *, observer: Any = None):
         self.graph_runtime = graph_runtime
         self.plan = plan
+        self.observer = observer
 
     def run(self, text: str, compiled_context=None):
         del compiled_context
-        result = self.graph_runtime.run(self.plan, AgentArtifact.input(text))
+        result = self.graph_runtime.run(
+            self.plan,
+            AgentArtifact.input(text),
+            observer=self.observer,
+        )
         if not result.ok or result.output_artifact is None:
             raise GraphExecutionError(result)
         content = result.output_artifact.content

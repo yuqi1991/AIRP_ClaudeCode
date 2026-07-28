@@ -96,6 +96,8 @@ STUDIO_PROMPT_PRESET_PATHS = ("/v1/studio/prompt-presets", "/api/studio/prompt-p
 STUDIO_GRAPH_PATHS = ("/v1/studio/graphs", "/api/studio/graphs")
 STUDIO_WORLDBOOK_PATHS = ("/v1/studio/worldbooks", "/api/studio/worldbooks")
 STUDIO_PROJECT_PATHS = ("/v1/studio/projects", "/api/studio/projects")
+STUDIO_GRAPH_RUN_PATHS = ("/v1/studio/graph-runs", "/api/studio/graph-runs")
+STUDIO_NODE_RUN_PATHS = ("/v1/studio/node-runs", "/api/studio/node-runs")
 
 
 def _event_to_dict(event: RuntimeEvent) -> dict:
@@ -367,6 +369,9 @@ class SessionRuntimeServer:
 
     def _session_status_payload(self) -> dict[str, Any]:
         snapshot = self._snapshot_payload()
+        # Keep the legacy polling response stable; Studio graph traces use the
+        # versioned /v1/session/snapshot contract below.
+        snapshot.pop("graph_runs", None)
         return {
             "initialized": True,
             "pending": snapshot["pending"],
@@ -865,12 +870,46 @@ class SessionRuntimeServer:
                 path = parsed.path.rstrip("/") or "/"
                 query = parse_qs(parsed.query)
 
+                for prefix in STUDIO_NODE_RUN_PATHS:
+                    if path == prefix:
+                        self._send_json(200, {"ok": True, "node_runs": []})
+                        return
+                    if path.startswith(prefix + "/"):
+                        node_run_id = path[len(prefix) + 1:]
+                        if "/" not in node_run_id:
+                            detail = server_ref.runtime.node_run_detail(node_run_id)
+                            if detail is None:
+                                self._send_json(404, {"ok": False, "error": "node_run_not_found"})
+                            else:
+                                self._send_json(200, {"ok": True, "node_run": detail})
+                            return
+
+                for prefix in STUDIO_GRAPH_RUN_PATHS:
+                    if path == prefix:
+                        snapshot = server_ref.runtime.graph_runs_snapshot()
+                        self._send_json(200, {"ok": True, **snapshot})
+                        return
+                    if path.startswith(prefix + "/"):
+                        graph_run_id = path[len(prefix) + 1:]
+                        if "/" not in graph_run_id:
+                            snapshot = server_ref.runtime.graph_runs_snapshot() if graph_run_id == "current" else None
+                            detail = None
+                            if snapshot is not None:
+                                detail = snapshot.get("current") or snapshot.get("most_recent")
+                            else:
+                                detail = server_ref.runtime.graph_run_detail(graph_run_id)
+                            if detail is None:
+                                self._send_json(404, {"ok": False, "error": "graph_run_not_found"})
+                            else:
+                                self._send_json(200, {"ok": True, "graph_run": detail})
+                            return
+
                 if path == "/v1/session/snapshot":
                     snap = server_ref.service.snapshot()
                     self._send_json(200, snap.to_dict())
                     return
 
-                if path == "/v1/session/events/stream":
+                if path in ("/v1/session/events/stream", "/v1/studio/graph-runs/events/stream"):
                     after = _parse_after(query, self.headers)
                     self._stream_sse(after)
                     return

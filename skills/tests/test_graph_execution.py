@@ -4,6 +4,8 @@ import copy
 import json
 import shutil
 import sys
+import threading
+import time
 from pathlib import Path
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
@@ -22,7 +24,7 @@ from engine.graph_runtime import (  # noqa: E402
     NodeResult,
 )
 from engine.node_runner import ProviderNodeRunner  # noqa: E402
-from engine.provider import FakeProvider  # noqa: E402
+from engine.provider import AbortSignal, FakeProvider, ProviderDelta, ProviderResult  # noqa: E402
 from engine.runtime import FakeNarrativeExecutor, SessionTurnRuntime  # noqa: E402
 from runtime_server import SessionRuntimeServer  # noqa: E402
 
@@ -413,3 +415,129 @@ def test_graph_node_failure_aborts_session_task_without_story_commit(tmp_path):
     assert result.commit_id is None
     assert runner.calls == ["first-node", "failed-node"]
     assert json.loads((card / "chat_log.json").read_text(encoding="utf-8")) == []
+
+
+class _BlockingStreamingProvider(FakeProvider):
+    def __init__(self):
+        super().__init__(
+            [{"type": "final", "usage": {"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5}}],
+            model="observed-model",
+            credentials={"api_key": "sk-node-secret"},
+        )
+        self.started = threading.Event()
+        self.release = threading.Event()
+
+    def stream(self, request, signal):
+        self.requests.append(request)
+        self.started.set()
+        yield ProviderDelta(text="partial output")
+        self.release.wait(timeout=5)
+        if signal.cancelled:
+            raise RuntimeError("unexpected cancellation")
+        yield ProviderResult(
+            usage=self._default_usage_for_test(),
+            stop_reason="stop",
+        )
+
+    def _default_usage_for_test(self):
+        from engine.provider import UsageRecord
+
+        return UsageRecord(prompt_tokens=3, completion_tokens=2, total_tokens=5)
+
+
+def _wait_for_http_json(url, predicate, timeout=5):
+    deadline = time.monotonic() + timeout
+    latest = None
+    while time.monotonic() < deadline:
+        status, latest = _json_request("GET", url)
+        if status == 200 and predicate(latest):
+            return latest
+        time.sleep(0.02)
+    return latest
+
+
+def test_session_graph_events_and_node_detail_are_live_and_persisted(tmp_path):
+    styles = tmp_path / "styles"
+    styles.mkdir()
+    card = tmp_path / "card"
+    (card / "memory").mkdir(parents=True)
+    (card / ".initvar.json").write_text("{}", encoding="utf-8")
+    (card / "chat_log.json").write_text("[]", encoding="utf-8")
+    (card / ".card_data.json").write_text('{"name":"Test"}', encoding="utf-8")
+    provider = _BlockingStreamingProvider()
+    compiler = ExecutionPlanCompiler(
+        project_store=_MemoryStore({"project": {"id": "project", "graph_id": "writing", "worldbook_ids": []}}),
+        graph_store=_MemoryStore(
+            {
+                "writing": {
+                    "id": "writing",
+                    "nodes": [{"node_id": "writer-node", "agent_id": "writer"}],
+                    "output_node_id": "writer-node",
+                }
+            }
+        ),
+        agent_store=_MemoryStore(
+            {
+                "writer": {
+                    **_agent("writer"),
+                    "advanced": {"authorization": "Bearer sk-node-secret", "response_format": {"type": "text"}},
+                }
+            }
+        ),
+    )
+    runtime = SessionTurnRuntime(
+        database_path=tmp_path / "runtime.sqlite3",
+        card_folder=card,
+        projection_root=styles,
+        executor=FakeNarrativeExecutor("unused"),
+        execution_plan_compiler=compiler,
+        graph_runtime=GraphRuntime(ProviderNodeRunner(lambda _node: provider)),
+        project_id="project",
+        bootstrap_legacy_history=False,
+    )
+
+    with SessionRuntimeServer(runtime, static_root=styles) as server:
+        status, accepted = _json_request(
+            "POST",
+            f"{server.base_url}/v1/session/commands/submit",
+            {"text": "Enter", "idempotency_key": "observed-submit"},
+        )
+        assert status in {200, 202}
+        assert accepted["task_id"]
+        assert provider.started.wait(timeout=3)
+
+        _wait_for_http_json(
+            f"{server.base_url}/v1/session/events?after=0",
+            lambda payload: any(event["type"] == "graph.node.started" for event in payload.get("events", [])),
+        )
+        status, event_payload = _json_request(
+            "GET", f"{server.base_url}/v1/session/events?after=0"
+        )
+        assert status == 200
+        events = event_payload["events"]
+        started = next(event for event in events if event["type"] == "graph.node.started")
+        assert started["state"] == "running"
+        assert started["node_run_id"]
+
+        status, running_detail = _json_request(
+            "GET", f"{server.base_url}/v1/studio/node-runs/{started['node_run_id']}"
+        )
+        assert status == 200
+        assert running_detail["node_run"]["state"] == "running"
+        assert running_detail["node_run"]["streamed_output"] == "partial output"
+        assert "sk-node-secret" not in json.dumps(running_detail, ensure_ascii=False)
+
+        provider.release.set()
+        terminal = _wait_for_http_json(
+            f"{server.base_url}/v1/session/events?after=0",
+            lambda payload: any(event["type"] == "graph.node.finished" for event in payload.get("events", [])),
+        )
+        assert any(event["type"] == "graph.node.finished" and event["state"] == "succeeded" for event in terminal["events"])
+        status, finished_detail = _json_request(
+            "GET", f"{server.base_url}/v1/studio/node-runs/{started['node_run_id']}"
+        )
+        assert status == 200
+        assert finished_detail["node_run"]["state"] == "succeeded"
+        assert finished_detail["node_run"]["final_output"] == "partial output"
+        assert finished_detail["node_run"]["artifact"]["content"] == "partial output"
+        assert "sk-node-secret" not in json.dumps(finished_detail, ensure_ascii=False)

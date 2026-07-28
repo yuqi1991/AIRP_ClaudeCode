@@ -250,12 +250,35 @@ body {
 }
 .provider-input:focus { outline: none; border-color: var(--accent2); }
 #agent-trace { max-height: 250px; overflow-y: auto; }
-.trace-node { border-left: 3px solid var(--border); padding: 4px 0 4px 7px; margin: 4px 0; }
-.trace-node.running { border-left-color: #cc9a56; }
-.trace-node.finished { border-left-color: var(--accent2); }
-.trace-node.failed { border-left-color: #b0624a; }
+.trace-node {
+  display: block; width: 100%; text-align: left;
+  border: 0; border-left: 3px solid var(--border); border-radius: 0;
+  padding: 5px 7px; margin: 4px 0; background: transparent;
+  color: var(--text); cursor: pointer; font: inherit;
+}
+.trace-node:hover, .trace-node:focus-visible { background: var(--surface); outline: 1px solid var(--border); }
+.trace-node.idle { border-left-color: var(--border); opacity: .7; }
+.trace-node.running { border-left-color: #cc9a56; animation: trace-node-pulse 1.2s ease-in-out infinite; }
+.trace-node.succeeded { border-left-color: var(--accent2); }
+.trace-node.failed { border-left-color: #b0624a; background: rgba(176,98,74,.08); }
+@keyframes trace-node-pulse { 50% { border-left-color: var(--accent); } }
 .trace-title { color: var(--text); font-size: .78em; }
 .trace-meta { color: var(--muted); font-size: .7em; margin-top: 2px; overflow-wrap: anywhere; }
+#node-detail-modal[hidden] { display: none; }
+#node-detail-modal {
+  position: fixed; inset: 0; z-index: 1000; display: flex;
+  align-items: center; justify-content: center; padding: 16px;
+  background: rgba(0,0,0,.42);
+}
+.node-detail-panel {
+  width: min(680px, 96vw); max-height: 88vh; overflow: auto;
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 8px; padding: 14px;
+}
+.node-detail-head { display: flex; align-items: center; gap: 8px; justify-content: space-between; }
+.node-detail-head h3 { font-size: .9em; color: var(--accent); }
+.node-detail-close { border: 1px solid var(--border); background: var(--input-bg); color: var(--text); border-radius: 4px; cursor: pointer; padding: 3px 8px; }
+#node-detail-body { margin-top: 10px; white-space: pre-wrap; overflow-wrap: anywhere; font: .72em/1.45 "SFMono-Regular", Consolas, monospace; color: var(--text); }
 #runtime-task-meta { color: var(--muted); line-height: 1.45; white-space: pre-wrap; }
 #runtime-cancel-button { margin-top: 6px; }
 #runtime-cancel-button[hidden] { display: none; }
@@ -1106,6 +1129,16 @@ body {
 
 <div id="toast">✓ 操作已发送</div>
 
+<div id="node-detail-modal" hidden role="dialog" aria-modal="true" aria-labelledby="node-detail-title" onclick="closeNodeDetail(event)">
+  <div class="node-detail-panel" onclick="event.stopPropagation()">
+    <div class="node-detail-head">
+      <h3 id="node-detail-title">Node Run</h3>
+      <button class="node-detail-close" type="button" title="关闭详情" aria-label="关闭详情" onclick="closeNodeDetail()">×</button>
+    </div>
+    <pre id="node-detail-body"></pre>
+  </div>
+</div>
+
 <!-- Portrait zoom modal -->
 <div id="beautify-modal" style="display:none;position:fixed;top:0;left:0;width:100vw;height:100vh;background:rgba(0,0,0,0.85);z-index:9999;justify-content:center;align-items:center;cursor:zoom-out;" onclick="this.style.display='none'">
   <img id="beautify-modal-img" src="" alt="立绘放大" style="max-width:95%;max-height:95vh;border:2px solid #8b6b4a;box-shadow:0 0 20px #000;border-radius:4px;object-fit:contain;">
@@ -1570,7 +1603,8 @@ const RUNTIME_EVENT_TYPES = [
   'session.opening_switched',
   'session.head_moved', 'session.rolled_back', 'narrative.preview.delta',
   'agent_node.started', 'agent_node.finished', 'model_call.started', 'model_call.finished',
-  'tool_run.started', 'tool_run.progress', 'tool_run.finished'
+  'tool_run.started', 'tool_run.progress', 'tool_run.finished',
+  'graph.run.started', 'graph.node.started', 'graph.node.delta', 'graph.node.finished', 'graph.run.finished'
 ];
 const RUNTIME_AFTER_KEY = 'rp-runtime-last-event-sequence';
 const RUNTIME_SESSION_KEY = 'rp-runtime-session-id';
@@ -1580,7 +1614,8 @@ let runtimeLastSequence = parseInt(sessionStorage.getItem(RUNTIME_AFTER_KEY) || 
 let runtimeSessionId = sessionStorage.getItem(RUNTIME_SESSION_KEY) || null;
 let runtimeTask = null;
 let streamingPreview = { taskId: null, text: "" };
-let agentTrace = { nodes: {}, events: [] };
+let agentTrace = { nodes: {}, events: [], graphMode: false };
+let nodeDetailState = { nodeRunId: null, data: null };
 
 function renderStreamingPreview() {
   const doc = document.getElementById("doc");
@@ -1614,17 +1649,20 @@ function renderAgentTrace() {
   const status = document.getElementById("agent-trace-status");
   if (!target || !status) return;
   const entries = Object.keys(agentTrace.nodes).map(function(key) { return agentTrace.nodes[key]; });
-  entries.sort(function(a, b) { return b.sequence - a.sequence; });
+  entries.sort(function(a, b) { return (a.order || 0) - (b.order || 0) || a.sequence - b.sequence; });
   target.innerHTML = "";
   entries.slice(0, 20).forEach(function(item) {
-    const row = document.createElement("div");
+    const row = document.createElement("button");
+    row.type = "button";
     row.className = "trace-node " + item.state;
+    row.title = "打开节点详情";
+    row.onclick = function() { openNodeDetail(item.nodeRunId); };
     const title = document.createElement("div");
     title.className = "trace-title";
     title.textContent = item.label;
     const meta = document.createElement("div");
     meta.className = "trace-meta";
-    meta.textContent = item.meta;
+    meta.textContent = item.meta + (item.streamedOutput ? " · " + item.streamedOutput.slice(-80) : "");
     row.appendChild(title); row.appendChild(meta); target.appendChild(row);
   });
   status.textContent = entries.length ? "最近 " + entries.length + " 个运行节点" : "等待运行时事件";
@@ -1633,24 +1671,102 @@ function renderAgentTrace() {
 function recordAgentTrace(type, payload, sequence) {
   const taskId = payload.task_id || "runtime";
   let key; let state; let label; let meta;
-  if (type.indexOf("agent_node.") === 0) {
+  if (type === "graph.run.started") {
+    agentTrace.graphMode = true;
+    (payload.nodes || []).forEach(function(nodeId, index) {
+      const nodeKey = taskId + ":node:" + nodeId;
+      agentTrace.nodes[nodeKey] = {
+        sequence: sequence || 0, order: index, nodeRunId: null, state: "idle",
+        label: nodeId, meta: "节点未运行", streamedOutput: ""
+      };
+    });
+    renderAgentTrace();
+    return;
+  } else if (type === "graph.node.started" || type === "graph.node.finished" || type === "graph.node.delta") {
+    agentTrace.graphMode = true;
     key = taskId + ":node:" + (payload.node_id || "unknown");
-    state = type.endsWith("finished") ? "finished" : "running";
+    state = payload.state || (type === "graph.node.started" ? "running" : "idle");
+    if (!["idle", "running", "succeeded", "failed"].includes(state)) state = "idle";
+    label = (payload.label || payload.node_id || "node");
+    meta = state === "running" ? "节点运行中" : state === "succeeded" ? "节点成功" : state === "failed" ? "节点失败" : "节点未运行";
+    agentTrace.nodes[key] = Object.assign({}, agentTrace.nodes[key] || {}, {
+      sequence: sequence || 0, nodeRunId: payload.node_run_id || (agentTrace.nodes[key] || {}).nodeRunId,
+      state: state, label: label, meta: meta,
+      streamedOutput: payload.streamed_output || payload.delta || (agentTrace.nodes[key] || {}).streamedOutput || ""
+    });
+    if (nodeDetailState.nodeRunId && nodeDetailState.nodeRunId === payload.node_run_id && type === "graph.node.delta") {
+      nodeDetailState.data = Object.assign({}, nodeDetailState.data || {}, { streamed_output: payload.streamed_output || "" });
+      renderNodeDetail(nodeDetailState.data);
+    }
+    renderAgentTrace();
+    return;
+  } else if (type.indexOf("agent_node.") === 0) {
+    key = taskId + ":node:" + (payload.node_id || "unknown");
+    state = type.endsWith("finished") ? (payload.state || "succeeded") : "running";
     label = (payload.role || "agent") + " · " + (payload.node_id || "unknown");
-    meta = state === "finished" ? "节点完成" : "节点运行中";
+    meta = state === "succeeded" ? "节点成功" : state === "failed" ? "节点失败" : "节点运行中";
+    if (agentTrace.graphMode) return;
   } else if (type.indexOf("model_call.") === 0) {
+    if (agentTrace.graphMode) return;
     key = taskId + ":model:" + (payload.call_ordinal || 0);
-    state = type.endsWith("finished") ? "finished" : "running";
+    state = type.endsWith("finished") ? "succeeded" : "running";
     label = "模型调用 #" + (payload.call_ordinal || "?") + (payload.model ? " · " + payload.model : "");
     meta = type.endsWith("finished") ? "完成 · " + (payload.latency_ms || 0) + " ms · " + ((payload.usage || {}).total_tokens || 0) + " tokens" : "请求中";
   } else {
+    if (agentTrace.graphMode) return;
     key = taskId + ":tool:" + (payload.tool || "unknown") + ":" + (payload.args_hash || sequence);
-    state = type.endsWith("finished") ? (payload.ok === false ? "failed" : "finished") : "running";
+    state = type.endsWith("finished") ? (payload.ok === false ? "failed" : "succeeded") : "running";
     label = "工具 · " + (payload.tool || "unknown");
     meta = type.endsWith("finished") ? (payload.ok === false ? "失败" : "完成") + (payload.duration_ms ? " · " + payload.duration_ms + " ms" : "") : "运行中";
   }
-  agentTrace.nodes[key] = { sequence: sequence || 0, state: state, label: label, meta: meta };
+  agentTrace.nodes[key] = Object.assign({}, agentTrace.nodes[key] || {}, { sequence: sequence || 0, state: state, label: label, meta: meta, nodeRunId: payload.node_run_id || (agentTrace.nodes[key] || {}).nodeRunId, streamedOutput: (agentTrace.nodes[key] || {}).streamedOutput || "" });
   renderAgentTrace();
+}
+
+function renderNodeDetail(detail) {
+  const body = document.getElementById('node-detail-body');
+  const title = document.getElementById('node-detail-title');
+  if (!body || !detail) return;
+  if (title) title.textContent = (detail.label || detail.node_id || 'Node Run') + ' · ' + (detail.state || 'idle');
+  const view = {
+    state: detail.state,
+    input: detail.input,
+    prompt: detail.prompt,
+    prompt_provenance: detail.prompt_provenance,
+    effective_config: detail.effective_config,
+    model_calls: detail.model_calls,
+    tool_calls: detail.tool_calls,
+    streamed_output: detail.streamed_output || '',
+    final_output: detail.final_output,
+    artifact: detail.artifact,
+    error: detail.error
+  };
+  body.textContent = JSON.stringify(view, null, 2);
+}
+
+async function openNodeDetail(nodeRunId) {
+  if (!nodeRunId) return;
+  nodeDetailState = { nodeRunId: nodeRunId, data: null };
+  const modal = document.getElementById('node-detail-modal');
+  const body = document.getElementById('node-detail-body');
+  if (modal) modal.hidden = false;
+  if (body) body.textContent = 'Loading…';
+  try {
+    const response = await fetch(apiUrl('/v1/studio/node-runs/' + encodeURIComponent(nodeRunId)), { cache: 'no-store' });
+    const data = await response.json();
+    if (!response.ok || !data.node_run) throw new Error(data.message || data.error || 'Node detail unavailable');
+    nodeDetailState.data = data.node_run;
+    renderNodeDetail(data.node_run);
+  } catch (error) {
+    if (body) body.textContent = error.message || 'Node detail unavailable';
+  }
+}
+
+function closeNodeDetail(event) {
+  if (event && event.target && event.target.id !== 'node-detail-modal') return;
+  const modal = document.getElementById('node-detail-modal');
+  if (modal) modal.hidden = true;
+  nodeDetailState = { nodeRunId: null, data: null };
 }
 
 
@@ -1739,7 +1855,8 @@ function activateSessionSnapshot(snapshot) {
   sessionStorage.setItem(RUNTIME_SESSION_KEY, runtimeSessionId || '');
   sessionStorage.setItem(RUNTIME_AFTER_KEY, String(runtimeLastSequence));
   clearStreamingPreview();
-  agentTrace = { nodes: {}, events: [] };
+  agentTrace = { nodes: {}, events: [], graphMode: false };
+  hydrateGraphRun(snapshot.graph_runs);
   renderAgentTrace();
   setRuntimeTaskStatus(snapshot.current_task || null);
   if (runtimeEventReconnectTimer) {
@@ -1835,6 +1952,9 @@ function applyRuntimeEvent(event) {
     runtimeLastSequence = sequence;
     sessionStorage.setItem(RUNTIME_AFTER_KEY, String(sequence));
   }
+  if (event.type.indexOf('graph.') === 0) {
+    recordAgentTrace(event.type, payload, sequence);
+  }
   if (event.type === 'narrative.preview.delta') {
     if (!streamingPreview.taskId || streamingPreview.taskId === payload.task_id) {
       streamingPreview.taskId = payload.task_id || streamingPreview.taskId;
@@ -1889,7 +2009,7 @@ async function hydrateRuntimeSnapshot() {
     const seq = Number(snapshot.last_event_sequence || 0);
     if (snapshot.session_id && snapshot.session_id !== runtimeSessionId) {
       clearStreamingPreview();
-      agentTrace = { nodes: {}, events: [] };
+      agentTrace = { nodes: {}, events: [], graphMode: false };
       renderAgentTrace();
       runtimeSessionId = snapshot.session_id;
       runtimeLastSequence = seq;
@@ -1900,9 +2020,29 @@ async function hydrateRuntimeSnapshot() {
       sessionStorage.setItem(RUNTIME_AFTER_KEY, String(seq));
     }
     setRuntimeTaskStatus(snapshot.current_task || null);
+    hydrateGraphRun(snapshot.graph_runs);
   } catch (e) {
     // Legacy /api/session_status polling remains the projection fallback.
   }
+}
+
+function hydrateGraphRun(graphRuns) {
+  const run = graphRuns && (graphRuns.current || graphRuns.most_recent);
+  if (!run || !Array.isArray(run.nodes)) return;
+  agentTrace.graphMode = true;
+  agentTrace.nodes = {};
+  run.nodes.forEach(function(node, index) {
+    let state = node.state || 'idle';
+    if (!["idle", "running", "succeeded", "failed"].includes(state)) state = "idle";
+    const key = (run.task_id || 'runtime') + ':node:' + (node.node_id || index);
+    agentTrace.nodes[key] = {
+      sequence: 0, order: node.order || index, nodeRunId: node.node_run_id,
+      state: state, label: node.label || node.node_id || 'node',
+      meta: state === 'running' ? '节点运行中' : state === 'succeeded' ? '节点成功' : state === 'failed' ? '节点失败' : '节点未运行',
+      streamedOutput: node.streamed_output || ''
+    };
+  });
+  renderAgentTrace();
 }
 
 async function cancelRuntimeTask() {

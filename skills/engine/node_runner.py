@@ -11,7 +11,14 @@ import json
 from typing import Any, Callable
 
 from engine.graph_runtime import AgentArtifact, GraphNodePlan, NodeResult
-from engine.provider import AbortSignal, ProviderAborted, ProviderDelta, ProviderError, ProviderRequest
+from engine.provider import (
+    AbortSignal,
+    ProviderAborted,
+    ProviderDelta,
+    ProviderError,
+    ProviderRequest,
+    ProviderResult,
+)
 
 
 class ProviderNodeRunner:
@@ -37,7 +44,13 @@ class ProviderNodeRunner:
         self.max_tool_rounds = max(1, int(max_tool_rounds))
         self.signal_factory = signal_factory
 
-    def run(self, node: GraphNodePlan, input_artifact: AgentArtifact) -> NodeResult:
+    def run(
+        self,
+        node: GraphNodePlan,
+        input_artifact: AgentArtifact,
+        *,
+        observer: Any = None,
+    ) -> NodeResult:
         try:
             provider = self.provider_factory(node)
             messages = [dict(message) for message in node.agent.prompt]
@@ -46,14 +59,31 @@ class ProviderNodeRunner:
             model = node.model_id or node.agent.model_id or provider.model_id(node.agent.agent_id)
             signal = self.signal_factory()
 
-            for _ in range(self.max_tool_rounds):
+            for call_ordinal in range(1, self.max_tool_rounds + 1):
                 request = ProviderRequest(
                     messages=messages,
                     tools=tools,
                     model=model,
                     metadata={"node_id": node.node_id, "agent_id": node.agent_id},
                 )
-                text, tool_calls = self._stream(provider, request, signal)
+                self._notify(observer, "model_call_started", node, call_ordinal, request)
+                text, tool_calls, provider_result = self._stream(
+                    provider,
+                    request,
+                    signal,
+                    observer=observer,
+                    node=node,
+                    call_ordinal=call_ordinal,
+                )
+                self._notify(
+                    observer,
+                    "model_call_finished",
+                    node,
+                    call_ordinal,
+                    request,
+                    text,
+                    provider_result,
+                )
                 if tool_calls:
                     if self.tool_handler is None:
                         return NodeResult.failed(
@@ -67,7 +97,13 @@ class ProviderNodeRunner:
                         }
                     )
                     for call in tool_calls:
-                        value = self.tool_handler(call["name"], call.get("args") or {})
+                        self._notify(observer, "tool_call_started", node, call)
+                        try:
+                            value = self.tool_handler(call["name"], call.get("args") or {})
+                        except Exception as exc:
+                            self._notify(observer, "tool_call_finished", node, call, None, exc)
+                            raise
+                        self._notify(observer, "tool_call_finished", node, call, value, None)
                         messages.append(
                             {
                                 "role": "tool",
@@ -93,13 +129,15 @@ class ProviderNodeRunner:
             return NodeResult.failed({"code": "node_runner_failed", "message": str(exc)})
 
     @staticmethod
-    def _stream(provider, request, signal):
+    def _stream(provider, request, signal, *, observer=None, node=None, call_ordinal=0):
         text_parts: list[str] = []
         tool_calls: list[dict[str, Any]] = []
+        provider_result = None
         for item in provider.stream(request, signal):
             if isinstance(item, ProviderDelta):
                 if item.text:
                     text_parts.append(item.text)
+                    ProviderNodeRunner._notify(observer, "node_delta", node, item.text)
                 if item.tool_call:
                     tool_calls.append(
                         {
@@ -108,7 +146,18 @@ class ProviderNodeRunner:
                             "args": item.tool_call.get("args") or {},
                         }
                     )
-        return "".join(text_parts), tool_calls
+            elif isinstance(item, ProviderResult):
+                provider_result = item
+        return "".join(text_parts), tool_calls, provider_result
+
+    @staticmethod
+    def _notify(observer, method, *args):
+        callback = getattr(observer, method, None) if observer is not None else None
+        if callable(callback):
+            try:
+                callback(*args)
+            except Exception:
+                return
 
     @staticmethod
     def _tools(node: GraphNodePlan) -> list[dict[str, Any]]:
