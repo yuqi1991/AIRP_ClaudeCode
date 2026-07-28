@@ -71,6 +71,7 @@ from engine.provider import runtime_provider_api_key, set_runtime_provider_overr
 from engine.runtime import RuntimeEvent, SessionTurnRuntime
 from engine.runtime_config import CONFIG_ID_RE, RuntimeConfigError, RuntimeConfigStore
 from engine.session_manager import SessionManager, SessionManagerError
+from engine.studio_library import ProviderProfileError, ProviderProfileStore
 
 SSE_HEARTBEAT_SECONDS = 15.0
 SSE_POLL_INTERVAL_SECONDS = 0.05
@@ -78,6 +79,7 @@ SUBMIT_ACCEPT_WAIT_SECONDS = 2.0
 RUNNING_TASK_STATUSES = frozenset({"queued", "leased", "running", "projection_pending"})
 DEFAULT_PROVIDER_BASE_URL = "https://api.deepseek.com"
 MODEL_DISCOVERY_TIMEOUT_SECONDS = 10
+STUDIO_PROVIDER_PATHS = ("/v1/studio/providers", "/api/studio/providers")
 
 
 def _event_to_dict(event: RuntimeEvent) -> dict:
@@ -128,6 +130,7 @@ class SessionRuntimeServer:
         repo_root = Path(__file__).resolve().parents[1]
         self.preset_root = Path(preset_root).resolve() if preset_root else ((self.static_root / "presets").resolve() if self.static_root else None)
         self.graph_root = Path(graph_root).resolve() if graph_root else ((self.static_root / "graphs").resolve() if self.static_root else (repo_root / "graphs").resolve())
+        self.provider_profiles = ProviderProfileStore(self.static_root) if self.static_root else None
         self.config_store = (
             RuntimeConfigStore(
                 self.static_root,
@@ -470,6 +473,52 @@ class SessionRuntimeServer:
             # Provider exceptions can include request details; do not expose them.
             return {"ok": False, "models": [], "error": "model_discovery_failed"}
 
+    # ── Studio Provider Profiles ──────────────────────────────────────
+
+    def _studio_provider_error(self, exc: ProviderProfileError) -> tuple[dict[str, Any], int]:
+        return exc.to_dict(), exc.status
+
+    def _studio_provider_list(self) -> tuple[dict[str, Any], int]:
+        if self.provider_profiles is None:
+            return {"ok": False, "error": "studio_library_unavailable"}, 501
+        try:
+            return {"ok": True, "profiles": self.provider_profiles.list_profiles()}, 200
+        except ProviderProfileError as exc:
+            return self._studio_provider_error(exc)
+
+    def _studio_provider_get(self, profile_id: str) -> tuple[dict[str, Any], int]:
+        if self.provider_profiles is None:
+            return {"ok": False, "error": "studio_library_unavailable"}, 501
+        try:
+            return {"ok": True, "profile": self.provider_profiles.get_profile(profile_id)}, 200
+        except ProviderProfileError as exc:
+            return self._studio_provider_error(exc)
+
+    def _studio_provider_create(self, body: dict) -> tuple[dict[str, Any], int]:
+        if self.provider_profiles is None:
+            return {"ok": False, "error": "studio_library_unavailable"}, 501
+        try:
+            return {"ok": True, "profile": self.provider_profiles.create_profile(body)}, 201
+        except ProviderProfileError as exc:
+            return self._studio_provider_error(exc)
+
+    def _studio_provider_update(self, profile_id: str, body: dict) -> tuple[dict[str, Any], int]:
+        if self.provider_profiles is None:
+            return {"ok": False, "error": "studio_library_unavailable"}, 501
+        try:
+            return {"ok": True, "profile": self.provider_profiles.update_profile(profile_id, body)}, 200
+        except ProviderProfileError as exc:
+            return self._studio_provider_error(exc)
+
+    def _studio_provider_delete(self, profile_id: str) -> tuple[dict[str, Any], int]:
+        if self.provider_profiles is None:
+            return {"ok": False, "error": "studio_library_unavailable"}, 501
+        try:
+            self.provider_profiles.delete_profile(profile_id)
+            return {"ok": True, "deleted_id": profile_id}, 200
+        except ProviderProfileError as exc:
+            return self._studio_provider_error(exc)
+
     # ── HTTP handler factory ───────────────────────────────────────────
 
     def _make_handler(self):
@@ -483,7 +532,7 @@ class SessionRuntimeServer:
 
             def _send_cors_headers(self) -> None:
                 self.send_header("Access-Control-Allow-Origin", "*")
-                self.send_header("Access-Control-Allow-Methods", "GET, POST, PUT, OPTIONS")
+                self.send_header("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
                 self.send_header("Access-Control-Allow-Headers", "Content-Type")
 
             def _read_json(self) -> dict:
@@ -541,6 +590,20 @@ class SessionRuntimeServer:
                         },
                     )
                     return
+
+                # ── Runtime Studio Provider Profiles ────────────────────
+                if path in STUDIO_PROVIDER_PATHS:
+                    payload, status = server_ref._studio_provider_list()
+                    self._send_json(status, payload)
+                    return
+                for prefix in STUDIO_PROVIDER_PATHS:
+                    if path.startswith(prefix + "/"):
+                        profile_id = path[len(prefix) + 1:]
+                        if "/" not in profile_id:
+                            payload, status = server_ref._studio_provider_get(profile_id)
+                            self._send_json(status, payload)
+                            return
+                        break
 
                 # ── Frontend compat: file-backed /api/* reads ──────────────
                 if path == "/api/pending":
@@ -602,6 +665,23 @@ class SessionRuntimeServer:
                 parsed = urlparse(self.path)
                 path = parsed.path.rstrip("/") or "/"
                 body = self._read_json()
+
+                # ── Runtime Studio Provider Profiles ────────────────────
+                if path in STUDIO_PROVIDER_PATHS:
+                    payload, status = server_ref._studio_provider_create(body)
+                    self._send_json(status, payload)
+                    return
+                for prefix in STUDIO_PROVIDER_PATHS:
+                    if path.startswith(prefix + "/"):
+                        suffix = path[len(prefix) + 1:]
+                        parts = suffix.split("/")
+                        if len(parts) == 2 and parts[1] in {"enable", "disable"}:
+                            payload, status = server_ref._studio_provider_update(
+                                parts[0], {"enabled": parts[1] == "enable"}
+                            )
+                            self._send_json(status, payload)
+                            return
+                        break
 
                 if path == "/api/sessions":
                     if server_ref.session_manager is None:
@@ -837,6 +917,14 @@ class SessionRuntimeServer:
             def do_DELETE(self):  # noqa: N802
                 parsed = urlparse(self.path)
                 path = parsed.path.rstrip("/") or "/"
+                for prefix in STUDIO_PROVIDER_PATHS:
+                    if path.startswith(prefix + "/"):
+                        profile_id = path[len(prefix) + 1:]
+                        if "/" not in profile_id:
+                            payload, status = server_ref._studio_provider_delete(profile_id)
+                            self._send_json(status, payload)
+                            return
+                        break
                 prefix = "/api/sessions/"
                 if not path.startswith(prefix):
                     self._send_json(404, {"ok": False, "error": "not_found"})
@@ -870,6 +958,15 @@ class SessionRuntimeServer:
                 path = parsed.path.rstrip("/") or "/"
                 body = self._read_json()
 
+                for prefix in STUDIO_PROVIDER_PATHS:
+                    if path.startswith(prefix + "/"):
+                        profile_id = path[len(prefix) + 1:]
+                        if "/" not in profile_id:
+                            payload, status = server_ref._studio_provider_update(profile_id, body)
+                            self._send_json(status, payload)
+                            return
+                        break
+
                 if path == "/api/provider/config":
                     payload, code = server_ref._write_provider_config(body)
                     self._send_json(code, payload)
@@ -889,6 +986,20 @@ class SessionRuntimeServer:
                     self._send_json(code, payload)
                     return
 
+                self._send_json(404, {"ok": False, "error": "not_found"})
+
+            def do_PATCH(self):  # noqa: N802
+                parsed = urlparse(self.path)
+                path = parsed.path.rstrip("/") or "/"
+                body = self._read_json()
+                for prefix in STUDIO_PROVIDER_PATHS:
+                    if path.startswith(prefix + "/"):
+                        profile_id = path[len(prefix) + 1:]
+                        if "/" not in profile_id:
+                            payload, status = server_ref._studio_provider_update(profile_id, body)
+                            self._send_json(status, payload)
+                            return
+                        break
                 self._send_json(404, {"ok": False, "error": "not_found"})
 
             def _stream_sse(self, after: int) -> None:
@@ -929,7 +1040,12 @@ class SessionRuntimeServer:
                 root = server_ref.static_root
                 if root is None:
                     return False
-                rel = "index.html" if path in ("", "/") else path.lstrip("/")
+                if path in ("", "/"):
+                    rel = "index.html"
+                elif path == "/studio":
+                    rel = "studio.html"
+                else:
+                    rel = path.lstrip("/")
                 target = (root / rel).resolve()
                 # Prevent path traversal outside static_root.
                 try:

@@ -1,0 +1,234 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Agent Studio | Providers</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #202529;
+      --muted: #687178;
+      --line: #d5dadd;
+      --surface: #ffffff;
+      --canvas: #f2f4f3;
+      --panel: #e8eceb;
+      --accent: #126b67;
+      --accent-strong: #0b514e;
+      --danger: #a33c37;
+      --danger-soft: #f8e9e7;
+      --success: #256c3d;
+      --success-soft: #e5f1e8;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; background: var(--canvas); color: var(--ink); }
+    button, input, select, textarea { font: inherit; }
+    button { cursor: pointer; }
+    .app { display: grid; grid-template-columns: 220px minmax(0, 1fr); min-height: 100vh; }
+    .rail { background: #172528; color: #dce7e5; padding: 24px 14px; }
+    .brand { padding: 0 12px 26px; }
+    .brand strong { display: block; font-size: 1.05rem; letter-spacing: .02em; }
+    .brand small { display: block; color: #9fb4b2; margin-top: 6px; }
+    .nav { display: grid; gap: 4px; }
+    .nav button { border: 0; background: transparent; color: #b8c9c7; text-align: left; border-radius: 5px; padding: 11px 12px; }
+    .nav button:hover, .nav button.active { background: #284144; color: #fff; }
+    .nav button:disabled { cursor: default; opacity: .54; }
+    main { min-width: 0; }
+    .topbar { display: flex; align-items: center; justify-content: space-between; gap: 18px; min-height: 80px; padding: 20px 34px; background: var(--surface); border-bottom: 1px solid var(--line); }
+    .eyebrow { margin: 0 0 5px; color: var(--accent); font-size: .72rem; font-weight: 700; letter-spacing: .13em; text-transform: uppercase; }
+    h1, h2, p { margin: 0; }
+    h1 { font-size: 1.52rem; letter-spacing: -.02em; }
+    .topbar a { color: var(--muted); text-decoration: none; font-size: .9rem; }
+    .topbar a:hover { color: var(--accent); }
+    .workspace { display: grid; grid-template-columns: minmax(260px, .76fr) minmax(360px, 1.24fr); gap: 22px; padding: 26px 34px 40px; max-width: 1240px; }
+    .section-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 13px; }
+    .section-head h2 { font-size: 1rem; }
+    .section-head p { color: var(--muted); font-size: .83rem; }
+    .list { display: grid; gap: 8px; align-content: start; }
+    .profile-row { width: 100%; display: grid; gap: 3px; padding: 13px 14px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: var(--ink); text-align: left; }
+    .profile-row:hover, .profile-row.selected { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(18, 107, 103, .1); }
+    .profile-title { display: flex; justify-content: space-between; gap: 12px; font-weight: 650; }
+    .profile-meta { color: var(--muted); font-size: .8rem; overflow-wrap: anywhere; }
+    .status { display: inline-flex; align-items: center; gap: 5px; font-size: .72rem; white-space: nowrap; }
+    .status::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--success); }
+    .status.off::before { background: #899197; }
+    .empty { padding: 28px 16px; color: var(--muted); border: 1px dashed var(--line); border-radius: 6px; background: rgba(255,255,255,.42); text-align: center; }
+    .panel { min-width: 0; padding: 22px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface); }
+    .panel h2 { margin-bottom: 18px; font-size: 1.1rem; }
+    .form { display: grid; gap: 16px; }
+    .field { display: grid; gap: 6px; }
+    label { font-size: .8rem; font-weight: 650; }
+    input, select, textarea { width: 100%; border: 1px solid #bdc5c8; border-radius: 4px; padding: 10px 11px; background: #fcfdfd; color: var(--ink); }
+    input:focus, select:focus, textarea:focus { outline: 2px solid rgba(18, 107, 103, .22); border-color: var(--accent); }
+    textarea { min-height: 104px; resize: vertical; line-height: 1.45; }
+    .hint { color: var(--muted); font-size: .76rem; line-height: 1.4; }
+    .check { display: flex; align-items: center; gap: 9px; color: var(--ink); font-size: .87rem; }
+    .check input { width: auto; }
+    .actions { display: flex; flex-wrap: wrap; gap: 8px; padding-top: 4px; }
+    .button { border: 1px solid var(--line); border-radius: 4px; padding: 9px 13px; background: var(--surface); color: var(--ink); }
+    .button:hover { border-color: var(--accent); color: var(--accent-strong); }
+    .button.primary { border-color: var(--accent); background: var(--accent); color: #fff; }
+    .button.primary:hover { background: var(--accent-strong); }
+    .button.danger { border-color: #d49a96; color: var(--danger); }
+    .button.danger:hover { background: var(--danger-soft); }
+    .notice { min-height: 22px; margin-top: 16px; padding: 10px 12px; border-radius: 4px; font-size: .82rem; line-height: 1.45; }
+    .notice:empty { display: none; }
+    .notice.success { color: var(--success); background: var(--success-soft); }
+    .notice.error { color: var(--danger); background: var(--danger-soft); }
+    .notice ul { margin: 6px 0 0; padding-left: 18px; }
+    .catalog { display: grid; gap: 7px; margin-top: 2px; padding-top: 14px; border-top: 1px solid var(--line); }
+    .catalog-title { font-size: .78rem; font-weight: 700; }
+    .model-list { display: flex; flex-wrap: wrap; gap: 5px; }
+    .model { padding: 4px 7px; border: 1px solid #c9d3d2; border-radius: 3px; color: var(--muted); font-size: .75rem; }
+    @media (max-width: 860px) {
+      .app { grid-template-columns: 1fr; }
+      .rail { padding: 12px 16px; }
+      .brand { display: flex; align-items: baseline; gap: 10px; padding: 0 0 10px; }
+      .brand small { margin-top: 0; }
+      .nav { display: flex; overflow-x: auto; }
+      .nav button { white-space: nowrap; }
+      .workspace { grid-template-columns: 1fr; padding: 22px 18px 32px; }
+      .topbar { padding: 17px 18px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <aside class="rail" aria-label="Studio navigation">
+      <div class="brand"><strong>Agent Studio</strong><small>Library workspace</small></div>
+      <nav class="nav">
+        <button class="active" type="button" aria-current="page">Providers</button>
+        <button type="button" disabled>Agents</button>
+        <button type="button" disabled>Graphs</button>
+        <button type="button" disabled>Projects</button>
+        <button type="button" disabled>Worldbooks</button>
+      </nav>
+    </aside>
+    <main>
+      <header class="topbar">
+        <div><p class="eyebrow">Studio Library</p><h1>Provider Profiles</h1></div>
+        <a href="/" aria-label="Return to game">Return to game</a>
+      </header>
+      <section class="workspace" aria-label="Provider profile management">
+        <div>
+          <div class="section-head"><div><h2>Profiles</h2><p id="profile-count">Loading...</p></div><button class="button" id="new-profile" type="button">New profile</button></div>
+          <div class="list" id="profile-list" aria-live="polite"></div>
+        </div>
+        <section class="panel" aria-labelledby="editor-title">
+          <h2 id="editor-title">New provider profile</h2>
+          <form class="form" id="profile-form">
+            <div class="field"><label for="profile-name">Name</label><input id="profile-name" name="name" required autocomplete="off" placeholder="Writing provider"></div>
+            <div class="field"><label for="profile-base-url">Base URL</label><input id="profile-base-url" name="base_url" required type="url" placeholder="https://api.example.com/v1"><span class="hint">The URL is stored without trailing slashes. Authentication is configured through the SecretStore workflow.</span></div>
+            <div class="field"><label for="profile-format">API format</label><select id="profile-format" name="api_format"><option value="responses">Responses</option><option value="chat_completions">Chat Completions</option></select></div>
+            <label class="check"><input id="profile-enabled" name="enabled" type="checkbox" checked> Profile enabled for future Agent selection</label>
+            <div class="field"><label for="profile-models">Model catalog</label><textarea id="profile-models" name="model_ids" placeholder="one-model-per-line"></textarea><span class="hint">Optional placeholder catalog. Enter one model ID per line; an Agent may still enter a manual ID later.</span></div>
+            <div class="actions"><button class="button primary" type="submit" id="save-profile">Save profile</button><button class="button danger" type="button" id="delete-profile" hidden>Delete profile</button></div>
+          </form>
+          <div class="notice" id="notice" role="status" aria-live="polite"></div>
+          <div class="catalog" id="catalog" hidden><span class="catalog-title">Saved model catalog</span><div class="model-list" id="catalog-models"></div></div>
+        </section>
+      </section>
+    </main>
+  </div>
+  <script>
+    (() => {
+      const endpoint = "/v1/studio/providers";
+      const state = { profiles: [], selectedId: null };
+      const $ = (id) => document.getElementById(id);
+      const list = $("profile-list");
+      const notice = $("notice");
+      const form = $("profile-form");
+      const setNotice = (message, kind = "") => {
+        notice.className = `notice ${kind}`;
+        notice.textContent = message;
+      };
+      const setError = async (response, fallback) => {
+        let payload = {};
+        try { payload = await response.json(); } catch (_) { /* HTTP error without JSON */ }
+        notice.className = "notice error";
+        notice.textContent = payload.message || fallback;
+        if (Array.isArray(payload.references) && payload.references.length) {
+          const details = document.createElement("ul");
+          payload.references.forEach((reference) => {
+            const item = document.createElement("li");
+            item.textContent = `${reference.type}: ${reference.name} (${reference.id})`;
+            details.appendChild(item);
+          });
+          notice.appendChild(details);
+        }
+      };
+      const profileFromForm = () => ({
+        name: $("profile-name").value.trim(),
+        base_url: $("profile-base-url").value.trim(),
+        api_format: $("profile-format").value,
+        enabled: $("profile-enabled").checked,
+        model_ids: $("profile-models").value.split(/\r?\n/).map((value) => value.trim()).filter(Boolean),
+      });
+      const resetForm = () => {
+        state.selectedId = null;
+        $("editor-title").textContent = "New provider profile";
+        form.reset();
+        $("profile-enabled").checked = true;
+        $("delete-profile").hidden = true;
+        $("catalog").hidden = true;
+        list.querySelectorAll(".profile-row").forEach((item) => item.classList.remove("selected"));
+      };
+      const fillForm = (profile) => {
+        state.selectedId = profile.id;
+        $("editor-title").textContent = `Edit ${profile.name}`;
+        $("profile-name").value = profile.name;
+        $("profile-base-url").value = profile.base_url;
+        $("profile-format").value = profile.api_format;
+        $("profile-enabled").checked = profile.enabled;
+        $("profile-models").value = profile.model_ids.join("\n");
+        $("delete-profile").hidden = false;
+        $("catalog").hidden = profile.model_ids.length === 0;
+        $("catalog-models").replaceChildren(...profile.model_ids.map((model) => { const tag = document.createElement("span"); tag.className = "model"; tag.textContent = model; return tag; }));
+      };
+      const renderList = () => {
+        $("profile-count").textContent = `${state.profiles.length} saved profile${state.profiles.length === 1 ? "" : "s"}`;
+        list.replaceChildren();
+        if (!state.profiles.length) {
+          const empty = document.createElement("div"); empty.className = "empty"; empty.textContent = "No provider profiles yet."; list.appendChild(empty); return;
+        }
+        state.profiles.forEach((profile) => {
+          const button = document.createElement("button"); button.type = "button"; button.className = `profile-row${profile.id === state.selectedId ? " selected" : ""}`;
+          const title = document.createElement("span"); title.className = "profile-title";
+          const name = document.createElement("span"); name.textContent = profile.name;
+          const status = document.createElement("span"); status.className = `status${profile.enabled ? "" : " off"}`; status.textContent = profile.enabled ? "Enabled" : "Disabled";
+          title.append(name, status);
+          const meta = document.createElement("span"); meta.className = "profile-meta"; meta.textContent = `${profile.api_format} · ${profile.base_url}`;
+          button.append(title, meta); button.addEventListener("click", () => loadProfile(profile.id)); list.appendChild(button);
+        });
+      };
+      const loadProfiles = async () => {
+        const response = await fetch(endpoint, { headers: { Accept: "application/json" } });
+        if (!response.ok) { await setError(response, "Could not load provider profiles."); return; }
+        const payload = await response.json(); state.profiles = payload.profiles || []; renderList();
+      };
+      const loadProfile = async (id) => {
+        const response = await fetch(`${endpoint}/${encodeURIComponent(id)}`);
+        if (!response.ok) { await setError(response, "Could not load this provider profile."); return; }
+        fillForm((await response.json()).profile); renderList(); setNotice("");
+      };
+      form.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const method = state.selectedId ? "PUT" : "POST";
+        const url = state.selectedId ? `${endpoint}/${encodeURIComponent(state.selectedId)}` : endpoint;
+        const response = await fetch(url, { method, headers: { "Content-Type": "application/json", Accept: "application/json" }, body: JSON.stringify(profileFromForm()) });
+        if (!response.ok) { await setError(response, "Could not save this provider profile."); return; }
+        const profile = (await response.json()).profile; state.selectedId = profile.id; await loadProfiles(); fillForm(profile); renderList(); setNotice("Provider profile saved.", "success");
+      });
+      $("delete-profile").addEventListener("click", async () => {
+        if (!state.selectedId) return;
+        const response = await fetch(`${endpoint}/${encodeURIComponent(state.selectedId)}`, { method: "DELETE", headers: { Accept: "application/json" } });
+        if (!response.ok) { await setError(response, "Could not delete this provider profile."); return; }
+        resetForm(); await loadProfiles(); setNotice("Provider profile deleted.", "success");
+      });
+      $("new-profile").addEventListener("click", () => { resetForm(); setNotice(""); $("profile-name").focus(); });
+      loadProfiles().catch(() => setNotice("Could not connect to the Runtime Studio service.", "error"));
+    })();
+  </script>
+</body>
+</html>
