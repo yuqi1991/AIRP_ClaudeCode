@@ -644,8 +644,8 @@ class SessionTurnRuntime:
 
     def configure_execution_graph(
         self,
-        compiler: ExecutionPlanCompiler,
-        graph_runtime: GraphRuntime,
+        compiler: ExecutionPlanCompiler | None,
+        graph_runtime: GraphRuntime | None,
         *,
         project_id=None,
     ):

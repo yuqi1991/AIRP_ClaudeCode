@@ -1079,6 +1079,7 @@ body {
       <h4>🧭 Agent Trace</h4>
       <div class="side-note" id="agent-trace-status">等待运行时事件</div>
       <div id="agent-trace" aria-live="polite"></div>
+      <button class="side-button" id="graph-retry-button" type="button" onclick="retryGraphRun()" hidden>Retry complete Graph</button>
     </div>
     <div class="side-card">
       <h4>📌 当前目标</h4>
@@ -1133,8 +1134,10 @@ body {
   <div class="node-detail-panel" onclick="event.stopPropagation()">
     <div class="node-detail-head">
       <h3 id="node-detail-title">Node Run</h3>
+      <button class="node-detail-close" id="node-debug-replay-button" type="button" title="Runs a new billable model call without changing the story" onclick="runDebugReplay()">Debug Replay</button>
       <button class="node-detail-close" type="button" title="关闭详情" aria-label="关闭详情" onclick="closeNodeDetail()">×</button>
     </div>
+    <div class="side-note">Debug Replay makes a new model call and never commits a story turn.</div>
     <pre id="node-detail-body"></pre>
   </div>
 </div>
@@ -1615,7 +1618,8 @@ let runtimeSessionId = sessionStorage.getItem(RUNTIME_SESSION_KEY) || null;
 let runtimeTask = null;
 let streamingPreview = { taskId: null, text: "" };
 let agentTrace = { nodes: {}, events: [], graphMode: false };
-let nodeDetailState = { nodeRunId: null, data: null };
+let graphRunState = { graphRunId: null, status: null };
+let nodeDetailState = { nodeRunId: null, data: null, debugReplay: null };
 
 function renderStreamingPreview() {
   const doc = document.getElementById("doc");
@@ -1666,6 +1670,8 @@ function renderAgentTrace() {
     row.appendChild(title); row.appendChild(meta); target.appendChild(row);
   });
   status.textContent = entries.length ? "最近 " + entries.length + " 个运行节点" : "等待运行时事件";
+  const retry = document.getElementById("graph-retry-button");
+  if (retry) retry.hidden = !(graphRunState.graphRunId && graphRunState.status === "failed");
 }
 
 function recordAgentTrace(type, payload, sequence) {
@@ -1673,6 +1679,8 @@ function recordAgentTrace(type, payload, sequence) {
   let key; let state; let label; let meta;
   if (type === "graph.run.started") {
     agentTrace.graphMode = true;
+    agentTrace.nodes = {};
+    graphRunState = { graphRunId: payload.graph_run_id || payload.run_id || null, status: "running" };
     (payload.nodes || []).forEach(function(nodeId, index) {
       const nodeKey = taskId + ":node:" + nodeId;
       agentTrace.nodes[nodeKey] = {
@@ -1680,6 +1688,10 @@ function recordAgentTrace(type, payload, sequence) {
         label: nodeId, meta: "节点未运行", streamedOutput: ""
       };
     });
+    renderAgentTrace();
+    return;
+  } else if (type === "graph.run.finished") {
+    graphRunState = { graphRunId: payload.graph_run_id || payload.run_id || graphRunState.graphRunId, status: payload.status || payload.state || null };
     renderAgentTrace();
     return;
   } else if (type === "graph.node.started" || type === "graph.node.finished" || type === "graph.node.delta") {
@@ -1728,25 +1740,14 @@ function renderNodeDetail(detail) {
   const title = document.getElementById('node-detail-title');
   if (!body || !detail) return;
   if (title) title.textContent = (detail.label || detail.node_id || 'Node Run') + ' · ' + (detail.state || 'idle');
-  const view = {
-    state: detail.state,
-    input: detail.input,
-    prompt: detail.prompt,
-    prompt_provenance: detail.prompt_provenance,
-    effective_config: detail.effective_config,
-    model_calls: detail.model_calls,
-    tool_calls: detail.tool_calls,
-    streamed_output: detail.streamed_output || '',
-    final_output: detail.final_output,
-    artifact: detail.artifact,
-    error: detail.error
-  };
+  const view = Object.assign({}, detail);
+  if (nodeDetailState.debugReplay) view.debug_replay = nodeDetailState.debugReplay;
   body.textContent = JSON.stringify(view, null, 2);
 }
 
 async function openNodeDetail(nodeRunId) {
   if (!nodeRunId) return;
-  nodeDetailState = { nodeRunId: nodeRunId, data: null };
+  nodeDetailState = { nodeRunId: nodeRunId, data: null, debugReplay: null };
   const modal = document.getElementById('node-detail-modal');
   const body = document.getElementById('node-detail-body');
   if (modal) modal.hidden = false;
@@ -1762,11 +1763,57 @@ async function openNodeDetail(nodeRunId) {
   }
 }
 
+async function runDebugReplay() {
+  if (!nodeDetailState.nodeRunId) return;
+  const button = document.getElementById('node-debug-replay-button');
+  if (button) { button.disabled = true; button.textContent = 'Replaying…'; }
+  try {
+    const response = await fetch(apiUrl('/v1/studio/node-runs/' + encodeURIComponent(nodeDetailState.nodeRunId) + '/replay'), {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ idempotency_key: 'debug-replay-' + nodeDetailState.nodeRunId + '-' + Date.now() })
+    });
+    const data = await response.json();
+    if (!response.ok || !data.debug_replay) throw new Error(data.message || data.error || 'Debug Replay unavailable');
+    nodeDetailState.debugReplay = data.debug_replay;
+    renderNodeDetail(nodeDetailState.data);
+  } catch (error) {
+    const body = document.getElementById('node-detail-body');
+    if (body) body.textContent = error.message || 'Debug Replay unavailable';
+  } finally {
+    if (button) { button.disabled = false; button.textContent = 'Debug Replay'; }
+  }
+}
+
 function closeNodeDetail(event) {
   if (event && event.target && event.target.id !== 'node-detail-modal') return;
   const modal = document.getElementById('node-detail-modal');
   if (modal) modal.hidden = true;
-  nodeDetailState = { nodeRunId: null, data: null };
+  nodeDetailState = { nodeRunId: null, data: null, debugReplay: null };
+}
+
+async function retryGraphRun() {
+  const button = document.getElementById('graph-retry-button');
+  if (button) button.disabled = true;
+  try {
+    const snapshotResponse = await fetch(apiUrl('/v1/studio/graph-runs'), { cache: 'no-store' });
+    const snapshot = await snapshotResponse.json();
+    const run = snapshot.most_recent || snapshot.current;
+    if (!snapshotResponse.ok || !run || run.status !== 'failed') throw new Error('No failed Graph Run is available to retry.');
+    const response = await fetch(apiUrl('/v1/studio/graph-runs/' + encodeURIComponent(run.graph_run_id) + '/retry'), {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ idempotency_key: 'graph-retry-' + run.graph_run_id + '-' + Date.now() })
+    });
+    const data = await response.json();
+    if (!response.ok || !data.task_id) throw new Error(data.message || data.error || 'Graph retry unavailable');
+    graphRunState = { graphRunId: null, status: 'running' };
+    renderAgentTrace();
+    refreshSubmittedTurn(data.task_id);
+    showToast('Graph retry started with the latest saved configuration.');
+  } catch (error) {
+    showError(error.message || 'Graph retry unavailable');
+  } finally {
+    if (button) button.disabled = false;
+  }
 }
 
 
@@ -2030,6 +2077,7 @@ function hydrateGraphRun(graphRuns) {
   const run = graphRuns && (graphRuns.current || graphRuns.most_recent);
   if (!run || !Array.isArray(run.nodes)) return;
   agentTrace.graphMode = true;
+  graphRunState = { graphRunId: run.graph_run_id || run.run_id || null, status: run.status || null };
   agentTrace.nodes = {};
   run.nodes.forEach(function(node, index) {
     let state = node.state || 'idle';
@@ -2435,6 +2483,7 @@ function refreshSubmittedTurn(taskId) {
       if (!response.ok) return;
       const task = snapshot.current_task || null;
       setRuntimeTaskStatus(task);
+      hydrateGraphRun(snapshot.graph_runs);
       if (!taskId || !task || task.task_id === taskId) reloadData();
       if (!task || !RUNTIME_ACTIVE_STATUSES.has(task.status) || attempts >= 80) {
         clearInterval(timer);

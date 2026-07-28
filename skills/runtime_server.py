@@ -69,6 +69,8 @@ from urllib.request import Request, urlopen
 from engine.agent_definitions import AgentDefinitionError, AgentDefinitionService, AgentDefinitionStore
 from engine.commands import SessionCommandService
 from engine.graph_definitions import GraphDefinitionError, GraphDefinitionService, GraphDefinitionStore
+from engine.graph_runtime import ExecutionPlanCompiler, GraphRuntime
+from engine.node_runner import ProviderNodeRunner
 from engine.provider import runtime_provider_api_key, set_runtime_provider_override
 from engine.provider_profiles import ProviderConnectionError, ProviderProfileService
 from engine.project_library import ProjectLibrary, ProjectLibraryError
@@ -96,6 +98,7 @@ STUDIO_PROMPT_PRESET_PATHS = ("/v1/studio/prompt-presets", "/api/studio/prompt-p
 STUDIO_GRAPH_PATHS = ("/v1/studio/graphs", "/api/studio/graphs")
 STUDIO_WORLDBOOK_PATHS = ("/v1/studio/worldbooks", "/api/studio/worldbooks")
 STUDIO_PROJECT_PATHS = ("/v1/studio/projects", "/api/studio/projects")
+STUDIO_PROJECT_CONTEXT_PATHS = ("/v1/studio/project-context", "/api/studio/project-context")
 STUDIO_GRAPH_RUN_PATHS = ("/v1/studio/graph-runs", "/api/studio/graph-runs")
 STUDIO_NODE_RUN_PATHS = ("/v1/studio/node-runs", "/api/studio/node-runs")
 STUDIO_DEBUG_REPLAY_PATHS = ("/v1/studio/debug-replays", "/api/studio/debug-replays")
@@ -187,7 +190,9 @@ class SessionRuntimeServer:
             if self.static_root and self.worldbooks is not None
             else None
         )
+        self._studio_graph_configured = False
         self._configure_runtime_worldbooks()
+        self._configure_runtime_studio_graph()
         self.config_store = (
             RuntimeConfigStore(
                 self.static_root,
@@ -435,7 +440,9 @@ class SessionRuntimeServer:
         if self.session_manager is None:
             return
         self.runtime = self.session_manager.runtime
+        self._studio_graph_configured = False
         self._configure_runtime_worldbooks()
+        self._configure_runtime_studio_graph()
         self.service = SessionCommandService(self.runtime)
         with self._submit_lock:
             self._submit_results.clear()
@@ -754,6 +761,50 @@ class SessionRuntimeServer:
         if self.worldbooks is not None:
             self.runtime.configure_worldbook_library(self.worldbooks.snapshot_for_project)
 
+    def _configure_runtime_studio_graph(self) -> None:
+        """Attach saved Studio definitions only when this runtime has a Graph Project.
+
+        A Runtime without a saved Project keeps its existing executor.  This
+        preserves the legacy/browser compatibility path while making a saved
+        Project's next submission compile from the Studio Library.
+        """
+        if not all((self.agent_store, self.graphs, self.projects, self.worldbooks, self.provider_profiles)):
+            return
+        try:
+            project = self.projects.get_project(self.runtime.project_id)
+        except ProjectLibraryError:
+            if self._studio_graph_configured:
+                self.runtime.configure_execution_graph(None, None)
+                self._studio_graph_configured = False
+            return
+        if not project.get("graph_id"):
+            if self._studio_graph_configured:
+                self.runtime.configure_execution_graph(None, None)
+                self._studio_graph_configured = False
+            return
+        compiler = ExecutionPlanCompiler(
+            agent_store=self.agent_store,
+            graph_store=self.graphs,
+            project_store=self.projects,
+            worldbook_store=self.worldbooks,
+        )
+        runner = ProviderNodeRunner(self._provider_for_studio_graph_node)
+        self.runtime.configure_execution_graph(
+            compiler,
+            GraphRuntime(runner),
+            project_id=project["id"],
+        )
+        self._studio_graph_configured = True
+
+    def _provider_for_studio_graph_node(self, node):
+        if self.provider_profiles is None:
+            raise ValueError("Studio Provider Profiles are unavailable")
+        profile_id = node.agent.provider_profile_id
+        if not profile_id:
+            raise ValueError("Agent Definition requires a Provider Profile")
+        model_id = node.model_id or node.agent.model_id
+        return self.provider_profiles.execution_adapter(profile_id, model_id or "")
+
     @staticmethod
     def _studio_worldbook_error(exc: WorldbookLibraryError) -> tuple[dict[str, Any], int]:
         return exc.to_dict(), exc.status
@@ -795,11 +846,20 @@ class SessionRuntimeServer:
         if self.worldbooks is None:
             return {"ok": False, "error": "studio_library_unavailable"}, 501
         try:
-            project = (
-                self.worldbooks.set_project_bindings(project_id, body)
-                if body is not None
-                else self.worldbooks.get_project_bindings(project_id)
-            )
+            if body is not None and self.projects is not None:
+                try:
+                    project = self.projects.get_project(project_id)
+                except ProjectLibraryError as exc:
+                    if exc.code != "project_not_found":
+                        raise
+                    project = None
+                if project is not None:
+                    project = self.projects.update_project(project_id, body)
+                else:
+                    project = self.worldbooks.set_project_bindings(project_id, body)
+            else:
+                project = self.worldbooks.get_project_bindings(project_id)
+            self._configure_runtime_studio_graph()
             return {
                 "ok": True,
                 "project": project,
@@ -807,6 +867,8 @@ class SessionRuntimeServer:
             }, 200
         except WorldbookLibraryError as exc:
             return self._studio_worldbook_error(exc)
+        except ProjectLibraryError as exc:
+            return self._studio_project_error(exc)
 
     @staticmethod
     def _studio_project_error(exc: ProjectLibraryError) -> tuple[dict[str, Any], int]:
@@ -816,7 +878,9 @@ class SessionRuntimeServer:
         if self.projects is None:
             return {"ok": False, "error": "studio_library_unavailable"}, 501
         try:
-            return {"ok": True, key: action()}, status
+            project = action()
+            self._configure_runtime_studio_graph()
+            return {"ok": True, key: project}, status
         except ProjectLibraryError as exc:
             return self._studio_project_error(exc)
 
@@ -1035,6 +1099,12 @@ class SessionRuntimeServer:
                         break
 
                 # ── Runtime Studio Worldbooks and Project bindings ─────
+                if path in STUDIO_PROJECT_CONTEXT_PATHS:
+                    self._send_json(
+                        200,
+                        {"ok": True, "project_id": server_ref.runtime.project_id},
+                    )
+                    return
                 if path in STUDIO_WORLDBOOK_PATHS:
                     payload, status = server_ref._studio_worldbook_action(
                         server_ref.worldbooks.list_worldbooks if server_ref.worldbooks else lambda: [],

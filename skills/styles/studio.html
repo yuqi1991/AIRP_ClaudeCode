@@ -87,6 +87,9 @@
     .entry-editor:first-child { border-top: 0; }
     .entry-editor .wide { grid-column: 1 / -1; }
     .entry-editor textarea { min-height: 88px; }
+    .node-editor { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; padding: 14px 0; border-top: 1px solid var(--line); }
+    .node-editor:first-child { border-top: 0; }
+    .node-editor .wide { grid-column: 1 / -1; }
     .binding-list { display: grid; gap: 8px; padding: 4px 0; }
     .binding-row { display: flex; align-items: center; gap: 9px; padding: 10px; border: 1px solid var(--line); border-radius: 4px; }
     .binding-row input { width: auto; }
@@ -117,7 +120,7 @@
       <nav class="nav">
         <button class="active" type="button" aria-current="page" data-studio-view="providers">Providers</button>
         <button type="button" data-studio-view="agents">Agents</button>
-        <button type="button" disabled>Graphs</button>
+        <button type="button" data-studio-view="graphs">Graphs</button>
         <button type="button" data-studio-view="projects">Projects</button>
         <button type="button" data-studio-view="worldbooks">Worldbooks</button>
       </nav>
@@ -174,6 +177,23 @@
           <section class="catalog" aria-labelledby="preview-title"><span class="catalog-title" id="preview-title">Prompt preview</span><div class="field"><label for="preview-project-input">Project input</label><textarea id="preview-project-input" placeholder="Preview runtime input"></textarea></div><div class="field"><label for="preview-handoff">Handoff JSON</label><textarea id="preview-handoff" placeholder='{"source_node_id":"planner","artifact":"..."}'></textarea></div><div class="field"><label for="preview-output-contract">Output contract JSON</label><textarea id="preview-output-contract" placeholder='{"kind":"narrative_draft"}'></textarea></div><div class="preview-list" id="agent-preview-output"></div></section>
         </section>
       </section>
+      <section class="workspace" id="graphs-view" aria-label="Graph Definition management" hidden>
+        <div>
+          <div class="section-head"><div><h2>Graph Definitions</h2><p id="graph-count">Loading...</p></div><button class="button" id="new-graph" type="button">New graph</button></div>
+          <div class="list" id="graph-list" aria-live="polite"></div>
+        </div>
+        <section class="panel" aria-labelledby="graph-editor-title">
+          <h2 id="graph-editor-title">New Graph Definition</h2>
+          <form class="form" id="graph-form">
+            <div class="field"><label for="graph-id">Graph ID</label><input id="graph-id" autocomplete="off" placeholder="Created automatically when blank"><span class="hint">Stable after the Graph is saved.</span></div>
+            <div class="field"><label for="graph-name">Name</label><input id="graph-name" required autocomplete="off" placeholder="Writing pipeline"></div>
+            <section class="catalog" aria-labelledby="graph-nodes-title"><div class="section-head"><h2 id="graph-nodes-title">Linear nodes</h2><button class="button" id="add-graph-node" type="button">Add node</button></div><div class="entry-list" id="graph-nodes"></div></section>
+            <div class="field"><label for="graph-output-node">Output node</label><select id="graph-output-node"></select><span class="hint">The output must be the final enabled node.</span></div>
+            <div class="actions"><button class="button primary" type="submit">Save Graph</button><button class="button" id="copy-graph" type="button" hidden>Copy</button><button class="button danger" id="delete-graph" type="button" hidden>Delete</button></div>
+          </form>
+          <div class="notice" id="graph-notice" role="status" aria-live="polite"></div>
+        </section>
+      </section>
       <section class="workspace" id="worldbooks-view" aria-label="Worldbook Library" hidden>
         <div>
           <div class="section-head"><div><h2>Worldbook Library</h2><p id="worldbook-count">Loading...</p></div><button class="button" id="new-worldbook" type="button">New worldbook</button></div>
@@ -218,7 +238,7 @@
             <section class="catalog" aria-labelledby="project-openings-title"><div class="section-head"><h2 id="project-openings-title">Openings</h2><button class="button" id="add-project-opening" type="button">Add opening</button></div><div class="entry-list" id="project-openings"></div></section>
             <div class="field"><label for="project-variables">Variables</label><textarea id="project-variables" placeholder='{"state":{}}'></textarea></div>
             <div class="field"><label for="project-assets">Assets</label><textarea id="project-assets" placeholder='[{"id":"portrait","path":"assets/portrait.png"}]'></textarea></div>
-            <div class="field"><label for="project-graph">Selected Graph</label><input id="project-graph" autocomplete="off" placeholder="writing"></div>
+            <div class="field"><label for="project-graph">Selected Graph</label><select id="project-graph"><option value="">No Graph selected</option></select></div>
             <div class="actions"><button class="button primary" type="submit">Save project</button><button class="button" id="copy-project" type="button" hidden>Copy</button></div>
           </form>
           <section class="catalog" aria-labelledby="project-binding-title"><h2 id="project-binding-title">Bound Worldbooks</h2><div class="binding-list" id="project-worldbooks"></div><div class="actions"><button class="button" id="save-project-bindings" type="button">Save bindings</button></div></section>
@@ -392,13 +412,60 @@
       $("copy-agent").addEventListener("click", async () => { if (!state.selectedId) return; const response = await fetch(`${endpoint}/${encodeURIComponent(state.selectedId)}/copy`, { method: "POST", headers: { "Content-Type": "application/json", Accept: "application/json" }, body: "{}" }); if (!response.ok) { await showError(response, "Could not copy this Agent Definition."); return; } const agent = (await response.json()).agent; await loadAgents(); fillAgent(agent); setNotice("Agent Definition copied.", "success"); });
       $("delete-agent").addEventListener("click", async () => { if (!state.selectedId) return; const response = await fetch(`${endpoint}/${encodeURIComponent(state.selectedId)}`, { method: "DELETE", headers: { Accept: "application/json" } }); if (!response.ok) { await showError(response, "Could not delete this Agent Definition."); return; } resetAgent(); await loadAgents(); setNotice("Agent Definition deleted.", "success"); });
       $("new-agent").addEventListener("click", () => { resetAgent(); $("agent-name").focus(); });
+      document.addEventListener("studio:agents-visible", () => { loadReferences().then(loadAgents).catch(() => setNotice("Could not connect to the Runtime Studio service.", "error")); });
       resetAgent(); loadReferences().then(loadAgents).catch(() => setNotice("Could not connect to the Runtime Studio service.", "error"));
+    })();
+    (() => {
+      const endpoint = "/v1/studio/graphs";
+      const agentEndpoint = "/v1/studio/agents";
+      const state = { graphs: [], agents: [], selectedId: null };
+      const $ = (id) => document.getElementById(id);
+      const setNotice = (message, kind = "") => { const target = $("graph-notice"); target.className = `notice ${kind}`; target.textContent = message; };
+      const showError = async (response, fallback) => { let payload = {}; try { payload = await response.json(); } catch (_) {} setNotice(payload.message || fallback, "error"); };
+      const nodeRows = () => [...$("graph-nodes").querySelectorAll(".node-editor")];
+      const nodeValues = () => nodeRows().map((row, index) => ({
+        node_id: row.querySelector('[data-field="node_id"]').value.trim(),
+        agent_id: row.querySelector('[data-field="agent_id"]').value,
+        label: row.querySelector('[data-field="label"]').value.trim() || null,
+        enabled: row.querySelector('[data-field="enabled"]').checked,
+        order: index,
+      }));
+      const refreshOutputNodes = () => {
+        const select = $("graph-output-node"); const previous = select.value;
+        const nodes = nodeValues().filter((node) => node.enabled && node.node_id);
+        select.replaceChildren(...nodes.map((node) => { const option = document.createElement("option"); option.value = node.node_id; option.textContent = node.label || node.node_id; return option; }));
+        select.value = nodes.some((node) => node.node_id === previous) ? previous : (nodes.at(-1) || {}).node_id || "";
+      };
+      const nodeEditor = (node = {}, index = nodeRows().length) => {
+        const wrapper = document.createElement("section"); wrapper.className = "node-editor";
+        const field = (labelText, fieldName, value, type = "input") => { const box = document.createElement("div"); box.className = "field"; const label = document.createElement("label"); label.textContent = labelText; const control = document.createElement(type); control.dataset.field = fieldName; control.value = value ?? ""; box.append(label, control); return box; };
+        const id = field("Node ID", "node_id", node.node_id || `node-${index + 1}`); id.querySelector("input").addEventListener("input", refreshOutputNodes);
+        const agent = field("Agent", "agent_id", "", "select"); const agentSelect = agent.querySelector("select"); agentSelect.replaceChildren(...state.agents.map((item) => { const option = document.createElement("option"); option.value = item.agent_id; option.textContent = item.name; return option; })); agentSelect.value = node.agent_id || "";
+        const label = field("Local label", "label", node.label || "");
+        const enabled = document.createElement("label"); enabled.className = "check"; const toggle = document.createElement("input"); toggle.type = "checkbox"; toggle.dataset.field = "enabled"; toggle.checked = node.enabled !== false; toggle.addEventListener("change", refreshOutputNodes); enabled.append(toggle, " Enabled");
+        const actions = document.createElement("div"); actions.className = "actions wide"; [["Move up", () => { const previous = wrapper.previousElementSibling; if (previous) { previous.before(wrapper); refreshOutputNodes(); } }], ["Move down", () => { const next = wrapper.nextElementSibling; if (next) { next.after(wrapper); refreshOutputNodes(); } }], ["Remove", () => { wrapper.remove(); refreshOutputNodes(); }]].forEach(([text, action]) => { const button = document.createElement("button"); button.type = "button"; button.className = text === "Remove" ? "button danger" : "button"; button.textContent = text; button.addEventListener("click", action); actions.append(button); });
+        wrapper.append(id, agent, label, enabled, actions); return wrapper;
+      };
+      const graphFromForm = () => ({ id: $("graph-id").value.trim() || undefined, name: $("graph-name").value.trim(), nodes: nodeValues(), output_node_id: $("graph-output-node").value });
+      const renderGraphs = () => { $("graph-count").textContent = `${state.graphs.length} saved Graph Definition${state.graphs.length === 1 ? "" : "s"}`; const rows = state.graphs.map((graph) => { const button = document.createElement("button"); button.type = "button"; button.className = `profile-row${graph.id === state.selectedId ? " selected" : ""}`; const title = document.createElement("span"); title.className = "profile-title"; title.textContent = graph.name; const meta = document.createElement("span"); meta.className = "profile-meta"; meta.textContent = `${graph.nodes.length} nodes · output ${graph.output_node_id}`; button.append(title, meta); button.addEventListener("click", () => loadGraph(graph.id)); return button; }); if (!rows.length) { const empty = document.createElement("div"); empty.className = "empty"; empty.textContent = "No Graph Definitions yet."; rows.push(empty); } $("graph-list").replaceChildren(...rows); };
+      const resetGraph = () => { state.selectedId = null; $("graph-form").reset(); $("graph-id").readOnly = false; $("graph-editor-title").textContent = "New Graph Definition"; $("graph-nodes").replaceChildren(nodeEditor()); ["copy-graph", "delete-graph"].forEach((id) => { $(id).hidden = true; }); setNotice(""); refreshOutputNodes(); renderGraphs(); };
+      const fillGraph = (graph) => { state.selectedId = graph.id; $("graph-id").value = graph.id; $("graph-id").readOnly = true; $("graph-name").value = graph.name; $("graph-editor-title").textContent = `Edit ${graph.name}`; $("graph-nodes").replaceChildren(...graph.nodes.map(nodeEditor)); $("graph-output-node").value = graph.output_node_id; ["copy-graph", "delete-graph"].forEach((id) => { $(id).hidden = false; }); refreshOutputNodes(); $("graph-output-node").value = graph.output_node_id; renderGraphs(); setNotice(""); };
+      const loadAgents = async () => { const response = await fetch(agentEndpoint); if (!response.ok) { await showError(response, "Could not load Agent Definitions."); return; } state.agents = (await response.json()).agents || []; };
+      const loadGraphs = async () => { const response = await fetch(endpoint); if (!response.ok) { await showError(response, "Could not load Graph Definitions."); return; } state.graphs = (await response.json()).graphs || []; renderGraphs(); };
+      const loadGraph = async (id) => { const response = await fetch(`${endpoint}/${encodeURIComponent(id)}`); if (!response.ok) { await showError(response, "Could not load this Graph Definition."); return; } fillGraph((await response.json()).graph); };
+      $("graph-form").addEventListener("submit", async (event) => { event.preventDefault(); const payload = graphFromForm(); if (!payload.nodes.length) { setNotice("A Graph requires at least one node.", "error"); return; } const response = await fetch(state.selectedId ? `${endpoint}/${encodeURIComponent(state.selectedId)}` : endpoint, { method: state.selectedId ? "PUT" : "POST", headers: { "Content-Type": "application/json", Accept: "application/json" }, body: JSON.stringify(payload) }); if (!response.ok) { await showError(response, "Could not save this Graph Definition."); return; } const graph = (await response.json()).graph; await loadGraphs(); fillGraph(graph); document.dispatchEvent(new Event("studio:graphs-changed")); setNotice("Graph Definition saved.", "success"); });
+      $("add-graph-node").addEventListener("click", () => { $("graph-nodes").append(nodeEditor()); refreshOutputNodes(); });
+      $("new-graph").addEventListener("click", () => { resetGraph(); $("graph-name").focus(); });
+      $("copy-graph").addEventListener("click", async () => { if (!state.selectedId) return; const response = await fetch(`${endpoint}/${encodeURIComponent(state.selectedId)}/copy`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }); if (!response.ok) { await showError(response, "Could not copy this Graph Definition."); return; } const graph = (await response.json()).graph; await loadGraphs(); fillGraph(graph); document.dispatchEvent(new Event("studio:graphs-changed")); setNotice("Graph Definition copied.", "success"); });
+      $("delete-graph").addEventListener("click", async () => { if (!state.selectedId) return; const response = await fetch(`${endpoint}/${encodeURIComponent(state.selectedId)}`, { method: "DELETE" }); if (!response.ok) { await showError(response, "Could not delete this Graph Definition."); return; } resetGraph(); await loadGraphs(); document.dispatchEvent(new Event("studio:graphs-changed")); setNotice("Graph Definition deleted.", "success"); });
+      document.addEventListener("studio:graphs-visible", () => { loadAgents().then(loadGraphs).then(() => { if (!state.selectedId) resetGraph(); }).catch(() => setNotice("Could not connect to the Runtime Studio service.", "error")); });
+      loadAgents().then(loadGraphs).then(resetGraph).catch(() => setNotice("Could not connect to the Runtime Studio service.", "error"));
     })();
     (() => {
       const endpoint = "/v1/studio/worldbooks";
       const projectEndpoint = "/v1/studio/projects/";
       const projectCollectionEndpoint = projectEndpoint.slice(0, -1);
-      const state = { worldbooks: [], selectedId: null, projects: [], selectedProjectId: null };
+      const state = { worldbooks: [], selectedId: null, projects: [], selectedProjectId: null, graphs: [], runtimeProjectId: null };
       const $ = (id) => document.getElementById(id);
       const setNotice = (id, message, kind = "") => { const target = $(id); target.className = `notice ${kind}`; target.textContent = message; };
       const savedNotice = (action, renamedEntries = []) => {
@@ -430,6 +497,7 @@
         const value = $(id).value.trim(); if (!value) return fallback;
         try { return JSON.parse(value); } catch (_) { setNotice("project-notice", `${id} must contain valid JSON.`, "error"); return null; }
       };
+      const renderGraphOptions = (selected = $("project-graph").value) => { const select = $("project-graph"); select.replaceChildren(); const empty = document.createElement("option"); empty.value = ""; empty.textContent = "No Graph selected"; select.append(empty); state.graphs.forEach((graph) => { const option = document.createElement("option"); option.value = graph.id; option.textContent = graph.name; select.append(option); }); select.value = [...select.options].some((option) => option.value === selected) ? selected : ""; };
       const projectFromForm = () => {
         const variables = readProjectJson("project-variables", {}); if (variables === null) return null;
         const assets = readProjectJson("project-assets", []); if (assets === null) return null;
@@ -448,16 +516,16 @@
         const id = $("project-id").value.trim(); if (id) payload.id = id; return payload;
       };
       const resetProject = () => {
-        state.selectedProjectId = null; $("project-form").reset(); $("project-id").value = "local"; $("project-editor-title").textContent = "New AIRP Project";
+        state.selectedProjectId = null; $("project-form").reset(); $("project-id").value = state.runtimeProjectId || "local"; $("project-editor-title").textContent = "New AIRP Project";
         $("project-openings").replaceChildren(projectOpeningEditor()); $("project-variables").value = "{}"; $("project-assets").value = "[]";
-        $("copy-project").hidden = true; renderProjects(); renderBindings(); setNotice("project-notice", "");
+        $("copy-project").hidden = true; renderProjects(); renderBindings(); renderGraphOptions(); setNotice("project-notice", "");
       };
       const fillProject = (project) => {
         state.selectedProjectId = project.id; $("project-id").value = project.id; $("project-editor-title").textContent = `Edit ${project.name}`;
         $("project-name").value = project.name; $("project-avatar").value = project.avatar || ""; $("project-description").value = project.description || "";
         $("project-personality").value = project.personality || ""; $("project-scenario").value = project.scenario || "";
         const prompt = project.card_prompt || {}; $("project-card-system").value = prompt.system || ""; $("project-card-post-history").value = prompt.post_history || "";
-        $("project-openings").replaceChildren(...(project.openings || []).map(projectOpeningEditor)); $("project-variables").value = JSON.stringify(project.variables || {}, null, 2); $("project-assets").value = JSON.stringify(project.assets || [], null, 2); $("project-graph").value = project.graph_id || "";
+        $("project-openings").replaceChildren(...(project.openings || []).map(projectOpeningEditor)); $("project-variables").value = JSON.stringify(project.variables || {}, null, 2); $("project-assets").value = JSON.stringify(project.assets || [], null, 2); renderGraphOptions(project.graph_id || "");
         $("copy-project").hidden = false; renderProjects(); renderBindings(project.worldbook_ids || []); setNotice("project-notice", "");
       };
       const renderProjects = () => {
@@ -466,7 +534,9 @@
         if (!rows.length) { const empty = document.createElement("div"); empty.className = "empty"; empty.textContent = "No projects yet."; rows.push(empty); } $("project-list").replaceChildren(...rows);
       };
       const loadProjects = async () => { const response = await fetch(projectCollectionEndpoint, { headers: { Accept: "application/json" } }); if (!response.ok) { await showError("project-notice", response, "Could not load Projects."); return; } state.projects = (await response.json()).projects || []; renderProjects(); };
-      const loadProject = async (id = $("project-id").value.trim()) => { if (!id) return; const response = await fetch(`${projectEndpoint}${encodeURIComponent(id)}`, { headers: { Accept: "application/json" } }); if (!response.ok) { await showError("project-notice", response, "Could not load this Project."); return; } fillProject((await response.json()).project); };
+      const loadGraphs = async () => { const response = await fetch("/v1/studio/graphs", { headers: { Accept: "application/json" } }); if (!response.ok) { await showError("project-notice", response, "Could not load Graph Definitions."); return; } state.graphs = (await response.json()).graphs || []; renderGraphOptions(); };
+      const loadProject = async (id = $("project-id").value.trim(), quiet = false) => { if (!id) return; const response = await fetch(`${projectEndpoint}${encodeURIComponent(id)}`, { headers: { Accept: "application/json" } }); if (!response.ok) { if (!quiet) await showError("project-notice", response, "Could not load this Project."); return; } fillProject((await response.json()).project); };
+      const loadProjectContext = async () => { const response = await fetch("/v1/studio/project-context", { headers: { Accept: "application/json" } }); if (!response.ok) return; const payload = await response.json(); if (payload.project_id) { state.runtimeProjectId = payload.project_id; if (!state.selectedProjectId) $("project-id").value = payload.project_id; } };
       const entryEditor = (entry = {}) => {
         const wrapper = document.createElement("section"); wrapper.className = "entry-editor"; wrapper.dataset.entryId = entry.id || "";
         const field = (labelText, className, value, type = "input") => {
@@ -546,8 +616,9 @@
       $("new-project").addEventListener("click", () => { resetProject(); $("project-name").focus(); });
       $("copy-project").addEventListener("click", async () => { if (!state.selectedProjectId) return; const response = await fetch(`${projectEndpoint}${encodeURIComponent(state.selectedProjectId)}/copy`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }); if (!response.ok) { await showError("project-notice", response, "Could not copy this Project."); return; } const project = (await response.json()).project; await loadProjects(); fillProject(project); setNotice("project-notice", "Project copied.", "success"); });
       $("project-import").addEventListener("change", async (event) => { const file = event.target.files[0]; if (!file) return; let documentValue; try { documentValue = JSON.parse(await file.text()); } catch (_) { setNotice("project-notice", "The selected file is not valid JSON.", "error"); return; } const response = await fetch(`${projectEndpoint}import`, { method: "POST", headers: { "Content-Type": "application/json", Accept: "application/json" }, body: JSON.stringify({ document: documentValue }) }); event.target.value = ""; if (!response.ok) { await showError("project-notice", response, "Could not import this Project."); return; } const project = (await response.json()).project; await loadProjects(); fillProject(project); setNotice("project-notice", "Project imported.", "success"); });
-      document.querySelectorAll("[data-studio-view]").forEach((button) => button.addEventListener("click", () => { const view = button.dataset.studioView; document.querySelectorAll("[data-studio-view]").forEach((item) => { item.classList.toggle("active", item === button); item.removeAttribute("aria-current"); }); button.setAttribute("aria-current", "page"); ["providers", "agents", "projects", "worldbooks"].forEach((name) => { $(`${name}-view`).hidden = name !== view; }); $("view-title").textContent = { providers: "Provider Profiles", agents: "Agent Definitions", projects: "Projects", worldbooks: "Worldbook Library" }[view]; if (view === "worldbooks") loadWorldbooks(); if (view === "projects") { loadWorldbooks().then(() => Promise.all([loadProjects(), loadProject()])); } }));
-      resetWorldbook(); resetProject();
+      document.addEventListener("studio:graphs-changed", loadGraphs);
+      document.querySelectorAll("[data-studio-view]").forEach((button) => button.addEventListener("click", () => { const view = button.dataset.studioView; document.querySelectorAll("[data-studio-view]").forEach((item) => { item.classList.toggle("active", item === button); item.removeAttribute("aria-current"); }); button.setAttribute("aria-current", "page"); ["providers", "agents", "graphs", "projects", "worldbooks"].forEach((name) => { $(`${name}-view`).hidden = name !== view; }); $("view-title").textContent = { providers: "Provider Profiles", agents: "Agent Definitions", graphs: "Graph Definitions", projects: "Projects", worldbooks: "Worldbook Library" }[view]; if (view === "agents") document.dispatchEvent(new Event("studio:agents-visible")); if (view === "graphs") document.dispatchEvent(new Event("studio:graphs-visible")); if (view === "worldbooks") loadWorldbooks(); if (view === "projects") { loadWorldbooks().then(async () => { await loadGraphs(); await loadProjects(); await loadProject(undefined, true); }); } }));
+      resetWorldbook(); resetProject(); loadProjectContext().then(resetProject);
     })();
   </script>
 </body>

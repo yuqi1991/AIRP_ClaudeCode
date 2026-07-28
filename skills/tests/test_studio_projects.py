@@ -205,6 +205,26 @@ def test_project_save_reads_worldbook_bindings_on_the_next_runtime_context(tmp_p
         assert snapshot["worldbook_reference"] == "## Harbor\nFresh harbor facts"
 
 
+def test_project_worldbook_bindings_return_stable_project_errors(tmp_path: Path):
+    with _server(tmp_path) as server:
+        status, _ = _json_request(
+            "POST",
+            f"{server.base_url}/v1/studio/projects",
+            {"id": "normalized-project", "name": "Normalized Project"},
+        )
+        assert status == 201
+
+        status, rejected = _json_request(
+            "PUT",
+            f"{server.base_url}/v1/studio/projects/normalized-project/worldbooks",
+            {"name": "Normalized Project", "worldbook_ids": ["missing-worldbook"]},
+        )
+
+    assert status == 404
+    assert rejected["ok"] is False
+    assert rejected["error"] == "worldbook_not_found"
+
+
 def test_projects_view_exposes_normalized_editor_without_import_format_editors(tmp_path: Path):
     with _server(tmp_path) as server:
         with urlopen(f"{server.base_url}/studio", timeout=5) as response:
