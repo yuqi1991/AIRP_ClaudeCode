@@ -129,14 +129,15 @@ body {
   border-left: 3px solid var(--accent);
   padding: 12px 16px; border-radius: 0 6px 6px 0;
   font-size: 0.88em; color: var(--muted);
-  line-height: 1.7;
+  line-height: 1.7; white-space: pre-wrap; overflow-wrap: anywhere;
 }
 .turn-ai .turn-text {
-  padding: 4px 0; line-height: 1.9;
+  padding: 4px 0; line-height: 1.9; white-space: pre-wrap; overflow-wrap: anywhere;
 }
 .turn-ai .turn-text content {
   display: block;
 }
+.turn-text strong { font-weight: 700; }
 
 /* ═══ SIDEBAR ═══ */
 #sidebar {
@@ -1403,6 +1404,7 @@ function render() {
   if (_prevContentHtml !== newContent) {
     _prevContentHtml = newContent;
     contentEl.innerHTML = newContent;
+    formatMessageBubbles(contentEl);
     // Re-execute embedded <script> tags (innerHTML doesn't run them).
     // The _st_shims.js globals are already loaded, so card-author
     // beautify scripts find their expected ST/MVU APIs.
@@ -1566,6 +1568,48 @@ function setHtml(id, val) {
   if (el && el.innerHTML !== val) el.innerHTML = val;
 }
 
+// Preserve card-authored HTML while enhancing plain text inside message
+// bubbles. Only **bold** / __bold__ and line breaks are intentionally supported.
+function formatMessageTextNode(node) {
+  const text = node.nodeValue || '';
+  if (!text || (!/[\r\n]/.test(text) && !/\\n/.test(text) && !/(\*\*[^*\r\n]+?\*\*|__[^_\r\n]+?__)/.test(text))) return;
+  const fragment = document.createDocumentFragment();
+  const tokenPattern = /(\r\n|\r|\n|\\n)|\*\*([^*\r\n]+?)\*\*|__([^_\r\n]+?)__/g;
+  let cursor = 0;
+  let match;
+  while ((match = tokenPattern.exec(text)) !== null) {
+    if (match.index > cursor) fragment.appendChild(document.createTextNode(text.slice(cursor, match.index)));
+    if (match[1]) {
+      fragment.appendChild(document.createElement('br'));
+    } else {
+      const strong = document.createElement('strong');
+      strong.textContent = match[2] || match[3] || '';
+      fragment.appendChild(strong);
+    }
+    cursor = match.index + match[0].length;
+  }
+  if (cursor < text.length) fragment.appendChild(document.createTextNode(text.slice(cursor)));
+  node.replaceWith(fragment);
+}
+
+function formatMessageTextNodes(root) {
+  if (!root) return;
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  const nodes = [];
+  let node;
+  while ((node = walker.nextNode())) nodes.push(node);
+  nodes.forEach(function(textNode) {
+    const parent = textNode.parentElement;
+    if (parent && parent.closest('script,style,code,pre')) return;
+    formatMessageTextNode(textNode);
+  });
+}
+
+function formatMessageBubbles(root) {
+  if (!root) return;
+  root.querySelectorAll('.turn-user .turn-text, .turn-ai .turn-text').forEach(formatMessageTextNodes);
+}
+
 function renderOptions(container, opts) {
   container.innerHTML = '';
   opts.forEach(function(optHtml) {
@@ -1644,7 +1688,10 @@ function renderStreamingPreview() {
     doc.appendChild(preview);
   }
   const content = preview.querySelector("content");
-  if (content) content.textContent = streamingPreview.text;
+  if (content) {
+    content.textContent = streamingPreview.text;
+    formatMessageTextNodes(content);
+  }
   const panel = document.getElementById("content-panel");
   if (panel) panel.scrollTop = panel.scrollHeight;
 }

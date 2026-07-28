@@ -101,7 +101,10 @@ def write_content_js(card_folder, projection_root=None):
         # Build display wrap for this turn (one per turn)
         wrap = '<div class="turn-wrap">'
         if user_raw:
-            wrap += '<div class="turn-user"><div class="turn-role">你</div><div class="turn-text">' + user_raw + '</div></div>'
+            # User text is formatted client-side for line breaks and basic
+            # Markdown. Escape it before it enters generated content.js.
+            user_display = _html_escape(user_raw)
+            wrap += '<div class="turn-user"><div class="turn-role">你</div><div class="turn-text">' + user_display + '</div></div>'
         wrap += '<div class="turn-ai"><div class="turn-role">叙事</div><div class="turn-text">' + ai_display + '</div></div>'
         wrap += '</div>'
         html_parts.append(wrap)
