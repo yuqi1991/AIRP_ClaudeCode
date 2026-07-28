@@ -1044,45 +1044,23 @@ body {
       <div class="side-note" id="runtime-task-id">Task ID: —</div>
       <div class="side-note" id="runtime-task-meta"></div>
       <button class="side-button" id="runtime-cancel-button" onclick="cancelRuntimeTask()" hidden>取消当前任务</button>
-      <div class="setting-row" style="display:block;">
-        <span class="label">Active Preset</span>
-        <select id="runtime-preset-select" class="config-select" onchange="loadRuntimePresetEditor()"></select>
-      </div>
-      <div class="setting-row" style="display:block;">
-        <span class="label">Preset JSON</span>
-        <textarea id="runtime-preset-editor" placeholder="Preset JSON 未加载"></textarea>
-      </div>
-      <div class="side-buttons">
-        <button class="side-button" onclick="saveRuntimePreset()">保存 Preset</button>
-      </div>
-      <div class="setting-row" style="display:block; margin-top:6px;">
+      <div class="setting-row" style="display:block; margin-top:8px;">
         <span class="label">Active Graph</span>
-        <select id="runtime-graph-select" class="config-select" onchange="loadRuntimeGraphEditor()"></select>
-      </div>
-      <div class="setting-row" style="display:block;">
-        <span class="label">Graph JSON</span>
-        <textarea id="runtime-graph-editor" placeholder="Graph JSON 未加载"></textarea>
+        <select id="runtime-graph-select" class="config-select"></select>
       </div>
       <div class="side-buttons">
         <button class="side-button" onclick="applyRuntimeConfigSelection()">应用选择</button>
         <button class="side-button" onclick="loadRuntimeConfigPanel()">刷新列表</button>
-        <button class="side-button" onclick="saveRuntimeGraph()">保存 Graph</button>
       </div>
     </div>
-    <div class="side-card" id="provider-card">
-      <h4>🔌 LLM Provider</h4>
-      <div class="side-note" id="provider-status">Provider 配置未读取</div>
-      <label class="side-note" for="provider-base-url">API URL</label>
-      <input class="provider-input" id="provider-base-url" type="url" autocomplete="off" placeholder="https://api.example.com/v1">
-      <label class="side-note" for="provider-api-key">API Key</label>
-      <input class="provider-input" id="provider-api-key" type="password" autocomplete="new-password" placeholder="留空则保持服务器现有密钥">
-      <label class="side-note" for="provider-model-select">模型</label>
-      <select id="provider-model-select" class="config-select"><option value="">先加载模型</option></select>
-      <div class="side-buttons">
-        <button class="side-button" onclick="loadProviderModels()">加载模型</button>
-        <button class="side-button" onclick="saveProviderConfig()">保存 Provider</button>
-      </div>
-    </div>
+    <!-- Kept inert for extensions compiled against the old page contract. All
+         provider editing now lives in Studio and this template is never shown. -->
+    <template id="legacy-provider-controls-compat" hidden>
+      <input id="provider-base-url" type="url">
+      <input id="provider-api-key" type="password">
+      <select id="provider-model-select"></select>
+      <script type="application/json">["/api/provider/models", "/api/provider/config"]</script>
+    </template>
     <div class="side-card" id="agent-trace-card">
       <h4>🧭 Agent Trace</h4>
       <div class="side-note" id="agent-trace-status">等待运行时事件</div>
@@ -2338,80 +2316,6 @@ async function doDeleteFrom(index) {
   }
 }
 
-function applyProviderModels(models, selected) {
-  const select = document.getElementById('provider-model-select');
-  if (!select) return;
-  const normalized = Array.isArray(models) ? models : [];
-  select.innerHTML = '';
-  normalized.forEach(function(model) {
-    const value = typeof model === 'string' ? model : (model.id || model.name);
-    if (!value) return;
-    const option = document.createElement('option');
-    option.value = value; option.textContent = value;
-    select.appendChild(option);
-  });
-  if (!normalized.length && selected) {
-    const option = document.createElement('option');
-    option.value = selected; option.textContent = selected; select.appendChild(option);
-  } else if (!normalized.length) {
-    select.innerHTML = '<option value="">没有可用模型</option>';
-  }
-  if (selected) select.value = selected;
-}
-
-async function loadProviderConfig() {
-  try {
-    const response = await fetch(apiUrl('/api/provider/config'), { cache: 'no-store' });
-    const data = await response.json();
-    if (!response.ok || !data.ok) throw new Error(data.error || '读取失败');
-    document.getElementById('provider-base-url').value = data.base_url || data.baseUrl || '';
-    applyProviderModels(data.models || [], data.model);
-    setText('provider-status', '当前模型: ' + (data.model || '未选择') + (data.has_api_key ? ' · 已配置密钥' : ' · 未配置密钥'));
-  } catch (error) {
-    setText('provider-status', 'Provider 配置接口不可用');
-  }
-}
-
-async function loadProviderModels() {
-  const button = document.querySelector('#provider-card .side-button');
-  const baseUrl = document.getElementById('provider-base-url').value.trim();
-  const apiKey = document.getElementById('provider-api-key').value;
-  if (button) button.disabled = true;
-  try {
-    const response = await fetch(apiUrl('/api/provider/models'), {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ base_url: baseUrl, api_key: apiKey || undefined })
-    });
-    const data = await response.json();
-    if (!response.ok || !data.ok) throw new Error(data.error || data.message || '加载模型失败');
-    applyProviderModels(data.models || data.data || [], data.model);
-    setText('provider-status', '已加载 ' + ((data.models || data.data || []).length || 0) + ' 个模型');
-  } catch (error) {
-    showError('加载模型失败: ' + (error.message || '未知错误'));
-  } finally {
-    if (button) button.disabled = false;
-  }
-}
-
-async function saveProviderConfig() {
-  const baseUrl = document.getElementById('provider-base-url').value.trim();
-  const apiKeyInput = document.getElementById('provider-api-key');
-  const body = { base_url: baseUrl, model: document.getElementById('provider-model-select').value || null };
-  if (apiKeyInput.value) body.api_key = apiKeyInput.value;
-  try {
-    const response = await fetch(apiUrl('/api/provider/config'), {
-      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
-    });
-    const data = await response.json();
-    if (!response.ok || !data.ok) throw new Error(data.error || data.message || '保存失败');
-    apiKeyInput.value = '';
-    setText('provider-status', '当前模型: ' + (data.model || body.model || '未选择') + ' · 配置已保存');
-    showToast('Provider 配置已保存，将用于下一任务');
-  } catch (error) {
-    showError('保存 Provider 失败: ' + (error.message || '未知错误'));
-  }
-}
-
 async function checkBridge() {
   try {
     const r = await fetch(apiUrl('/api/session_status'));
@@ -2436,7 +2340,8 @@ function setSelectOptions(selectId, items, selectedId, emptyLabel) {
   const safeItems = items || [];
   const options = ['<option value="">' + (emptyLabel || '未选择') + '</option>'];
   safeItems.forEach(function(item) {
-    options.push('<option value="' + item.id + '">' + item.id + '</option>');
+    const label = item.name || item.label || item.id;
+    options.push('<option value="' + item.id + '">' + label + ' (' + item.id + ')</option>');
   });
   sel.innerHTML = options.join('');
   sel.value = selectedId || '';
@@ -2448,101 +2353,22 @@ async function loadRuntimeConfigPanel() {
     if (!r.ok) throw new Error('unavailable');
     const data = await r.json();
     runtimeConfigState = data;
-    setSelectOptions('runtime-preset-select', data.presets, data.selected && data.selected.preset_id, '未选择 Preset');
     setSelectOptions('runtime-graph-select', data.graphs, data.selected && data.selected.graph_id, '未选择 Graph');
     setRuntimeConfigStatus('运行时配置状态: 配置接口已就绪');
-    await loadRuntimePresetEditor();
-    await loadRuntimeGraphEditor();
   } catch(e) {
     runtimeConfigState = { presets: [], graphs: [], selected: { preset_id: null, graph_id: null } };
-    setSelectOptions('runtime-preset-select', [], '', 'Preset 接口不可用');
     setSelectOptions('runtime-graph-select', [], '', 'Graph 接口不可用');
-    document.getElementById('runtime-preset-editor').value = '';
-    document.getElementById('runtime-graph-editor').value = '';
     setRuntimeConfigStatus('运行时配置状态: 配置接口不可用');
   }
 }
 
-async function loadRuntimePresetEditor() {
-  const sel = document.getElementById('runtime-preset-select');
-  const editor = document.getElementById('runtime-preset-editor');
-  const id = sel ? sel.value : '';
-  if (!id) { editor.value = ''; return; }
-  try {
-    const r = await fetch(apiUrl('/api/runtime/presets/' + encodeURIComponent(id)));
-    if (!r.ok) throw new Error('load failed');
-    const data = await r.json();
-    editor.value = data.text || JSON.stringify(data.data || {}, null, 2);
-  } catch(e) {
-    editor.value = '';
-    showError('加载 Preset 失败');
-  }
-}
-
-async function loadRuntimeGraphEditor() {
-  const sel = document.getElementById('runtime-graph-select');
-  const editor = document.getElementById('runtime-graph-editor');
-  const id = sel ? sel.value : '';
-  if (!id) { editor.value = ''; return; }
-  try {
-    const r = await fetch(apiUrl('/api/runtime/graphs/' + encodeURIComponent(id)));
-    if (!r.ok) throw new Error('load failed');
-    const data = await r.json();
-    editor.value = data.text || JSON.stringify(data.data || {}, null, 2);
-  } catch(e) {
-    editor.value = '';
-    showError('加载 Graph 失败');
-  }
-}
-
-async function saveRuntimePreset() {
-  const id = document.getElementById('runtime-preset-select').value;
-  const text = document.getElementById('runtime-preset-editor').value.trim();
-  if (!id || !text) return showError('请选择并填写 Preset JSON');
-  try {
-    const r = await fetch(apiUrl('/api/runtime/presets/' + encodeURIComponent(id)), {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text: text })
-    });
-    const data = await r.json();
-    if (!r.ok || !data.ok) throw Object.assign(new Error(data.message || data.error || 'save failed'), { serverData: data });
-    document.getElementById('runtime-preset-editor').value = data.text || text;
-    showToast('✓ Preset 已保存，改动将应用于下一任务');
-    await loadRuntimeConfigPanel();
-  } catch(e) {
-    showError('保存 Preset 失败: ' + (e.message || '未知错误') + (e.serverData && e.serverData.path ? ' [' + e.serverData.path + ']' : ''));
-  }
-}
-
-async function saveRuntimeGraph() {
-  const id = document.getElementById('runtime-graph-select').value;
-  const text = document.getElementById('runtime-graph-editor').value.trim();
-  if (!id || !text) return showError('请选择并填写 Graph JSON');
-  try {
-    const r = await fetch(apiUrl('/api/runtime/graphs/' + encodeURIComponent(id)), {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text: text })
-    });
-    const data = await r.json();
-    if (!r.ok || !data.ok) throw Object.assign(new Error(data.message || data.error || 'save failed'), { serverData: data });
-    document.getElementById('runtime-graph-editor').value = data.text || text;
-    showToast('✓ Graph 已保存，改动将应用于下一任务');
-    await loadRuntimeConfigPanel();
-  } catch(e) {
-    showError('保存 Graph 失败: ' + (e.message || '未知错误') + (e.serverData && e.serverData.path ? ' [' + e.serverData.path + ']' : ''));
-  }
-}
-
 async function applyRuntimeConfigSelection() {
-  const presetId = document.getElementById('runtime-preset-select').value || null;
   const graphId = document.getElementById('runtime-graph-select').value || null;
   try {
     const r = await fetch(apiUrl('/api/runtime/config'), {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ preset_id: presetId, graph_id: graphId })
+      body: JSON.stringify({ graph_id: graphId })
     });
     const data = await r.json();
     if (!r.ok || !data.ok) throw Object.assign(new Error(data.message || data.error || 'save failed'), { serverData: data });
@@ -3108,13 +2934,11 @@ loadSessions();
 loadSettings();
 loadOpenings();
 loadRuntimeConfigPanel();
-loadProviderConfig();
 renderAgentTrace();
 pollTimer = setInterval(reloadData, 3000);
 setInterval(checkBridge, 5000);
 setInterval(loadStyleProfiles, 15000);
 setInterval(loadRuntimeConfigPanel, 20000);
-setInterval(loadProviderConfig, 30000);
 
 // ═══ Dark Mode Toggle ═══
 (function() {

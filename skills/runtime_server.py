@@ -79,6 +79,7 @@ from engine.runtime_config import CONFIG_ID_RE, RuntimeConfigError, RuntimeConfi
 from engine.session_manager import SessionManager, SessionManagerError
 from engine.secret_store import LocalSecretStore
 from engine.studio_library import ProviderProfileError, ProviderProfileStore
+from engine.studio_migration import bootstrap_legacy_runtime_library
 from engine.worldbook_library import WorldbookLibrary, WorldbookLibraryError
 
 SSE_HEARTBEAT_SECONDS = 15.0
@@ -153,13 +154,15 @@ class SessionRuntimeServer:
         repo_root = Path(__file__).resolve().parents[1]
         self.preset_root = Path(preset_root).resolve() if preset_root else ((self.static_root / "presets").resolve() if self.static_root else None)
         self.graph_root = Path(graph_root).resolve() if graph_root else ((self.static_root / "graphs").resolve() if self.static_root else (repo_root / "graphs").resolve())
+        self.provider_profile_store = ProviderProfileStore(self.static_root) if self.static_root else None
+        self.provider_secret_store = LocalSecretStore(self.static_root / "studio" / "secrets.json") if self.static_root else None
         self.provider_profiles = (
             ProviderProfileService(
-                ProviderProfileStore(self.static_root),
-                LocalSecretStore(self.static_root / "studio" / "secrets.json"),
+                self.provider_profile_store,
+                self.provider_secret_store,
                 discovery_timeout=MODEL_DISCOVERY_TIMEOUT_SECONDS,
             )
-            if self.static_root
+            if self.provider_profile_store is not None and self.provider_secret_store is not None
             else None
         )
         self.agent_store = (
@@ -174,16 +177,8 @@ class SessionRuntimeServer:
         self.agent_definitions = AgentDefinitionService(self.agent_store) if self.agent_store else None
         # Short alias for callers that use the Studio object name directly.
         self.agents = self.agent_definitions
-        self.graph_definitions = (
-            GraphDefinitionService(
-                GraphDefinitionStore(
-                    self.static_root,
-                    agent_store=self.agent_store,
-                )
-            )
-            if self.static_root
-            else None
-        )
+        self.graph_store = GraphDefinitionStore(self.static_root, agent_store=self.agent_store) if self.static_root else None
+        self.graph_definitions = GraphDefinitionService(self.graph_store) if self.graph_store else None
         self.graphs = self.graph_definitions
         self.worldbooks = WorldbookLibrary(self.static_root) if self.static_root else None
         self.projects = (
@@ -191,9 +186,6 @@ class SessionRuntimeServer:
             if self.static_root and self.worldbooks is not None
             else None
         )
-        self._studio_graph_configured = False
-        self._configure_runtime_worldbooks()
-        self._configure_runtime_studio_graph()
         self.config_store = (
             RuntimeConfigStore(
                 self.static_root,
@@ -203,6 +195,10 @@ class SessionRuntimeServer:
             if self.static_root
             else None
         )
+        self._bootstrap_legacy_studio_library()
+        self._studio_graph_configured = False
+        self._configure_runtime_worldbooks()
+        self._configure_runtime_studio_graph()
         self._httpd: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
         self._submit_threads: list[threading.Thread] = []
@@ -471,8 +467,55 @@ class SessionRuntimeServer:
             "ok": True,
             "selected": self._runtime_selection(),
             "presets": self._list_json_configs("preset"),
-            "graphs": self._list_json_configs("graph"),
+            "graphs": self._studio_graph_options(),
         }
+
+    def _studio_graph_options(self) -> list[dict[str, Any]]:
+        """Expose Studio graphs to the small game-page activation selector."""
+        if self.graph_definitions is not None:
+            try:
+                options = [
+                    {
+                        "id": graph["id"],
+                        "name": graph.get("name") or graph["id"],
+                        "updated_at": graph.get("updated_at", 0),
+                    }
+                    for graph in self.graph_definitions.list_graphs()
+                ]
+                if options:
+                    return options
+            except GraphDefinitionError:
+                pass
+        return self._list_json_configs("graph")
+
+    def _bootstrap_legacy_studio_library(self) -> None:
+        """Make the active card's legacy files visible in Studio on first boot."""
+        if not all(
+            (
+                self.static_root,
+                self.provider_profile_store,
+                self.provider_secret_store,
+                self.agent_store,
+                self.graph_store,
+                self.projects,
+            )
+        ):
+            return
+        try:
+            bootstrap_legacy_runtime_library(
+                static_root=self.static_root,
+                provider_store=self.provider_profile_store,
+                secret_store=self.provider_secret_store,
+                agent_store=self.agent_store,
+                graph_store=self.graph_store,
+                project_store=self.projects,
+                project_id=self.runtime.project_id,
+                card_facts=self.runtime.card_facts(),
+            )
+        except Exception:
+            # A malformed optional legacy file must not prevent the game from
+            # starting; Studio will still expose any valid existing objects.
+            return
 
     # ── Provider configuration (keys are memory-only) ────────────────
 
@@ -648,7 +691,9 @@ class SessionRuntimeServer:
         if self.agent_definitions is None:
             return {"ok": False, "error": "studio_library_unavailable"}, 501
         try:
-            return {"ok": True, **self.agent_definitions.create_agent(body)}, 201
+            result = self.agent_definitions.create_agent(body)
+            self._sync_studio_graphs_to_legacy()
+            return {"ok": True, **result}, 201
         except AgentDefinitionError as exc:
             return self._studio_agent_error(exc)
 
@@ -656,7 +701,9 @@ class SessionRuntimeServer:
         if self.agent_definitions is None:
             return {"ok": False, "error": "studio_library_unavailable"}, 501
         try:
-            return {"ok": True, **self.agent_definitions.update_agent(agent_id, body)}, 200
+            result = self.agent_definitions.update_agent(agent_id, body)
+            self._sync_studio_graphs_to_legacy()
+            return {"ok": True, **result}, 200
         except AgentDefinitionError as exc:
             return self._studio_agent_error(exc)
 
@@ -664,7 +711,9 @@ class SessionRuntimeServer:
         if self.agent_definitions is None:
             return {"ok": False, "error": "studio_library_unavailable"}, 501
         try:
-            return {"ok": True, **self.agent_definitions.copy_agent(agent_id, body)}, 201
+            result = self.agent_definitions.copy_agent(agent_id, body)
+            self._sync_studio_graphs_to_legacy()
+            return {"ok": True, **result}, 201
         except AgentDefinitionError as exc:
             return self._studio_agent_error(exc)
 
@@ -727,7 +776,9 @@ class SessionRuntimeServer:
         if self.graph_definitions is None:
             return {"ok": False, "error": "studio_library_unavailable"}, 501
         try:
-            return {"ok": True, **self.graph_definitions.create_graph(body)}, 201
+            result = self.graph_definitions.create_graph(body)
+            self._sync_studio_graphs_to_legacy()
+            return {"ok": True, **result}, 201
         except GraphDefinitionError as exc:
             return self._studio_graph_error(exc)
 
@@ -735,7 +786,9 @@ class SessionRuntimeServer:
         if self.graph_definitions is None:
             return {"ok": False, "error": "studio_library_unavailable"}, 501
         try:
-            return {"ok": True, **self.graph_definitions.update_graph(graph_id, body)}, 200
+            result = self.graph_definitions.update_graph(graph_id, body)
+            self._sync_studio_graphs_to_legacy()
+            return {"ok": True, **result}, 200
         except GraphDefinitionError as exc:
             return self._studio_graph_error(exc)
 
@@ -743,7 +796,9 @@ class SessionRuntimeServer:
         if self.graph_definitions is None:
             return {"ok": False, "error": "studio_library_unavailable"}, 501
         try:
-            return {"ok": True, **self.graph_definitions.copy_graph(graph_id, body)}, 201
+            result = self.graph_definitions.copy_graph(graph_id, body)
+            self._sync_studio_graphs_to_legacy()
+            return {"ok": True, **result}, 201
         except GraphDefinitionError as exc:
             return self._studio_graph_error(exc)
 
@@ -755,6 +810,56 @@ class SessionRuntimeServer:
             return {"ok": True, "deleted_id": graph_id}, 200
         except GraphDefinitionError as exc:
             return self._studio_graph_error(exc)
+
+    def _sync_studio_graphs_to_legacy(self) -> None:
+        """Project Studio graph definitions for the legacy startup reader.
+
+        Studio remains authoritative for an attached runtime.  The projection
+        is only a compatibility bridge for ``start_runtime.py`` which freezes
+        one legacy graph before constructing the HTTP server.
+        """
+        if self.config_store is None or self.graph_definitions is None or self.agent_store is None:
+            return
+        try:
+            graphs = self.graph_definitions.list_graphs()
+        except GraphDefinitionError:
+            return
+        for graph in graphs:
+            try:
+                self.config_store.write_config("graph", graph["id"], self._legacy_graph_from_studio(graph))
+            except (GraphDefinitionError, AgentDefinitionError, RuntimeConfigError, OSError, ValueError):
+                continue
+
+    def _legacy_graph_from_studio(self, graph: dict[str, Any]) -> dict[str, Any]:
+        nodes = []
+        enabled_nodes = [node for node in graph.get("nodes", []) if node.get("enabled", True)]
+        final_node_id = graph.get("output_node_id") or (enabled_nodes[-1]["node_id"] if enabled_nodes else None)
+        for index, node in enumerate(graph.get("nodes", [])):
+            agent = self.agent_store.get_agent(node["agent_id"])
+            provider_profile_id = node.get("provider_profile_id") or agent.get("provider_profile_id")
+            model = node.get("model_id") or agent.get("model_id") or "deepseek-v4-flash"
+            role = "narrative_director" if node["node_id"] == final_node_id else f"studio_{node['agent_id']}"
+            nodes.append(
+                {
+                    "id": node["node_id"],
+                    "role": role,
+                    "enabled": node.get("enabled", True),
+                    "order": node.get("order", index),
+                    "provider": "deepseek",
+                    "provider_profile_id": provider_profile_id,
+                    "model": model,
+                    "max_tool_rounds": 8,
+                    "max_retries": 2,
+                    "instruction": agent.get("instruction", ""),
+                }
+            )
+        return {
+            "id": graph["id"],
+            "version": str(graph.get("version") or "1"),
+            "mode": "sequential",
+            "commit_validation_retries": 3,
+            "nodes": nodes,
+        }
 
     # ── Studio Worldbooks and Project bindings ────────────────────────
 
@@ -2048,9 +2153,27 @@ class SessionRuntimeServer:
         if graph_id in (None, ""):
             graph_id = "default"
         try:
+            # Graphs are edited in Studio.  Materialize the selected Studio
+            # definition before the compatibility RuntimeConfigStore validates
+            # the selection, then bind the active card Project to that graph.
+            if self.graph_definitions is not None:
+                try:
+                    studio_graph = self.graph_definitions.get_graph(graph_id)
+                except GraphDefinitionError:
+                    studio_graph = None
+                if studio_graph is not None:
+                    self.config_store.write_config("graph", graph_id, self._legacy_graph_from_studio(studio_graph))
             runtime_cfg = self.config_store.write_selection(preset_id, graph_id)
+            if self.projects is not None:
+                try:
+                    self.projects.update_project(self.runtime.project_id, {"graph_id": graph_id})
+                except ProjectLibraryError:
+                    pass
+                self._configure_runtime_studio_graph()
         except RuntimeConfigError as exc:
             return {"ok": False, **exc.to_dict()}, 400
+        except (GraphDefinitionError, AgentDefinitionError, ValueError) as exc:
+            return {"ok": False, "error": "invalid_runtime_config", "message": str(exc)}, 400
         except OSError as exc:
             return {"ok": False, "error": "not_found", "message": str(exc)}, 404
         return {
