@@ -11,6 +11,7 @@ import json
 from typing import Any, Callable
 
 from engine.graph_runtime import AgentArtifact, GraphNodePlan, NodeResult
+from engine.macros import build_context, expand_template
 from engine.provider import (
     AbortSignal,
     ProviderAborted,
@@ -53,7 +54,18 @@ class ProviderNodeRunner:
     ) -> NodeResult:
         try:
             provider = self.provider_factory(node)
-            messages = [dict(message) for message in node.agent.prompt]
+            runtime_context = build_context(
+                {
+                    "handoff": input_artifact.content,
+                    "node_input": input_artifact.content,
+                    "input_artifact": input_artifact.to_dict(),
+                }
+            )
+            messages = expand_template(
+                [dict(message) for message in node.agent.prompt],
+                runtime_context,
+                preserve_unknown=True,
+            )
             messages.append({"role": "user", "content": self._content(input_artifact.content)})
             tools = self._tools(node)
             model = node.model_id or node.agent.model_id or provider.model_id(node.agent.agent_id)

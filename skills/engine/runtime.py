@@ -2826,6 +2826,10 @@ class SessionTurnRuntime:
         initvar = self._read_json(initvar_path, {})
         runtime_turns = self._source_recent_turns(base_revision)
         current_state = self._state_at_revision(base_revision)
+        card_facts = self._read_json(card_data_path, {})
+        card_structure = self._read_json(structure_path, {})
+        recent_memory = self._recent_memory(project_path)
+        worldbooks = self._worldbook_snapshot(catalog_path, reference_path, user_path)
         runtime_config = None
         settings = self.session_settings
         if self.runtime_config_store is not None:
@@ -2836,18 +2840,30 @@ class SessionTurnRuntime:
             execution_plan = self.execution_plan_compiler.compile(
                 project_id=self.project_id,
                 player_input=player_input,
+                context={
+                    "project_id": self.project_id,
+                    "player_input": player_input,
+                    "card_facts": card_facts,
+                    "settings": settings,
+                    "worldbook_catalog": worldbooks["worldbook_catalog"],
+                    "card_structure": card_structure,
+                    "initvar": initvar,
+                    "current_state": current_state,
+                    "recent_memory": recent_memory,
+                    "recent_turns": runtime_turns,
+                    "runtime_config": runtime_config,
+                },
             )
-        worldbooks = self._worldbook_snapshot(catalog_path, reference_path, user_path)
         return {
-            "card_facts": self._read_json(card_data_path, {}),
+            "card_facts": card_facts,
             "settings": settings,
             "worldbook_catalog": worldbooks["worldbook_catalog"],
             "worldbook_reference": worldbooks["worldbook_reference"],
             "worldbook_user": worldbooks["worldbook_user"],
-            "card_structure": self._read_json(structure_path, {}),
+            "card_structure": card_structure,
             "initvar": initvar,
             "current_state": current_state,
-            "recent_memory": self._recent_memory(project_path),
+            "recent_memory": recent_memory,
             "recent_turns": runtime_turns,
             "runtime_config": runtime_config,
             "execution_plan": execution_plan.to_dict() if execution_plan is not None else None,

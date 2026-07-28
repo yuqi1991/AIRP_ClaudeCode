@@ -251,11 +251,10 @@ class ResolvedAgent:
         )
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        payload = {
             "agent_id": self.agent_id,
             "name": self.name,
             "instruction": self.instruction,
-            "prompt_preset_id": self.prompt_preset_id,
             "provider_profile_id": self.provider_profile_id,
             "model_id": self.model_id,
             "generation": _copy(dict(self.generation)),
@@ -265,6 +264,11 @@ class ResolvedAgent:
             "prompt_provenance": [_copy(item) for item in self.prompt_provenance],
             "effective_config": _copy(dict(self.effective_config)),
         }
+        if self.prompt_preset_id is not None:
+            # Keep explicitly authored legacy plans replayable without adding
+            # a null preset field to new instruction-only plans.
+            payload["prompt_preset_id"] = self.prompt_preset_id
+        return payload
 
 
 @dataclass(frozen=True)
@@ -411,6 +415,7 @@ class ExecutionPlanCompiler:
         player_input: str = "",
         project_id: str | None = None,
         graph_id: str | None = None,
+        context: Mapping[str, Any] | None = None,
     ) -> ExecutionPlan:
         project = self._resolve_project(project, project_id)
         resolved_project_id = str(project.get("id") or project.get("project_id") or project_id or "project")
@@ -441,7 +446,7 @@ class ExecutionPlanCompiler:
                 definition = _copy(self.agent_store.get_agent(agent_id))
             if definition is None:
                 raise ValueError(f"Agent Definition {agent_id!r} was not found")
-            preview = self._preview_agent(definition, player_input)
+            preview = self._preview_agent(definition, player_input, context=context)
             resolved_agent = self._apply_node_overrides(
                 ResolvedAgent.from_definition(definition, preview),
                 raw_node,
@@ -572,7 +577,7 @@ class ExecutionPlanCompiler:
         ids = project.get("worldbook_ids") or project.get("worldbook_bindings") or []
         return [_copy(self.worldbook_store.get_worldbook(item)) for item in ids]
 
-    def _preview_agent(self, definition, player_input):
+    def _preview_agent(self, definition, player_input, *, context=None):
         if self.agent_store is not None and hasattr(self.agent_store, "preview_agent"):
             agent_id = definition.get("agent_id", definition.get("id"))
             try:
@@ -580,6 +585,7 @@ class ExecutionPlanCompiler:
                     agent_id,
                     {
                         "project_input": player_input,
+                        "context": _copy(context or {}),
                         "output_contract": {"kind": "narrative_draft", "content_type": "text/plain"},
                     },
                 )

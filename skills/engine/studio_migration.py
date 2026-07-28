@@ -45,7 +45,6 @@ def bootstrap_legacy_runtime_library(
     settings = _read_object(root / "settings.json")
     runtime_settings = settings.get("runtime") if isinstance(settings.get("runtime"), dict) else {}
     selected_graph_id = _safe_id(runtime_settings.get("graph_id") or "default")
-    selected_preset_id = _safe_id(runtime_settings.get("preset_id") or "default")
     legacy_graphs = _legacy_graphs(root / "graphs")
     if not legacy_graphs:
         return {"graphs": 0, "agents": 0, "providers": 0, "project": False}
@@ -96,8 +95,16 @@ def bootstrap_legacy_runtime_library(
             effective_instruction = node_instruction.strip() or legacy_instruction
             try:
                 existing = agent_store.get_agent(agent_id)
+                updates = {}
                 if effective_instruction and not str(existing.get("instruction") or "").strip():
-                    agent_store.update_agent(agent_id, {"instruction": effective_instruction})
+                    updates["instruction"] = effective_instruction
+                if existing.get("prompt_preset_id"):
+                    # Existing imported definitions are migrated to the
+                    # instruction-only shape; the Agent store still reads an
+                    # explicit legacy field for old hand-authored files.
+                    updates["prompt_preset_id"] = None
+                if updates:
+                    agent_store.update_agent(agent_id, updates)
                 continue
             except Exception:
                 pass
@@ -114,7 +121,6 @@ def bootstrap_legacy_runtime_library(
                 "agent_id": agent_id,
                 "name": str(node.get("name") or node.get("label") or node.get("role") or node_id),
                 "instruction": effective_instruction,
-                "prompt_preset_id": selected_preset_id,
                 "provider_profile_id": provider_ids.get(provider_key),
                 "model_id": node.get("model") if isinstance(node.get("model"), str) else None,
                 "generation": generation,

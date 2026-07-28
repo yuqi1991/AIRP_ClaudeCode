@@ -1,15 +1,14 @@
 import hashlib
 import json
-import re
 from dataclasses import dataclass, replace
 from typing import Any, Callable, Optional
+
+from engine.macros import build_context, expand_template
 
 
 # Compile-time only. No date/time/cwd/random — those are non-deterministic
 # (pi-rp coding-agent macros explicitly excluded; see ADR-0009).
 MACROS_VERSION = "macros-v1"
-_KNOWN_MACROS = frozenset({"style", "nsfw", "person", "charName", "user"})
-_MACRO_RE = re.compile(r"\{\{(\w+)\}\}")
 
 
 @dataclass(frozen=True)
@@ -230,28 +229,28 @@ def macro_context(request):
         return str(value)
 
     style = settings.get("style", "")
-    return {
+    macro_snapshot = {
+        key: value
+        for key, value in snapshot.items()
+        if key not in {"worldbook_reference", "worldbook_user"}
+    }
+    context = build_context(macro_snapshot, request={
+        "player_input": request.player_input,
+        "user": settings.get("user") or snapshot.get("user") or "",
+    })
+    context.update({
         "style": _as_str(style if not isinstance(style, dict) else style.get("name", style)),
         "nsfw": _as_str(settings.get("nsfw", "")),
         "person": _as_str(settings.get("person", "")),
         "charName": _as_str(settings.get("charName") or card_facts.get("name") or ""),
         "user": _as_str(settings.get("user") or snapshot.get("user") or ""),
-    }
+    })
+    return context
 
 
 def expand_macros(value, request):
     """Expand {{macro}} placeholders in strings at compile time. Non-strings pass through."""
-    if not isinstance(value, str):
-        return value
-    ctx = macro_context(request)
-
-    def _repl(match):
-        key = match.group(1)
-        if key in _KNOWN_MACROS:
-            return ctx.get(key, "")
-        return match.group(0)
-
-    return _MACRO_RE.sub(_repl, value)
+    return expand_template(value, macro_context(request), preserve_unknown=True)
 
 
 def compile_context(request):

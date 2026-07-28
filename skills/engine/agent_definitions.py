@@ -18,12 +18,12 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from engine.macros import available_macro_roots, build_context, expand_template
 from engine.tools import TOOL_SCHEMAS
 
 
 AGENT_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
 PROMPT_PRESET_ID_RE = AGENT_ID_RE
-_MACRO_RE = re.compile(r"\{\{\s*([A-Za-z0-9_.-]+)\s*\}\}")
 
 GENERATION_FIELDS = (
     "temperature",
@@ -277,7 +277,12 @@ class AgentDefinitionStore:
             raise AgentDefinitionError("invalid_prompt_preview", "preview payload must be an object")
         agent = self.get_agent(agent_id)
         request = payload or {}
-        preset = self.get_prompt_preset(agent["prompt_preset_id"])
+        # Prompt presets are retained only as a read-compatible path for
+        # definitions created by older versions. New definitions are
+        # instruction-only and never acquire a default preset.
+        preset = None
+        if agent.get("prompt_preset_id"):
+            preset = self.get_prompt_preset(agent["prompt_preset_id"])
         return self._compile_preview(agent, preset, request)
 
     # ── Normalization ─────────────────────────────────────────────────
@@ -298,11 +303,13 @@ class AgentDefinitionStore:
         if not isinstance(instruction, str):
             raise AgentDefinitionError("invalid_agent_definition", "instruction must be a string")
 
-        preset_id = payload.get(
-            "prompt_preset_id",
-            payload.get("promptPresetId", payload.get("preset_id", "default")),
-        )
-        self._validate_preset_id(preset_id)
+        preset_id = None
+        for key in ("prompt_preset_id", "promptPresetId", "preset_id"):
+            if key in payload:
+                preset_id = payload[key]
+                if preset_id not in (None, ""):
+                    self._validate_preset_id(preset_id)
+                break
 
         provider_payload = payload
         default_provider = payload.get("default_provider")
@@ -367,14 +374,13 @@ class AgentDefinitionStore:
             if tool not in normalized_tools:
                 normalized_tools.append(tool)
 
-        return {
+        normalized = {
             # ``id`` is retained as a read-compatible alias for existing
             # provider/graph scanners; ``agent_id`` is the Studio contract.
             "id": agent_id,
             "agent_id": agent_id,
             "name": name.strip(),
             "instruction": instruction,
-            "prompt_preset_id": preset_id,
             "provider_profile_id": provider_profile_id,
             "model_id": model_id,
             "generation": copy.deepcopy(generation),
@@ -383,6 +389,10 @@ class AgentDefinitionStore:
             "created_at": self._timestamp(payload.get("created_at")),
             "updated_at": self._timestamp(payload.get("updated_at")),
         }
+        if preset_id is not None:
+            # Compatibility only: Studio-created definitions omit this field.
+            normalized["prompt_preset_id"] = preset_id
+        return normalized
 
     @staticmethod
     def _apply_aliases(merged: dict[str, Any], payload: dict[str, Any]) -> None:
@@ -480,7 +490,7 @@ class AgentDefinitionStore:
     def _compile_preview(
         self,
         agent: dict[str, Any],
-        preset: dict[str, Any],
+        preset: dict[str, Any] | None,
         request: dict[str, Any],
     ) -> dict[str, Any]:
         project_input = request.get(
@@ -493,35 +503,43 @@ class AgentDefinitionStore:
             output_contract = {"kind": "narrative_draft", "content_type": "text/plain"}
 
         tool_protocol = self._tool_protocol(agent["tool_allowlist"])
+        runtime_context = request.get("context") if isinstance(request.get("context"), dict) else {}
+        macro_context = build_context(runtime_context, request=request)
         preset_entries = []
-        for entry in preset.get("entries", []):
-            if not entry.get("enabled", True):
-                continue
-            content = self._expand_macros(entry.get("content", ""), request)
-            preset_entries.append(
-                {
-                    "id": entry["id"],
-                    "role": entry.get("role") or "user",
-                    "content": content,
-                    "source_ref": entry.get("source_ref") or {"id": entry["id"]},
-                    "inclusion_reason": entry.get("inclusion_reason") or "prompt preset entry",
-                }
-            )
+        if preset is not None:
+            for entry in preset.get("entries", []):
+                if not entry.get("enabled", True):
+                    continue
+                content = self._expand_macros(entry.get("content", ""), request)
+                preset_entries.append(
+                    {
+                        "id": entry["id"],
+                        "role": entry.get("role") or "user",
+                        "content": content,
+                        "source_ref": entry.get("source_ref") or {"id": entry["id"]},
+                        "inclusion_reason": entry.get("inclusion_reason") or "prompt preset entry",
+                    }
+                )
 
+        instruction = expand_template(agent["instruction"], macro_context, preserve_unknown=True)
         source_specs = [
-            ("instruction", "Agent instruction", "system", agent["instruction"], bool(agent["instruction"])),
-            (
-                "prompt_preset",
-                f"Prompt Preset: {agent['prompt_preset_id']}",
-                None,
-                preset_entries,
-                bool(preset_entries),
-            ),
+            ("instruction", "Agent instruction", "system", instruction, bool(instruction)),
             ("project_input", "Project input", "user", project_input, project_input is not None),
             ("handoff", "Agent handoff", "user", handoff, handoff is not None),
             ("tool_protocol", "Tool protocol", "system", tool_protocol, True),
             ("output_contract", "Output contract", "system", output_contract, True),
         ]
+        if preset is not None:
+            source_specs.insert(
+                1,
+                (
+                    "prompt_preset",
+                    f"Prompt Preset: {agent['prompt_preset_id']}",
+                    None,
+                    preset_entries,
+                    bool(preset_entries),
+                ),
+            )
         provenance: list[dict[str, Any]] = []
         messages: list[dict[str, Any]] = []
         for order, (kind, label, role, content, included) in enumerate(source_specs, start=1):
@@ -533,6 +551,8 @@ class AgentDefinitionStore:
                 "included": included,
                 "content": copy.deepcopy(content),
             }
+            if kind == "instruction":
+                record["template"] = agent["instruction"]
             if kind == "prompt_preset":
                 record["preset_id"] = agent["prompt_preset_id"]
                 record["preset_version"] = preset.get("version", "1")
@@ -612,6 +632,9 @@ class AgentDefinitionStore:
             "overridden_basic_fields": overridden_basic_fields,
             "ignored_advanced_fields": ignored_advanced_fields,
             "tool_protocol": copy.deepcopy(tool_protocol),
+            "instruction_template": agent["instruction"],
+            "instruction": instruction,
+            "available_macros": available_macro_roots(macro_context),
         }
 
     @staticmethod
@@ -622,23 +645,9 @@ class AgentDefinitionStore:
 
     @staticmethod
     def _expand_macros(value: Any, request: dict[str, Any]) -> Any:
-        if not isinstance(value, str):
-            return copy.deepcopy(value)
-        replacements = {
-            "project_input": request.get("project_input", request.get("player_input", "")),
-            "player_input": request.get("player_input", request.get("project_input", "")),
-            "user": request.get("user", ""),
-            "charName": request.get("charName", ""),
-        }
-
-        def replace(match: re.Match[str]) -> str:
-            key = match.group(1)
-            value = replacements.get(key, match.group(0))
-            if isinstance(value, (dict, list)):
-                return json.dumps(value, ensure_ascii=False, sort_keys=True)
-            return str(value)
-
-        return _MACRO_RE.sub(replace, value)
+        context = request.get("context") if isinstance(request.get("context"), dict) else {}
+        merged = build_context(context, request=request)
+        return expand_template(value, merged, preserve_unknown=True)
 
     @staticmethod
     def _tool_protocol(tool_names: list[str]) -> list[dict[str, Any]]:
