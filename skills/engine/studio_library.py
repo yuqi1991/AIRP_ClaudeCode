@@ -303,3 +303,13 @@ class ProviderProfileStore:
                 os.unlink(temporary)
             except FileNotFoundError:
                 pass
+
+
+# Compatibility exports for callers that treat ``studio_library`` as the
+# aggregate Studio library module. The implementation lives in its own deep
+# module so Agent and Provider lifecycle concerns remain separate.
+from engine.agent_definitions import (  # noqa: E402
+    AgentDefinitionError,
+    AgentDefinitionService,
+    AgentDefinitionStore,
+)

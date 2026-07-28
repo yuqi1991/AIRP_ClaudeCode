@@ -66,6 +66,7 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 from urllib.request import Request, urlopen
 
+from engine.agent_definitions import AgentDefinitionError, AgentDefinitionService, AgentDefinitionStore
 from engine.commands import SessionCommandService
 from engine.provider import runtime_provider_api_key, set_runtime_provider_override
 from engine.provider_profiles import ProviderConnectionError, ProviderProfileService
@@ -83,6 +84,13 @@ RUNNING_TASK_STATUSES = frozenset({"queued", "leased", "running", "projection_pe
 DEFAULT_PROVIDER_BASE_URL = "https://api.deepseek.com"
 MODEL_DISCOVERY_TIMEOUT_SECONDS = 10
 STUDIO_PROVIDER_PATHS = ("/v1/studio/providers", "/api/studio/providers")
+STUDIO_AGENT_PATHS = (
+    "/v1/studio/agents",
+    "/api/studio/agents",
+    "/v1/studio/agent-definitions",
+    "/api/studio/agent-definitions",
+)
+STUDIO_PROMPT_PRESET_PATHS = ("/v1/studio/prompt-presets", "/api/studio/prompt-presets")
 STUDIO_WORLDBOOK_PATHS = ("/v1/studio/worldbooks", "/api/studio/worldbooks")
 STUDIO_PROJECT_PATHS = ("/v1/studio/projects", "/api/studio/projects")
 
@@ -144,6 +152,19 @@ class SessionRuntimeServer:
             if self.static_root
             else None
         )
+        self.agent_definitions = (
+            AgentDefinitionService(
+                AgentDefinitionStore(
+                    self.static_root,
+                    graph_root=self.graph_root,
+                    preset_root=self.preset_root,
+                )
+            )
+            if self.static_root
+            else None
+        )
+        # Short alias for callers that use the Studio object name directly.
+        self.agents = self.agent_definitions
         self.worldbooks = WorldbookLibrary(self.static_root) if self.static_root else None
         self._configure_runtime_worldbooks()
         self.config_store = (
@@ -539,6 +560,85 @@ class SessionRuntimeServer:
         except ProviderProfileError as exc:
             return self._studio_provider_error(exc)
 
+    # ── Studio Agent Definitions and prompt previews ──────────────────
+
+    @staticmethod
+    def _studio_agent_error(exc: AgentDefinitionError) -> tuple[dict[str, Any], int]:
+        return exc.to_dict(), exc.status
+
+    def _studio_agent_list(self) -> tuple[dict[str, Any], int]:
+        if self.agent_definitions is None:
+            return {"ok": False, "error": "studio_library_unavailable"}, 501
+        try:
+            return {"ok": True, "agents": self.agent_definitions.list_agents()}, 200
+        except AgentDefinitionError as exc:
+            return self._studio_agent_error(exc)
+
+    def _studio_agent_get(self, agent_id: str) -> tuple[dict[str, Any], int]:
+        if self.agent_definitions is None:
+            return {"ok": False, "error": "studio_library_unavailable"}, 501
+        try:
+            return {"ok": True, "agent": self.agent_definitions.get_agent(agent_id)}, 200
+        except AgentDefinitionError as exc:
+            return self._studio_agent_error(exc)
+
+    def _studio_agent_create(self, body: dict[str, Any]) -> tuple[dict[str, Any], int]:
+        if self.agent_definitions is None:
+            return {"ok": False, "error": "studio_library_unavailable"}, 501
+        try:
+            return {"ok": True, **self.agent_definitions.create_agent(body)}, 201
+        except AgentDefinitionError as exc:
+            return self._studio_agent_error(exc)
+
+    def _studio_agent_update(self, agent_id: str, body: dict[str, Any]) -> tuple[dict[str, Any], int]:
+        if self.agent_definitions is None:
+            return {"ok": False, "error": "studio_library_unavailable"}, 501
+        try:
+            return {"ok": True, **self.agent_definitions.update_agent(agent_id, body)}, 200
+        except AgentDefinitionError as exc:
+            return self._studio_agent_error(exc)
+
+    def _studio_agent_copy(self, agent_id: str, body: dict[str, Any]) -> tuple[dict[str, Any], int]:
+        if self.agent_definitions is None:
+            return {"ok": False, "error": "studio_library_unavailable"}, 501
+        try:
+            return {"ok": True, **self.agent_definitions.copy_agent(agent_id, body)}, 201
+        except AgentDefinitionError as exc:
+            return self._studio_agent_error(exc)
+
+    def _studio_agent_delete(self, agent_id: str) -> tuple[dict[str, Any], int]:
+        if self.agent_definitions is None:
+            return {"ok": False, "error": "studio_library_unavailable"}, 501
+        try:
+            self.agent_definitions.delete_agent(agent_id)
+            return {"ok": True, "deleted_id": agent_id}, 200
+        except AgentDefinitionError as exc:
+            return self._studio_agent_error(exc)
+
+    def _studio_agent_preview(self, agent_id: str, body: dict[str, Any]) -> tuple[dict[str, Any], int]:
+        if self.agent_definitions is None:
+            return {"ok": False, "error": "studio_library_unavailable"}, 501
+        try:
+            return {"ok": True, **self.agent_definitions.preview_agent(agent_id, body)}, 200
+        except AgentDefinitionError as exc:
+            return self._studio_agent_error(exc)
+
+    def _studio_prompt_preset_list(self) -> tuple[dict[str, Any], int]:
+        if self.agent_definitions is None:
+            return {"ok": False, "error": "studio_library_unavailable"}, 501
+        try:
+            return {"ok": True, "presets": self.agent_definitions.list_prompt_presets()}, 200
+        except AgentDefinitionError as exc:
+            return self._studio_agent_error(exc)
+
+    def _studio_prompt_preset_get(self, preset_id: str) -> tuple[dict[str, Any], int]:
+        if self.agent_definitions is None:
+            return {"ok": False, "error": "studio_library_unavailable"}, 501
+        try:
+            return {"ok": True, "preset": self.agent_definitions.get_prompt_preset(preset_id)}, 200
+        except AgentDefinitionError as exc:
+            return self._studio_agent_error(exc)
+
     # ── Studio Worldbooks and Project bindings ────────────────────────
 
     def _configure_runtime_worldbooks(self) -> None:
@@ -708,6 +808,35 @@ class SessionRuntimeServer:
                             return
                         break
 
+                # ── Runtime Studio Agent Definitions ───────────────────
+                if path in STUDIO_AGENT_PATHS:
+                    payload, status = server_ref._studio_agent_list()
+                    self._send_json(status, payload)
+                    return
+                for prefix in STUDIO_AGENT_PATHS:
+                    if path.startswith(prefix + "/"):
+                        suffix = path[len(prefix) + 1:]
+                        parts = suffix.split("/")
+                        if len(parts) == 1:
+                            payload, status = server_ref._studio_agent_get(parts[0])
+                            self._send_json(status, payload)
+                            return
+                        break
+
+                # Prompt presets are read-only library inputs for Agent editing.
+                if path in STUDIO_PROMPT_PRESET_PATHS:
+                    payload, status = server_ref._studio_prompt_preset_list()
+                    self._send_json(status, payload)
+                    return
+                for prefix in STUDIO_PROMPT_PRESET_PATHS:
+                    if path.startswith(prefix + "/"):
+                        preset_id = path[len(prefix) + 1:]
+                        if "/" not in preset_id:
+                            payload, status = server_ref._studio_prompt_preset_get(preset_id)
+                            self._send_json(status, payload)
+                            return
+                        break
+
                 # ── Runtime Studio Worldbooks and Project bindings ─────
                 if path in STUDIO_WORLDBOOK_PATHS:
                     payload, status = server_ref._studio_worldbook_action(
@@ -834,6 +963,29 @@ class SessionRuntimeServer:
                             return
                         if len(parts) == 3 and parts[1:] == ["models", "refresh"]:
                             payload, status = server_ref._studio_provider_refresh(parts[0])
+                            self._send_json(status, payload)
+                            return
+                        break
+
+                # ── Runtime Studio Agent Definitions ───────────────────
+                if path in STUDIO_AGENT_PATHS:
+                    payload, status = server_ref._studio_agent_create(body)
+                    self._send_json(status, payload)
+                    return
+                for prefix in STUDIO_AGENT_PATHS:
+                    if path.startswith(prefix + "/"):
+                        suffix = path[len(prefix) + 1:]
+                        parts = suffix.split("/")
+                        if len(parts) == 2 and parts[1] in {"copy", "duplicate"}:
+                            payload, status = server_ref._studio_agent_copy(parts[0], body)
+                            self._send_json(status, payload)
+                            return
+                        if len(parts) == 2 and parts[1] in {
+                            "prompt-preview",
+                            "prompt_preview",
+                            "preview",
+                        }:
+                            payload, status = server_ref._studio_agent_preview(parts[0], body)
                             self._send_json(status, payload)
                             return
                         break
@@ -1093,6 +1245,14 @@ class SessionRuntimeServer:
             def do_DELETE(self):  # noqa: N802
                 parsed = urlparse(self.path)
                 path = parsed.path.rstrip("/") or "/"
+                for prefix in STUDIO_AGENT_PATHS:
+                    if path.startswith(prefix + "/"):
+                        agent_id = path[len(prefix) + 1:]
+                        if "/" not in agent_id:
+                            payload, status = server_ref._studio_agent_delete(agent_id)
+                            self._send_json(status, payload)
+                            return
+                        break
                 for prefix in STUDIO_PROVIDER_PATHS:
                     if path.startswith(prefix + "/"):
                         suffix = path[len(prefix) + 1:]
@@ -1155,6 +1315,15 @@ class SessionRuntimeServer:
                 path = parsed.path.rstrip("/") or "/"
                 body = self._read_json()
 
+                for prefix in STUDIO_AGENT_PATHS:
+                    if path.startswith(prefix + "/"):
+                        agent_id = path[len(prefix) + 1:]
+                        if "/" not in agent_id:
+                            payload, status = server_ref._studio_agent_update(agent_id, body)
+                            self._send_json(status, payload)
+                            return
+                        break
+
                 for prefix in STUDIO_PROVIDER_PATHS:
                     if path.startswith(prefix + "/"):
                         profile_id = path[len(prefix) + 1:]
@@ -1207,6 +1376,14 @@ class SessionRuntimeServer:
                 parsed = urlparse(self.path)
                 path = parsed.path.rstrip("/") or "/"
                 body = self._read_json()
+                for prefix in STUDIO_AGENT_PATHS:
+                    if path.startswith(prefix + "/"):
+                        agent_id = path[len(prefix) + 1:]
+                        if "/" not in agent_id:
+                            payload, status = server_ref._studio_agent_update(agent_id, body)
+                            self._send_json(status, payload)
+                            return
+                        break
                 for prefix in STUDIO_PROVIDER_PATHS:
                     if path.startswith(prefix + "/"):
                         profile_id = path[len(prefix) + 1:]
