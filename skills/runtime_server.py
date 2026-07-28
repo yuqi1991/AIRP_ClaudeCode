@@ -68,6 +68,7 @@ from urllib.request import Request, urlopen
 
 from engine.agent_definitions import AgentDefinitionError, AgentDefinitionService, AgentDefinitionStore
 from engine.commands import SessionCommandService
+from engine.graph_definitions import GraphDefinitionError, GraphDefinitionService, GraphDefinitionStore
 from engine.provider import runtime_provider_api_key, set_runtime_provider_override
 from engine.provider_profiles import ProviderConnectionError, ProviderProfileService
 from engine.project_library import ProjectLibrary, ProjectLibraryError
@@ -92,6 +93,7 @@ STUDIO_AGENT_PATHS = (
     "/api/studio/agent-definitions",
 )
 STUDIO_PROMPT_PRESET_PATHS = ("/v1/studio/prompt-presets", "/api/studio/prompt-presets")
+STUDIO_GRAPH_PATHS = ("/v1/studio/graphs", "/api/studio/graphs")
 STUDIO_WORLDBOOK_PATHS = ("/v1/studio/worldbooks", "/api/studio/worldbooks")
 STUDIO_PROJECT_PATHS = ("/v1/studio/projects", "/api/studio/projects")
 
@@ -153,19 +155,29 @@ class SessionRuntimeServer:
             if self.static_root
             else None
         )
-        self.agent_definitions = (
-            AgentDefinitionService(
-                AgentDefinitionStore(
+        self.agent_store = (
+            AgentDefinitionStore(
+                self.static_root,
+                graph_root=self.graph_root,
+                preset_root=self.preset_root,
+            )
+            if self.static_root
+            else None
+        )
+        self.agent_definitions = AgentDefinitionService(self.agent_store) if self.agent_store else None
+        # Short alias for callers that use the Studio object name directly.
+        self.agents = self.agent_definitions
+        self.graph_definitions = (
+            GraphDefinitionService(
+                GraphDefinitionStore(
                     self.static_root,
-                    graph_root=self.graph_root,
-                    preset_root=self.preset_root,
+                    agent_store=self.agent_store,
                 )
             )
             if self.static_root
             else None
         )
-        # Short alias for callers that use the Studio object name directly.
-        self.agents = self.agent_definitions
+        self.graphs = self.graph_definitions
         self.worldbooks = WorldbookLibrary(self.static_root) if self.static_root else None
         self.projects = (
             ProjectLibrary(self.static_root, worldbooks=self.worldbooks)
@@ -645,6 +657,61 @@ class SessionRuntimeServer:
         except AgentDefinitionError as exc:
             return self._studio_agent_error(exc)
 
+    # ── Studio Graph Definitions ─────────────────────────────────────
+
+    @staticmethod
+    def _studio_graph_error(exc: GraphDefinitionError) -> tuple[dict[str, Any], int]:
+        return exc.to_dict(), exc.status
+
+    def _studio_graph_list(self) -> tuple[dict[str, Any], int]:
+        if self.graph_definitions is None:
+            return {"ok": False, "error": "studio_library_unavailable"}, 501
+        try:
+            return {"ok": True, "graphs": self.graph_definitions.list_graphs()}, 200
+        except GraphDefinitionError as exc:
+            return self._studio_graph_error(exc)
+
+    def _studio_graph_get(self, graph_id: str) -> tuple[dict[str, Any], int]:
+        if self.graph_definitions is None:
+            return {"ok": False, "error": "studio_library_unavailable"}, 501
+        try:
+            return {"ok": True, "graph": self.graph_definitions.get_graph(graph_id)}, 200
+        except GraphDefinitionError as exc:
+            return self._studio_graph_error(exc)
+
+    def _studio_graph_create(self, body: dict[str, Any]) -> tuple[dict[str, Any], int]:
+        if self.graph_definitions is None:
+            return {"ok": False, "error": "studio_library_unavailable"}, 501
+        try:
+            return {"ok": True, **self.graph_definitions.create_graph(body)}, 201
+        except GraphDefinitionError as exc:
+            return self._studio_graph_error(exc)
+
+    def _studio_graph_update(self, graph_id: str, body: dict[str, Any]) -> tuple[dict[str, Any], int]:
+        if self.graph_definitions is None:
+            return {"ok": False, "error": "studio_library_unavailable"}, 501
+        try:
+            return {"ok": True, **self.graph_definitions.update_graph(graph_id, body)}, 200
+        except GraphDefinitionError as exc:
+            return self._studio_graph_error(exc)
+
+    def _studio_graph_copy(self, graph_id: str, body: dict[str, Any]) -> tuple[dict[str, Any], int]:
+        if self.graph_definitions is None:
+            return {"ok": False, "error": "studio_library_unavailable"}, 501
+        try:
+            return {"ok": True, **self.graph_definitions.copy_graph(graph_id, body)}, 201
+        except GraphDefinitionError as exc:
+            return self._studio_graph_error(exc)
+
+    def _studio_graph_delete(self, graph_id: str) -> tuple[dict[str, Any], int]:
+        if self.graph_definitions is None:
+            return {"ok": False, "error": "studio_library_unavailable"}, 501
+        try:
+            self.graph_definitions.delete_graph(graph_id)
+            return {"ok": True, "deleted_id": graph_id}, 200
+        except GraphDefinitionError as exc:
+            return self._studio_graph_error(exc)
+
     # ── Studio Worldbooks and Project bindings ────────────────────────
 
     def _configure_runtime_worldbooks(self) -> None:
@@ -863,6 +930,21 @@ class SessionRuntimeServer:
                             return
                         break
 
+                # ── Runtime Studio Graph Definitions ──────────────────
+                if path in STUDIO_GRAPH_PATHS:
+                    payload, status = server_ref._studio_graph_list()
+                    self._send_json(status, payload)
+                    return
+                for prefix in STUDIO_GRAPH_PATHS:
+                    if path.startswith(prefix + "/"):
+                        suffix = path[len(prefix) + 1:]
+                        parts = suffix.split("/")
+                        if len(parts) == 1:
+                            payload, status = server_ref._studio_graph_get(parts[0])
+                            self._send_json(status, payload)
+                            return
+                        break
+
                 # ── Runtime Studio Worldbooks and Project bindings ─────
                 if path in STUDIO_WORLDBOOK_PATHS:
                     payload, status = server_ref._studio_worldbook_action(
@@ -1018,6 +1100,21 @@ class SessionRuntimeServer:
                             "preview",
                         }:
                             payload, status = server_ref._studio_agent_preview(parts[0], body)
+                            self._send_json(status, payload)
+                            return
+                        break
+
+                # ── Runtime Studio Graph Definitions ──────────────────
+                if path in STUDIO_GRAPH_PATHS:
+                    payload, status = server_ref._studio_graph_create(body)
+                    self._send_json(status, payload)
+                    return
+                for prefix in STUDIO_GRAPH_PATHS:
+                    if path.startswith(prefix + "/"):
+                        suffix = path[len(prefix) + 1:]
+                        parts = suffix.split("/")
+                        if len(parts) == 2 and parts[1] in {"copy", "duplicate"}:
+                            payload, status = server_ref._studio_graph_copy(parts[0], body)
                             self._send_json(status, payload)
                             return
                         break
@@ -1319,6 +1416,14 @@ class SessionRuntimeServer:
                             self._send_json(status, payload)
                             return
                         break
+                for prefix in STUDIO_GRAPH_PATHS:
+                    if path.startswith(prefix + "/"):
+                        graph_id = path[len(prefix) + 1:]
+                        if "/" not in graph_id:
+                            payload, status = server_ref._studio_graph_delete(graph_id)
+                            self._send_json(status, payload)
+                            return
+                        break
                 for prefix in STUDIO_WORLDBOOK_PATHS:
                     if path.startswith(prefix + "/"):
                         worldbook_id = path[len(prefix) + 1:]
@@ -1385,6 +1490,15 @@ class SessionRuntimeServer:
                             return
                         break
 
+                for prefix in STUDIO_GRAPH_PATHS:
+                    if path.startswith(prefix + "/"):
+                        graph_id = path[len(prefix) + 1:]
+                        if "/" not in graph_id:
+                            payload, status = server_ref._studio_graph_update(graph_id, body)
+                            self._send_json(status, payload)
+                            return
+                        break
+
                 for prefix in STUDIO_WORLDBOOK_PATHS:
                     if path.startswith(prefix + "/"):
                         worldbook_id = path[len(prefix) + 1:]
@@ -1447,6 +1561,14 @@ class SessionRuntimeServer:
                         profile_id = path[len(prefix) + 1:]
                         if "/" not in profile_id:
                             payload, status = server_ref._studio_provider_update(profile_id, body)
+                            self._send_json(status, payload)
+                            return
+                        break
+                for prefix in STUDIO_GRAPH_PATHS:
+                    if path.startswith(prefix + "/"):
+                        graph_id = path[len(prefix) + 1:]
+                        if "/" not in graph_id:
+                            payload, status = server_ref._studio_graph_update(graph_id, body)
                             self._send_json(status, payload)
                             return
                         break

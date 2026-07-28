@@ -313,3 +313,8 @@ from engine.agent_definitions import (  # noqa: E402
     AgentDefinitionService,
     AgentDefinitionStore,
 )
+from engine.graph_definitions import (  # noqa: E402
+    GraphDefinitionError,
+    GraphDefinitionService,
+    GraphDefinitionStore,
+)

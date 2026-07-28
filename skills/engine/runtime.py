@@ -17,6 +17,7 @@ from engine.context_compiler import (
     replay_payload,
 )
 from engine.director import DirectorHandle, NarrativeDirector
+from engine.graph_runtime import ExecutionPlan, ExecutionPlanCompiler, GraphExecutionError, GraphRuntime, GraphRuntimeExecutor
 from engine.mvu import execute_commands, extract_commands, generate_schema, validate_command_strict
 from engine.provider import AbortSignal, ProviderAborted, ProviderError
 from engine.quality import DefaultQualityGate, QualityContext, QualityGate, QualityPolicy
@@ -197,6 +198,8 @@ class SessionTurnRuntime:
         max_commit_validation_retries: int = 3,
         runtime_config_store=None,
         executor_factory=None,
+        execution_plan_compiler: ExecutionPlanCompiler | None = None,
+        graph_runtime: GraphRuntime | None = None,
         bootstrap_legacy_history: bool = True,
         worldbook_snapshot_provider=None,
         project_id=None,
@@ -209,6 +212,8 @@ class SessionTurnRuntime:
         self.session_settings = json.loads(self._canonical(session_settings or {}))
         self.runtime_config_store = runtime_config_store
         self.executor_factory = executor_factory
+        self.execution_plan_compiler = execution_plan_compiler
+        self.graph_runtime = graph_runtime
         self.bootstrap_legacy_history = bool(bootstrap_legacy_history)
         self.worldbook_snapshot_provider = worldbook_snapshot_provider
         self.project_id = project_id or self.card_folder.name
@@ -223,6 +228,19 @@ class SessionTurnRuntime:
     def configure_worldbook_library(self, snapshot_provider, *, project_id=None):
         """Use Project bindings as the Worldbook source for future snapshots."""
         self.worldbook_snapshot_provider = snapshot_provider
+        if project_id is not None:
+            self.project_id = project_id
+
+    def configure_execution_graph(
+        self,
+        compiler: ExecutionPlanCompiler,
+        graph_runtime: GraphRuntime,
+        *,
+        project_id=None,
+    ):
+        """Enable Studio Graph execution for subsequent task snapshots."""
+        self.execution_plan_compiler = compiler
+        self.graph_runtime = graph_runtime
         if project_id is not None:
             self.project_id = project_id
 
@@ -299,8 +317,11 @@ class SessionTurnRuntime:
             if compiled is None:
                 return self.task(task["id"]) or self._result(task)
             if signal is None:
-                draft = self._execute(executor, task["text"], compiled)
-                return self._project(self._commit_draft(task, draft))
+                try:
+                    draft = self._execute(executor, task["text"], compiled)
+                    return self._project(self._commit_draft(task, draft))
+                except GraphExecutionError as exc:
+                    return self._fail_graph_run(task, exc)
             return self._run_director(task, task["text"], compiled, signal, executor)
         finally:
             if signal is not None:
@@ -493,7 +514,7 @@ class SessionTurnRuntime:
         # Snapshot from the parent chain only — safe outside the write txn
         # because _runtime_turns walks parents of parent_revision, not the
         # active head. Avoids nested connections while BEGIN IMMEDIATE is held.
-        source_snapshot = self._source_snapshot(parent_revision)
+        source_snapshot = self._source_snapshot(parent_revision, player_input=text)
         project_existing = None
         task = None
         signal = None
@@ -574,8 +595,11 @@ class SessionTurnRuntime:
                 self._abort_signals[task["id"]] = signal
             else:
                 compiled = self._compile_and_persist(task)
-                draft = self._execute(executor, text, compiled)
-                result = self._commit_draft(task, draft)
+                try:
+                    draft = self._execute(executor, text, compiled)
+                    result = self._commit_draft(task, draft)
+                except GraphExecutionError as exc:
+                    return self._fail_graph_run(task, exc)
                 return self._project(result)
 
         # Director path — lock released so concurrent commands can interleave.
@@ -755,7 +779,7 @@ class SessionTurnRuntime:
                 if task:
                     return task
                 base_revision = self._active_revision(connection)
-            source_snapshot = self._source_snapshot(base_revision)
+            source_snapshot = self._source_snapshot(base_revision, player_input=text)
             with self._connect() as connection:
                 connection.execute("BEGIN IMMEDIATE")
                 task = self._task_for_key(connection, idempotency_key)
@@ -952,9 +976,12 @@ class SessionTurnRuntime:
         return compiled
 
     def _executor_for_task(self, task):
+        snapshot = json.loads(task["source_snapshot"]) if task["source_snapshot"] else {}
+        plan_data = snapshot.get("execution_plan")
+        if plan_data and self.graph_runtime is not None:
+            return GraphRuntimeExecutor(self.graph_runtime, ExecutionPlan.from_dict(plan_data))
         if self.executor_factory is None:
             return self.executor
-        snapshot = json.loads(task["source_snapshot"]) if task["source_snapshot"] else {}
         return self.executor_factory(snapshot.get("runtime_config"))
 
     @staticmethod
@@ -1015,6 +1042,32 @@ class SessionTurnRuntime:
         if validation_error is not None:
             raise RuntimeError(validation_error)
         return RuntimeResult(task["id"], commit_id, revision, "projection_pending")
+
+    def _fail_graph_run(self, task, error: GraphExecutionError):
+        """Persist fail-fast Graph semantics without entering draft commit."""
+        graph_result = getattr(error, "result", None)
+        payload = {
+            "task_id": task["id"],
+            "plan_id": getattr(graph_result, "plan_id", None),
+            "failed_node_id": getattr(graph_result, "failed_node_id", None),
+        }
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT commit_id, revision, status FROM tasks WHERE id = ?",
+                (task["id"],),
+            ).fetchone()
+            if row and not row["commit_id"]:
+                connection.execute(
+                    "UPDATE tasks SET status = ? WHERE id = ? AND commit_id IS NULL",
+                    ("failed_terminal", task["id"]),
+                )
+                self._event(connection, "graph.run.failed", payload)
+                self._event(connection, "task.failed_terminal", payload)
+                return RuntimeResult(task["id"], None, row["revision"] or task["base_revision"], "failed_terminal")
+            if row:
+                return RuntimeResult(task["id"], row["commit_id"], row["revision"], row["status"])
+        return RuntimeResult(task["id"], None, task["base_revision"], "failed_terminal")
 
     def _validate_draft_before_commit(self, connection, task, draft, base_state=None):
         verdict = self.quality_gate.validate(
@@ -1674,7 +1727,7 @@ class SessionTurnRuntime:
                 self._event(connection, "task.succeeded", {"task_id": result.task_id, "commit_id": result.commit_id})
             return RuntimeResult(result.task_id, result.commit_id, result.revision, "succeeded")
 
-    def _source_snapshot(self, base_revision):
+    def _source_snapshot(self, base_revision, *, player_input=""):
         memory = self.card_folder / "memory"
         initvar_path = self.card_folder / ".initvar.json"
         card_data_path = self.card_folder / ".card_data.json"
@@ -1691,6 +1744,12 @@ class SessionTurnRuntime:
         if self.runtime_config_store is not None:
             runtime_config = self.runtime_config_store.freeze().data
             settings = runtime_config.get("settings") or settings
+        execution_plan = None
+        if self.execution_plan_compiler is not None:
+            execution_plan = self.execution_plan_compiler.compile(
+                project_id=self.project_id,
+                player_input=player_input,
+            )
         worldbooks = self._worldbook_snapshot(catalog_path, reference_path, user_path)
         return {
             "card_facts": self._read_json(card_data_path, {}),
@@ -1704,6 +1763,7 @@ class SessionTurnRuntime:
             "recent_memory": self._recent_memory(project_path),
             "recent_turns": runtime_turns,
             "runtime_config": runtime_config,
+            "execution_plan": execution_plan.to_dict() if execution_plan is not None else None,
             "runtime_config_manifest": runtime_config_manifest(runtime_config),
             "sources": {
                 "card_facts": self._file_source(card_data_path),
