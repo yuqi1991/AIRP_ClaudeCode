@@ -382,6 +382,45 @@ def test_studio_to_game_golden_path_drives_saved_configuration_live_trace_and_re
         assert "retryGraphRun" in game_page
         assert "runDebugReplay" in game_page
 
+@pytest.mark.skipif(
+    shutil.which("google-chrome") is None or _connect is None,
+    reason="requires google-chrome and websockets",
+)
+def test_browser_game_exposes_studio_link_and_trace_fallback_detail(tmp_path: Path):
+    """The game page must expose Studio and keep Trace nodes inspectable before a run id exists."""
+    styles = tmp_path / "styles"
+    styles.mkdir()
+    for name in ("studio.html", "index.html"):
+        shutil.copy(SKILLS / "styles" / name, styles / name)
+    card = tmp_path / "browser-trace-fallback"
+    (card / "memory").mkdir(parents=True)
+    (card / ".initvar.json").write_text("{}", encoding="utf-8")
+    (card / "chat_log.json").write_text("[]", encoding="utf-8")
+    (card / ".card_data.json").write_text('{"name":"Browser Trace Fallback"}', encoding="utf-8")
+    runtime = SessionTurnRuntime(
+        database_path=tmp_path / "runtime.sqlite3",
+        card_folder=card,
+        projection_root=styles,
+        executor=FakeNarrativeExecutor("unused"),
+        bootstrap_legacy_history=False,
+    )
+
+    with SessionRuntimeServer(runtime, static_root=styles) as server:
+        with _HeadlessBrowser(f"{server.base_url}/", tmp_path / "chrome-profile") as browser:
+            browser.wait_for('document.querySelector("#studio-link[href=\\"/studio\\"]")')
+            browser.evaluate(
+                """(() => {
+                    agentTrace = {graphMode: true, events: [], nodes: {
+                        fallback: {sequence: 1, order: 0, nodeRunId: null, state: 'idle',
+                            label: 'Planner', meta: '节点未运行', streamedOutput: ''}
+                    }};
+                    renderAgentTrace();
+                    return true;
+                })()"""
+            )
+            browser.click("#agent-trace .trace-node")
+            browser.wait_for("!document.getElementById('node-detail-modal').hidden")
+            assert "Planner" in browser.evaluate("document.getElementById('node-detail-body').textContent")
 
 @pytest.mark.skipif(
     shutil.which("google-chrome") is None or _connect is None,

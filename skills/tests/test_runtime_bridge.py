@@ -296,6 +296,8 @@ def test_runtime_frontend_uses_same_origin_api_urls_and_runtime_config_ui():
     assert "function createSession()" in index_html
     assert "function switchSession(sessionId)" in index_html
     assert "function toggleSidebar()" in index_html
+    assert 'id="studio-link"' in index_html
+    assert 'href="/studio"' in index_html
     assert "function refreshSubmittedTurn(taskId)" in index_html
     assert "runtime-task-status" in index_html
     assert "runtime-cancel-button" in index_html

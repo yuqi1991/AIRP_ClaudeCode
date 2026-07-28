@@ -81,6 +81,12 @@ body {
 #topbar .sep { color: var(--border); }
 #topbar .dim { color: var(--muted); }
 #topbar .spacer { flex: 1; }
+#studio-link {
+  color: var(--text); text-decoration: none; font-size: .78em; font-weight: 650;
+  border: 1px solid var(--border); border-radius: 4px; padding: 4px 8px;
+  background: var(--input-bg); white-space: nowrap;
+}
+#studio-link:hover, #studio-link:focus-visible { color: var(--accent); border-color: var(--accent); outline: none; }
 #sidebar-toggle {
   display: none; width: 28px; height: 26px; padding: 0;
   border: 1px solid var(--border); border-radius: 4px;
@@ -964,6 +970,7 @@ body {
   <span class="sep">|</span>
   <span class="dim" id="tb-tokens" title="本轮Token / 累计Token">Token: —</span>
   <span class="sep">|</span>
+  <a id="studio-link" href="/studio" aria-label="打开 Agent Studio">Studio</a>
   <button id="theme-toggle" title="切换夜间模式" style="background:none;border:1px solid var(--border);border-radius:4px;cursor:pointer;font-size:0.9em;padding:1px 6px;line-height:1;color:var(--muted);">🌙</button>
   <button id="sidebar-toggle" title="打开工具面板" aria-label="打开工具面板" aria-expanded="false" onclick="toggleSidebar()">☰</button>
 </div>
@@ -1660,7 +1667,7 @@ function renderAgentTrace() {
     row.type = "button";
     row.className = "trace-node " + item.state;
     row.title = "打开节点详情";
-    row.onclick = function() { openNodeDetail(item.nodeRunId); };
+    row.onclick = function() { openNodeDetail(item.nodeRunId, item); };
     const title = document.createElement("div");
     title.className = "trace-title";
     title.textContent = item.label;
@@ -1684,8 +1691,8 @@ function recordAgentTrace(type, payload, sequence) {
     (payload.nodes || []).forEach(function(nodeId, index) {
       const nodeKey = taskId + ":node:" + nodeId;
       agentTrace.nodes[nodeKey] = {
-        sequence: sequence || 0, order: index, nodeRunId: null, state: "idle",
-        label: nodeId, meta: "节点未运行", streamedOutput: ""
+        sequence: sequence || 0, order: index, nodeRunId: null, nodeId: nodeId, state: "idle",
+        label: nodeId, meta: "节点未运行", input: null, output: "", streamedOutput: ""
       };
     });
     renderAgentTrace();
@@ -1703,7 +1710,10 @@ function recordAgentTrace(type, payload, sequence) {
     meta = state === "running" ? "节点运行中" : state === "succeeded" ? "节点成功" : state === "failed" ? "节点失败" : "节点未运行";
     agentTrace.nodes[key] = Object.assign({}, agentTrace.nodes[key] || {}, {
       sequence: sequence || 0, nodeRunId: payload.node_run_id || (agentTrace.nodes[key] || {}).nodeRunId,
+      nodeId: payload.node_id || (agentTrace.nodes[key] || {}).nodeId,
       state: state, label: label, meta: meta,
+      input: payload.input_artifact || payload.input || (agentTrace.nodes[key] || {}).input || null,
+      output: payload.final_output || payload.artifact || payload.streamed_output || payload.delta || (agentTrace.nodes[key] || {}).output || "",
       streamedOutput: payload.streamed_output || payload.delta || (agentTrace.nodes[key] || {}).streamedOutput || ""
     });
     if (nodeDetailState.nodeRunId && nodeDetailState.nodeRunId === payload.node_run_id && type === "graph.node.delta") {
@@ -1731,7 +1741,15 @@ function recordAgentTrace(type, payload, sequence) {
     label = "工具 · " + (payload.tool || "unknown");
     meta = type.endsWith("finished") ? (payload.ok === false ? "失败" : "完成") + (payload.duration_ms ? " · " + payload.duration_ms + " ms" : "") : "运行中";
   }
-  agentTrace.nodes[key] = Object.assign({}, agentTrace.nodes[key] || {}, { sequence: sequence || 0, state: state, label: label, meta: meta, nodeRunId: payload.node_run_id || (agentTrace.nodes[key] || {}).nodeRunId, streamedOutput: (agentTrace.nodes[key] || {}).streamedOutput || "" });
+  agentTrace.nodes[key] = Object.assign({}, agentTrace.nodes[key] || {}, {
+    sequence: sequence || 0, state: state, label: label,
+    nodeId: payload.node_id || (agentTrace.nodes[key] || {}).nodeId,
+    meta: meta, nodeRunId: payload.node_run_id || (agentTrace.nodes[key] || {}).nodeRunId,
+    input: payload.input_artifact || payload.input || (agentTrace.nodes[key] || {}).input || null,
+    output: payload.final_output || payload.artifact || payload.output || (agentTrace.nodes[key] || {}).output || "",
+    error: payload.error || (agentTrace.nodes[key] || {}).error || null,
+    streamedOutput: (agentTrace.nodes[key] || {}).streamedOutput || ""
+  });
   renderAgentTrace();
 }
 
@@ -1740,17 +1758,31 @@ function renderNodeDetail(detail) {
   const title = document.getElementById('node-detail-title');
   if (!body || !detail) return;
   if (title) title.textContent = (detail.label || detail.node_id || 'Node Run') + ' · ' + (detail.state || 'idle');
+  const replayButton = document.getElementById('node-debug-replay-button');
+  if (replayButton) replayButton.hidden = !nodeDetailState.nodeRunId;
   const view = Object.assign({}, detail);
   if (nodeDetailState.debugReplay) view.debug_replay = nodeDetailState.debugReplay;
   body.textContent = JSON.stringify(view, null, 2);
 }
 
-async function openNodeDetail(nodeRunId) {
-  if (!nodeRunId) return;
-  nodeDetailState = { nodeRunId: nodeRunId, data: null, debugReplay: null };
+async function openNodeDetail(nodeRunId, traceItem) {
+  const fallback = traceItem ? {
+    node_run_id: nodeRunId || null,
+    node_id: traceItem.nodeId || null,
+    label: traceItem.label || traceItem.nodeId || 'Node Run',
+    state: traceItem.state || 'idle',
+    input: traceItem.input || null,
+    output: traceItem.output || traceItem.streamedOutput || '',
+    error: traceItem.error || null,
+    meta: traceItem.meta || '',
+    detail_source: nodeRunId ? 'live trace' : 'live trace (node run not created yet)'
+  } : null;
+  nodeDetailState = { nodeRunId: nodeRunId || null, data: fallback, debugReplay: null };
   const modal = document.getElementById('node-detail-modal');
   const body = document.getElementById('node-detail-body');
   if (modal) modal.hidden = false;
+  if (fallback) renderNodeDetail(fallback);
+  if (!nodeRunId) return;
   if (body) body.textContent = 'Loading…';
   try {
     const response = await fetch(apiUrl('/v1/studio/node-runs/' + encodeURIComponent(nodeRunId)), { cache: 'no-store' });
@@ -2084,9 +2116,12 @@ function hydrateGraphRun(graphRuns) {
     if (!["idle", "running", "succeeded", "failed"].includes(state)) state = "idle";
     const key = (run.task_id || 'runtime') + ':node:' + (node.node_id || index);
     agentTrace.nodes[key] = {
-      sequence: 0, order: node.order || index, nodeRunId: node.node_run_id,
+      sequence: 0, order: node.order || index, nodeRunId: node.node_run_id, nodeId: node.node_id,
       state: state, label: node.label || node.node_id || 'node',
       meta: state === 'running' ? '节点运行中' : state === 'succeeded' ? '节点成功' : state === 'failed' ? '节点失败' : '节点未运行',
+      input: node.input_artifact || node.input || null,
+      output: node.final_output || node.artifact || node.streamed_output || '',
+      error: node.error || null,
       streamedOutput: node.streamed_output || ''
     };
   });
