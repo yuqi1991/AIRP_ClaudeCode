@@ -198,6 +198,8 @@ class SessionTurnRuntime:
         runtime_config_store=None,
         executor_factory=None,
         bootstrap_legacy_history: bool = True,
+        worldbook_snapshot_provider=None,
+        project_id=None,
     ):
         self.database_path = Path(database_path)
         self.card_folder = Path(card_folder)
@@ -208,6 +210,8 @@ class SessionTurnRuntime:
         self.runtime_config_store = runtime_config_store
         self.executor_factory = executor_factory
         self.bootstrap_legacy_history = bool(bootstrap_legacy_history)
+        self.worldbook_snapshot_provider = worldbook_snapshot_provider
+        self.project_id = project_id or self.card_folder.name
         self.quality_policy = quality_policy or QualityPolicy()
         self.quality_gate = quality_gate or DefaultQualityGate(self.quality_policy)
         self.max_commit_validation_retries = max(1, int(max_commit_validation_retries))
@@ -215,6 +219,12 @@ class SessionTurnRuntime:
         self._lock = threading.RLock()
         self._abort_signals: dict[str, AbortSignal] = {}
         self._initialize()
+
+    def configure_worldbook_library(self, snapshot_provider, *, project_id=None):
+        """Use Project bindings as the Worldbook source for future snapshots."""
+        self.worldbook_snapshot_provider = snapshot_provider
+        if project_id is not None:
+            self.project_id = project_id
 
     def submit(self, text, idempotency_key):
         if not text.strip():
@@ -1681,12 +1691,13 @@ class SessionTurnRuntime:
         if self.runtime_config_store is not None:
             runtime_config = self.runtime_config_store.freeze().data
             settings = runtime_config.get("settings") or settings
+        worldbooks = self._worldbook_snapshot(catalog_path, reference_path, user_path)
         return {
             "card_facts": self._read_json(card_data_path, {}),
             "settings": settings,
-            "worldbook_catalog": self._read_json(catalog_path, []),
-            "worldbook_reference": self._read_text(reference_path),
-            "worldbook_user": self._read_text(user_path),
+            "worldbook_catalog": worldbooks["worldbook_catalog"],
+            "worldbook_reference": worldbooks["worldbook_reference"],
+            "worldbook_user": worldbooks["worldbook_user"],
             "card_structure": self._read_json(structure_path, {}),
             "initvar": initvar,
             "current_state": current_state,
@@ -1697,13 +1708,25 @@ class SessionTurnRuntime:
             "sources": {
                 "card_facts": self._file_source(card_data_path),
                 "settings": {"id": "runtime_settings" if runtime_config is not None else "session_settings", "version": self._hash_bytes(self._canonical(settings).encode("utf-8"))},
-                "worldbook_catalog": self._file_source(catalog_path),
+                "worldbook_catalog": worldbooks["source"],
                 "card_structure": self._file_source(structure_path),
                 "initvar": self._file_source(initvar_path),
                 "current_state": {"id": "runtime_state", "version": str(base_revision)},
                 "recent_memory": self._file_source(project_path),
                 "recent_turns": {"id": "active_lineage", "version": str(base_revision)},
             },
+        }
+
+    def _worldbook_snapshot(self, catalog_path, reference_path, user_path):
+        if self.worldbook_snapshot_provider is not None:
+            snapshot = self.worldbook_snapshot_provider(self.project_id)
+            if snapshot is not None:
+                return snapshot
+        return {
+            "worldbook_catalog": self._read_json(catalog_path, []),
+            "worldbook_reference": self._read_text(reference_path),
+            "worldbook_user": self._read_text(user_path),
+            "source": self._file_source(catalog_path),
         }
 
     def _policy_for_snapshot(self, snapshot):

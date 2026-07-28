@@ -81,15 +81,27 @@
     .catalog-title { font-size: .78rem; font-weight: 700; }
     .model-list { display: flex; flex-wrap: wrap; gap: 5px; }
     .model { padding: 4px 7px; border: 1px solid #c9d3d2; border-radius: 3px; color: var(--muted); font-size: .75rem; }
+    [hidden] { display: none !important; }
+    .entry-list { display: grid; gap: 12px; }
+    .entry-editor { display: grid; grid-template-columns: minmax(0, 1fr) 90px; gap: 10px; padding: 14px 0; border-top: 1px solid var(--line); }
+    .entry-editor:first-child { border-top: 0; }
+    .entry-editor .wide { grid-column: 1 / -1; }
+    .entry-editor textarea { min-height: 88px; }
+    .binding-list { display: grid; gap: 8px; padding: 4px 0; }
+    .binding-row { display: flex; align-items: center; gap: 9px; padding: 10px; border: 1px solid var(--line); border-radius: 4px; }
+    .binding-row input { width: auto; }
+    .file-button input { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
     @media (max-width: 860px) {
-      .app { grid-template-columns: 1fr; }
-      .rail { padding: 12px 16px; }
+      .app { grid-template-columns: minmax(0, 1fr); width: 100%; max-width: 100%; overflow: hidden; }
+      .rail { min-width: 0; width: 100%; max-width: 100%; padding: 12px 16px; overflow: hidden; }
       .brand { display: flex; align-items: baseline; gap: 10px; padding: 0 0 10px; }
       .brand small { margin-top: 0; }
-      .nav { display: flex; overflow-x: auto; }
+      .nav { display: flex; width: 100%; max-width: 100%; overflow-x: auto; }
       .nav button { white-space: nowrap; }
-      .workspace { grid-template-columns: 1fr; padding: 22px 18px 32px; }
-      .topbar { padding: 17px 18px; }
+      main, .workspace, .topbar { min-width: 0; width: 100%; max-width: 100%; }
+      .workspace { grid-template-columns: minmax(0, 1fr); padding: 22px 18px 32px; }
+      .topbar { flex-wrap: wrap; padding: 17px 18px; }
+      .topbar a { width: 100%; }
     }
   </style>
 </head>
@@ -98,19 +110,19 @@
     <aside class="rail" aria-label="Studio navigation">
       <div class="brand"><strong>Agent Studio</strong><small>Library workspace</small></div>
       <nav class="nav">
-        <button class="active" type="button" aria-current="page">Providers</button>
+        <button class="active" type="button" aria-current="page" data-studio-view="providers">Providers</button>
         <button type="button" disabled>Agents</button>
         <button type="button" disabled>Graphs</button>
-        <button type="button" disabled>Projects</button>
-        <button type="button" disabled>Worldbooks</button>
+        <button type="button" data-studio-view="projects">Projects</button>
+        <button type="button" data-studio-view="worldbooks">Worldbooks</button>
       </nav>
     </aside>
     <main>
       <header class="topbar">
-        <div><p class="eyebrow">Studio Library</p><h1>Provider Profiles</h1></div>
+        <div><p class="eyebrow">Studio Library</p><h1 id="view-title">Provider Profiles</h1></div>
         <a href="/" aria-label="Return to game">Return to game</a>
       </header>
-      <section class="workspace" aria-label="Provider profile management">
+      <section class="workspace" id="providers-view" aria-label="Provider profile management">
         <div>
           <div class="section-head"><div><h2>Profiles</h2><p id="profile-count">Loading...</p></div><button class="button" id="new-profile" type="button">New profile</button></div>
           <div class="list" id="profile-list" aria-live="polite"></div>
@@ -128,6 +140,43 @@
           </form>
           <div class="notice" id="notice" role="status" aria-live="polite"></div>
           <div class="catalog" id="catalog" hidden><span class="catalog-title">Saved model catalog</span><div class="model-list" id="catalog-models"></div></div>
+        </section>
+      </section>
+      <section class="workspace" id="worldbooks-view" aria-label="Worldbook Library" hidden>
+        <div>
+          <div class="section-head"><div><h2>Worldbook Library</h2><p id="worldbook-count">Loading...</p></div><button class="button" id="new-worldbook" type="button">New worldbook</button></div>
+          <div class="actions">
+            <label class="button file-button">Import JSON<input id="worldbook-import" type="file" accept="application/json,.json"></label>
+          </div>
+          <div class="list" id="worldbook-list" aria-live="polite"></div>
+        </div>
+        <section class="panel" aria-labelledby="worldbook-editor-title">
+          <h2 id="worldbook-editor-title">New Worldbook Definition</h2>
+          <form class="form" id="worldbook-form">
+            <div class="field"><label for="worldbook-name">Name</label><input id="worldbook-name" required autocomplete="off" placeholder="Shared setting lore"></div>
+            <div class="section-head"><div><h2>Entries</h2></div><button class="button" id="add-worldbook-entry" type="button">Add entry</button></div>
+            <div class="entry-list" id="worldbook-entries"></div>
+            <div class="actions">
+              <button class="button primary" type="submit">Save worldbook</button>
+              <button class="button" id="copy-worldbook" type="button" hidden>Copy</button>
+              <button class="button" id="export-worldbook" type="button" hidden>Export AIRP JSON</button>
+              <button class="button danger" id="delete-worldbook" type="button" hidden>Delete</button>
+            </div>
+          </form>
+          <div class="notice" id="worldbook-notice" role="status" aria-live="polite"></div>
+        </section>
+      </section>
+      <section class="workspace" id="projects-view" aria-label="Project bindings" hidden>
+        <div>
+          <div class="section-head"><div><h2>Project bindings</h2></div></div>
+          <div class="field"><label for="project-id">Project ID</label><input id="project-id" value="local" autocomplete="off"></div>
+          <div class="actions"><button class="button" id="load-project" type="button">Load project</button></div>
+        </div>
+        <section class="panel" aria-labelledby="project-binding-title">
+          <h2 id="project-binding-title">Bound Worldbooks</h2>
+          <div class="binding-list" id="project-worldbooks"></div>
+          <div class="actions"><button class="button primary" id="save-project-bindings" type="button">Save bindings</button></div>
+          <div class="notice" id="project-notice" role="status" aria-live="polite"></div>
         </section>
       </section>
     </main>
@@ -264,6 +313,96 @@
       });
       $("new-profile").addEventListener("click", () => { resetForm(); setNotice(""); $("profile-name").focus(); });
       loadProfiles().catch(() => setNotice("Could not connect to the Runtime Studio service.", "error"));
+    })();
+    (() => {
+      const endpoint = "/v1/studio/worldbooks";
+      const projectEndpoint = "/v1/studio/projects/";
+      const state = { worldbooks: [], selectedId: null };
+      const $ = (id) => document.getElementById(id);
+      const setNotice = (id, message, kind = "") => { const target = $(id); target.className = `notice ${kind}`; target.textContent = message; };
+      const savedNotice = (action, renamedEntries = []) => {
+        const renamed = renamedEntries.map((item) => `${item.from} -> ${item.to}`).join(", ");
+        return renamed ? `${action}. Renamed: ${renamed}` : `${action}.`;
+      };
+      const showError = async (id, response, fallback) => {
+        let payload = {};
+        try { payload = await response.json(); } catch (_) { /* response without JSON */ }
+        const target = $(id); target.className = "notice error"; target.textContent = payload.message || fallback;
+        (payload.references || []).forEach((reference) => { const line = document.createElement("div"); line.textContent = `${reference.type}: ${reference.name} (${reference.id})`; target.appendChild(line); });
+      };
+      const entryEditor = (entry = {}) => {
+        const wrapper = document.createElement("section"); wrapper.className = "entry-editor"; wrapper.dataset.entryId = entry.id || "";
+        const field = (labelText, className, value, type = "input") => {
+          const box = document.createElement("div"); box.className = `field ${className || ""}`.trim();
+          const label = document.createElement("label"); label.textContent = labelText;
+          const control = document.createElement(type); control.dataset.field = labelText.toLowerCase().replace("entry ", ""); control.value = value ?? "";
+          box.append(label, control); return box;
+        };
+        wrapper.append(
+          field("Entry title", "", entry.title),
+          field("Order", "", entry.order ?? 0),
+          field("Usage", "wide", entry.usage),
+          field("Content", "wide", entry.content, "textarea"),
+          field("Tags", "wide", (entry.tags || []).join(", ")),
+        );
+        const enabled = document.createElement("label"); enabled.className = "check wide";
+        const toggle = document.createElement("input"); toggle.type = "checkbox"; toggle.dataset.field = "enabled"; toggle.checked = entry.enabled !== false;
+        enabled.append(toggle, " Enabled");
+        const remove = document.createElement("button"); remove.type = "button"; remove.className = "button danger"; remove.textContent = "Remove entry"; remove.addEventListener("click", () => wrapper.remove());
+        wrapper.append(enabled, remove); return wrapper;
+      };
+      const resetWorldbook = () => {
+        state.selectedId = null; $("worldbook-form").reset(); $("worldbook-editor-title").textContent = "New Worldbook Definition";
+        $("worldbook-entries").replaceChildren(entryEditor());
+        ["copy-worldbook", "export-worldbook", "delete-worldbook"].forEach((id) => { $(id).hidden = true; });
+        setNotice("worldbook-notice", ""); renderWorldbooks();
+      };
+      const fillWorldbook = (worldbook) => {
+        state.selectedId = worldbook.id; $("worldbook-name").value = worldbook.name; $("worldbook-editor-title").textContent = `Edit ${worldbook.name}`;
+        $("worldbook-entries").replaceChildren(...worldbook.entries.map(entryEditor));
+        ["copy-worldbook", "export-worldbook", "delete-worldbook"].forEach((id) => { $(id).hidden = false; }); renderWorldbooks();
+      };
+      const worldbookFromForm = () => ({
+        name: $("worldbook-name").value.trim(),
+        entries: [...$("worldbook-entries").children].map((row) => {
+          const read = (name) => row.querySelector(`[data-field="${name}"]`);
+          const result = { title: read("title").value.trim(), usage: read("usage").value.trim(), content: read("content").value, enabled: read("enabled").checked, order: Number.parseInt(read("order").value, 10), tags: read("tags").value.split(",").map((tag) => tag.trim()).filter(Boolean) };
+          if (row.dataset.entryId) result.id = row.dataset.entryId; return result;
+        }),
+      });
+      const renderWorldbooks = () => {
+        $("worldbook-count").textContent = `${state.worldbooks.length} saved`;
+        const rows = state.worldbooks.map((book) => {
+          const button = document.createElement("button"); button.type = "button"; button.className = `profile-row${book.id === state.selectedId ? " selected" : ""}`;
+          const title = document.createElement("span"); title.className = "profile-title"; title.textContent = book.name;
+          const meta = document.createElement("span"); meta.className = "profile-meta"; meta.textContent = `${book.entries.length} entries`;
+          button.append(title, meta); button.addEventListener("click", () => fillWorldbook(book)); return button;
+        });
+        if (!rows.length) { const empty = document.createElement("div"); empty.className = "empty"; empty.textContent = "No worldbooks yet."; rows.push(empty); }
+        $("worldbook-list").replaceChildren(...rows);
+      };
+      const loadWorldbooks = async () => {
+        const response = await fetch(endpoint); if (!response.ok) { await showError("worldbook-notice", response, "Could not load Worldbooks."); return; }
+        state.worldbooks = (await response.json()).worldbooks || []; renderWorldbooks(); renderBindings();
+      };
+      $("worldbook-form").addEventListener("submit", async (event) => {
+        event.preventDefault(); const response = await fetch(state.selectedId ? `${endpoint}/${encodeURIComponent(state.selectedId)}` : endpoint, { method: state.selectedId ? "PUT" : "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(worldbookFromForm()) });
+        if (!response.ok) { await showError("worldbook-notice", response, "Could not save this Worldbook."); return; }
+        const payload = await response.json(); await loadWorldbooks(); fillWorldbook(payload.worldbook);
+        setNotice("worldbook-notice", savedNotice("Worldbook saved", payload.renamed_entries), "success");
+      });
+      $("add-worldbook-entry").addEventListener("click", () => $("worldbook-entries").append(entryEditor({ order: $("worldbook-entries").children.length })));
+      $("new-worldbook").addEventListener("click", resetWorldbook);
+      $("copy-worldbook").addEventListener("click", async () => { const response = await fetch(`${endpoint}/${encodeURIComponent(state.selectedId)}/copy`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }); if (!response.ok) { await showError("worldbook-notice", response, "Could not copy this Worldbook."); return; } const payload = await response.json(); await loadWorldbooks(); fillWorldbook(payload.worldbook); setNotice("worldbook-notice", savedNotice("Worldbook copied", payload.renamed_entries), "success"); });
+      $("delete-worldbook").addEventListener("click", async () => { const response = await fetch(`${endpoint}/${encodeURIComponent(state.selectedId)}`, { method: "DELETE" }); if (!response.ok) { await showError("worldbook-notice", response, "Could not delete this Worldbook."); return; } resetWorldbook(); await loadWorldbooks(); setNotice("worldbook-notice", "Worldbook deleted.", "success"); });
+      $("export-worldbook").addEventListener("click", async () => { const response = await fetch(`${endpoint}/${encodeURIComponent(state.selectedId)}/export`); if (!response.ok) { await showError("worldbook-notice", response, "Could not export this Worldbook."); return; } const blob = new Blob([JSON.stringify(await response.json(), null, 2)], { type: "application/json" }); const link = document.createElement("a"); link.href = URL.createObjectURL(blob); link.download = `${$("worldbook-name").value.trim() || "worldbook"}.airp.json`; link.click(); URL.revokeObjectURL(link.href); });
+      $("worldbook-import").addEventListener("change", async (event) => { const file = event.target.files[0]; if (!file) return; let documentValue; try { documentValue = JSON.parse(await file.text()); } catch (_) { setNotice("worldbook-notice", "The selected file is not valid JSON.", "error"); return; } const importBody = { name: file.name.replace(/\.json$/i, ""), document: documentValue }; const cardData = documentValue.data && typeof documentValue.data === "object" ? documentValue.data : {}; if ((cardData.character_book || documentValue.character_book) && $("project-id").value.trim()) importBody.project_id = $("project-id").value.trim(); const response = await fetch(`${endpoint}/import`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(importBody) }); event.target.value = ""; if (!response.ok) { await showError("worldbook-notice", response, "Could not import this Worldbook."); return; } const payload = await response.json(); await loadWorldbooks(); fillWorldbook(payload.worldbook); setNotice("worldbook-notice", savedNotice("Worldbook imported", payload.renamed_entries), "success"); });
+      const renderBindings = (selected = []) => { const rows = state.worldbooks.map((book) => { const label = document.createElement("label"); label.className = "binding-row"; const input = document.createElement("input"); input.type = "checkbox"; input.value = book.id; input.checked = selected.includes(book.id); label.append(input, book.name); return label; }); if (!rows.length) { const empty = document.createElement("div"); empty.className = "empty"; empty.textContent = "No Worldbooks available."; rows.push(empty); } $("project-worldbooks").replaceChildren(...rows); };
+      const loadProject = async () => { const id = $("project-id").value.trim(); if (!id) return; const response = await fetch(`${projectEndpoint}${encodeURIComponent(id)}/worldbooks`); if (!response.ok) { await showError("project-notice", response, "Could not load Project bindings."); return; } const payload = await response.json(); renderBindings(payload.project.worldbook_ids); setNotice("project-notice", ""); };
+      $("load-project").addEventListener("click", loadProject);
+      $("save-project-bindings").addEventListener("click", async () => { const id = $("project-id").value.trim(); const worldbookIds = [...$("project-worldbooks").querySelectorAll("input:checked")].map((input) => input.value); const response = await fetch(`${projectEndpoint}${encodeURIComponent(id)}/worldbooks`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ worldbook_ids: worldbookIds }) }); if (!response.ok) { await showError("project-notice", response, "Could not save Project bindings."); return; } setNotice("project-notice", "Project bindings saved.", "success"); });
+      document.querySelectorAll("[data-studio-view]").forEach((button) => button.addEventListener("click", () => { const view = button.dataset.studioView; document.querySelectorAll("[data-studio-view]").forEach((item) => { item.classList.toggle("active", item === button); item.removeAttribute("aria-current"); }); button.setAttribute("aria-current", "page"); ["providers", "projects", "worldbooks"].forEach((name) => { $(`${name}-view`).hidden = name !== view; }); $("view-title").textContent = { providers: "Provider Profiles", projects: "Project bindings", worldbooks: "Worldbook Library" }[view]; if (view === "worldbooks") loadWorldbooks(); if (view === "projects") { loadWorldbooks().then(loadProject); } }));
+      resetWorldbook();
     })();
   </script>
 </body>

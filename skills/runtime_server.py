@@ -74,6 +74,7 @@ from engine.runtime_config import CONFIG_ID_RE, RuntimeConfigError, RuntimeConfi
 from engine.session_manager import SessionManager, SessionManagerError
 from engine.secret_store import LocalSecretStore
 from engine.studio_library import ProviderProfileError, ProviderProfileStore
+from engine.worldbook_library import WorldbookLibrary, WorldbookLibraryError
 
 SSE_HEARTBEAT_SECONDS = 15.0
 SSE_POLL_INTERVAL_SECONDS = 0.05
@@ -82,6 +83,8 @@ RUNNING_TASK_STATUSES = frozenset({"queued", "leased", "running", "projection_pe
 DEFAULT_PROVIDER_BASE_URL = "https://api.deepseek.com"
 MODEL_DISCOVERY_TIMEOUT_SECONDS = 10
 STUDIO_PROVIDER_PATHS = ("/v1/studio/providers", "/api/studio/providers")
+STUDIO_WORLDBOOK_PATHS = ("/v1/studio/worldbooks", "/api/studio/worldbooks")
+STUDIO_PROJECT_PATHS = ("/v1/studio/projects", "/api/studio/projects")
 
 
 def _event_to_dict(event: RuntimeEvent) -> dict:
@@ -141,6 +144,8 @@ class SessionRuntimeServer:
             if self.static_root
             else None
         )
+        self.worldbooks = WorldbookLibrary(self.static_root) if self.static_root else None
+        self._configure_runtime_worldbooks()
         self.config_store = (
             RuntimeConfigStore(
                 self.static_root,
@@ -355,6 +360,7 @@ class SessionRuntimeServer:
         if self.session_manager is None:
             return
         self.runtime = self.session_manager.runtime
+        self._configure_runtime_worldbooks()
         self.service = SessionCommandService(self.runtime)
         with self._submit_lock:
             self._submit_results.clear()
@@ -533,6 +539,66 @@ class SessionRuntimeServer:
         except ProviderProfileError as exc:
             return self._studio_provider_error(exc)
 
+    # ── Studio Worldbooks and Project bindings ────────────────────────
+
+    def _configure_runtime_worldbooks(self) -> None:
+        if self.worldbooks is not None:
+            self.runtime.configure_worldbook_library(self.worldbooks.snapshot_for_project)
+
+    @staticmethod
+    def _studio_worldbook_error(exc: WorldbookLibraryError) -> tuple[dict[str, Any], int]:
+        return exc.to_dict(), exc.status
+
+    def _studio_worldbook_action(self, action, *, status=200, key="worldbook"):
+        if self.worldbooks is None:
+            return {"ok": False, "error": "studio_library_unavailable"}, 501
+        try:
+            value = action()
+            if isinstance(value, tuple):
+                worldbook, renamed = value
+                return {"ok": True, key: worldbook, "renamed_entries": renamed}, status
+            return {"ok": True, key: value}, status
+        except WorldbookLibraryError as exc:
+            return self._studio_worldbook_error(exc)
+
+    def _studio_worldbook_import(self, body):
+        if self.worldbooks is None:
+            return {"ok": False, "error": "studio_library_unavailable"}, 501
+        try:
+            worldbook, source_format, renamed = self.worldbooks.import_worldbook(body)
+            project_id = body.get("project_id")
+            if project_id:
+                current = self.worldbooks.get_project_bindings(project_id)
+                self.worldbooks.set_project_bindings(
+                    project_id,
+                    {"name": current["name"], "worldbook_ids": [*current["worldbook_ids"], worldbook["id"]]},
+                )
+            return {
+                "ok": True,
+                "worldbook": worldbook,
+                "source_format": source_format,
+                "renamed_entries": renamed,
+            }, 201
+        except WorldbookLibraryError as exc:
+            return self._studio_worldbook_error(exc)
+
+    def _studio_project_bindings(self, project_id, body=None):
+        if self.worldbooks is None:
+            return {"ok": False, "error": "studio_library_unavailable"}, 501
+        try:
+            project = (
+                self.worldbooks.set_project_bindings(project_id, body)
+                if body is not None
+                else self.worldbooks.get_project_bindings(project_id)
+            )
+            return {
+                "ok": True,
+                "project": project,
+                "effective_worldbooks": self.worldbooks.effective_worldbooks(project_id),
+            }, 200
+        except WorldbookLibraryError as exc:
+            return self._studio_worldbook_error(exc)
+
     def _studio_provider_test(self, profile_id: str) -> tuple[dict[str, Any], int]:
         try:
             models = self.provider_profiles.test_connection(profile_id)
@@ -642,6 +708,50 @@ class SessionRuntimeServer:
                             return
                         break
 
+                # ── Runtime Studio Worldbooks and Project bindings ─────
+                if path in STUDIO_WORLDBOOK_PATHS:
+                    payload, status = server_ref._studio_worldbook_action(
+                        server_ref.worldbooks.list_worldbooks if server_ref.worldbooks else lambda: [],
+                        key="worldbooks",
+                    )
+                    self._send_json(status, payload)
+                    return
+                for prefix in STUDIO_WORLDBOOK_PATHS:
+                    if path.startswith(prefix + "/"):
+                        suffix = path[len(prefix) + 1:]
+                        parts = suffix.split("/")
+                        if len(parts) == 2 and parts[1] == "export":
+                            payload, status = server_ref._studio_worldbook_action(
+                                lambda: server_ref.worldbooks.export_worldbook(parts[0]),
+                                key="export",
+                            )
+                            if status == 200:
+                                payload = payload["export"]
+                            self._send_json(status, payload)
+                            return
+                        if len(parts) == 1 and parts[0] != "import":
+                            payload, status = server_ref._studio_worldbook_action(
+                                lambda: server_ref.worldbooks.get_worldbook(parts[0])
+                            )
+                            self._send_json(status, payload)
+                            return
+                        break
+                if path in STUDIO_PROJECT_PATHS:
+                    payload, status = server_ref._studio_worldbook_action(
+                        server_ref.worldbooks.list_projects if server_ref.worldbooks else lambda: [],
+                        key="projects",
+                    )
+                    self._send_json(status, payload)
+                    return
+                for prefix in STUDIO_PROJECT_PATHS:
+                    if path.startswith(prefix + "/"):
+                        parts = path[len(prefix) + 1:].split("/")
+                        if len(parts) == 2 and parts[1] in {"worldbooks", "bindings"}:
+                            payload, status = server_ref._studio_project_bindings(parts[0])
+                            self._send_json(status, payload)
+                            return
+                        break
+
                 # ── Frontend compat: file-backed /api/* reads ──────────────
                 if path == "/api/pending":
                     payload = server_ref._session_status_payload()
@@ -724,6 +834,27 @@ class SessionRuntimeServer:
                             return
                         if len(parts) == 3 and parts[1:] == ["models", "refresh"]:
                             payload, status = server_ref._studio_provider_refresh(parts[0])
+                            self._send_json(status, payload)
+                            return
+                        break
+
+                if path in tuple(prefix + "/import" for prefix in STUDIO_WORLDBOOK_PATHS):
+                    payload, status = server_ref._studio_worldbook_import(body)
+                    self._send_json(status, payload)
+                    return
+                if path in STUDIO_WORLDBOOK_PATHS:
+                    payload, status = server_ref._studio_worldbook_action(
+                        lambda: server_ref.worldbooks.create_worldbook(body), status=201
+                    )
+                    self._send_json(status, payload)
+                    return
+                for prefix in STUDIO_WORLDBOOK_PATHS:
+                    if path.startswith(prefix + "/"):
+                        parts = path[len(prefix) + 1:].split("/")
+                        if len(parts) == 2 and parts[1] == "copy":
+                            payload, status = server_ref._studio_worldbook_action(
+                                lambda: server_ref.worldbooks.copy_worldbook(parts[0]), status=201
+                            )
                             self._send_json(status, payload)
                             return
                         break
@@ -976,6 +1107,21 @@ class SessionRuntimeServer:
                             self._send_json(status, payload)
                             return
                         break
+                for prefix in STUDIO_WORLDBOOK_PATHS:
+                    if path.startswith(prefix + "/"):
+                        worldbook_id = path[len(prefix) + 1:]
+                        if "/" not in worldbook_id:
+                            if server_ref.worldbooks is None:
+                                self._send_json(501, {"ok": False, "error": "studio_library_unavailable"})
+                                return
+                            try:
+                                server_ref.worldbooks.delete_worldbook(worldbook_id)
+                                self._send_json(200, {"ok": True, "deleted_id": worldbook_id})
+                            except WorldbookLibraryError as exc:
+                                payload, status = server_ref._studio_worldbook_error(exc)
+                                self._send_json(status, payload)
+                            return
+                        break
                 prefix = "/api/sessions/"
                 if not path.startswith(prefix):
                     self._send_json(404, {"ok": False, "error": "not_found"})
@@ -1017,6 +1163,24 @@ class SessionRuntimeServer:
                             self._send_json(status, payload)
                             return
                         break
+
+                for prefix in STUDIO_WORLDBOOK_PATHS:
+                    if path.startswith(prefix + "/"):
+                        worldbook_id = path[len(prefix) + 1:]
+                        if "/" not in worldbook_id:
+                            payload, status = server_ref._studio_worldbook_action(
+                                lambda: server_ref.worldbooks.update_worldbook(worldbook_id, body)
+                            )
+                            self._send_json(status, payload)
+                            return
+                        break
+                for prefix in STUDIO_PROJECT_PATHS:
+                    if path.startswith(prefix + "/"):
+                        parts = path[len(prefix) + 1:].split("/")
+                        if len(parts) == 2 and parts[1] in {"worldbooks", "bindings"}:
+                            payload, status = server_ref._studio_project_bindings(parts[0], body)
+                            self._send_json(status, payload)
+                            return
 
                 if path == "/api/provider/config":
                     payload, code = server_ref._write_provider_config(body)
