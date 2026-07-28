@@ -1691,7 +1691,7 @@ function recordAgentTrace(type, payload, sequence) {
     (payload.nodes || []).forEach(function(nodeId, index) {
       const nodeKey = taskId + ":node:" + nodeId;
       agentTrace.nodes[nodeKey] = {
-        sequence: sequence || 0, order: index, nodeRunId: null, nodeId: nodeId, state: "idle",
+        sequence: sequence || 0, order: index, taskId: taskId, nodeRunId: null, nodeId: nodeId, state: "idle",
         label: nodeId, meta: "节点未运行", input: null, output: "", streamedOutput: ""
       };
     });
@@ -1709,7 +1709,7 @@ function recordAgentTrace(type, payload, sequence) {
     label = (payload.label || payload.node_id || "node");
     meta = state === "running" ? "节点运行中" : state === "succeeded" ? "节点成功" : state === "failed" ? "节点失败" : "节点未运行";
     agentTrace.nodes[key] = Object.assign({}, agentTrace.nodes[key] || {}, {
-      sequence: sequence || 0, nodeRunId: payload.node_run_id || (agentTrace.nodes[key] || {}).nodeRunId,
+      sequence: sequence || 0, taskId: taskId, nodeRunId: payload.node_run_id || (agentTrace.nodes[key] || {}).nodeRunId,
       nodeId: payload.node_id || (agentTrace.nodes[key] || {}).nodeId,
       state: state, label: label, meta: meta,
       input: payload.input_artifact || payload.input || (agentTrace.nodes[key] || {}).input || null,
@@ -1730,6 +1730,29 @@ function recordAgentTrace(type, payload, sequence) {
     if (agentTrace.graphMode) return;
   } else if (type.indexOf("model_call.") === 0) {
     if (agentTrace.graphMode) return;
+    if (payload.agent_node_id) {
+      key = taskId + ":node:" + payload.agent_node_id;
+      const previous = agentTrace.nodes[key] || {};
+      const calls = (previous.modelCalls || []).slice();
+      calls.push({
+        call_ordinal: payload.call_ordinal || null,
+        manifest_id: payload.manifest_id || null,
+        model: payload.model || null,
+        messages: payload.messages || [],
+        tools: payload.tools || [],
+        output: payload.output || "",
+        state: type.endsWith("finished") ? "succeeded" : "running"
+      });
+      agentTrace.nodes[key] = Object.assign({}, previous, {
+        sequence: sequence || 0, taskId: taskId, nodeId: payload.agent_node_id,
+        state: previous.state || "running", label: previous.label || ((payload.agent_role || "agent") + " · " + payload.agent_node_id),
+        meta: previous.meta || "节点运行中", modelCalls: calls,
+        input: previous.input || (payload.messages || null),
+        output: payload.output || previous.output || ""
+      });
+      renderAgentTrace();
+      return;
+    }
     key = taskId + ":model:" + (payload.call_ordinal || 0);
     state = type.endsWith("finished") ? "succeeded" : "running";
     label = "模型调用 #" + (payload.call_ordinal || "?") + (payload.model ? " · " + payload.model : "");
@@ -1742,7 +1765,7 @@ function recordAgentTrace(type, payload, sequence) {
     meta = type.endsWith("finished") ? (payload.ok === false ? "失败" : "完成") + (payload.duration_ms ? " · " + payload.duration_ms + " ms" : "") : "运行中";
   }
   agentTrace.nodes[key] = Object.assign({}, agentTrace.nodes[key] || {}, {
-    sequence: sequence || 0, state: state, label: label,
+    sequence: sequence || 0, taskId: taskId, state: state, label: label,
     nodeId: payload.node_id || (agentTrace.nodes[key] || {}).nodeId,
     meta: meta, nodeRunId: payload.node_run_id || (agentTrace.nodes[key] || {}).nodeRunId,
     input: payload.input_artifact || payload.input || (agentTrace.nodes[key] || {}).input || null,
@@ -1782,7 +1805,22 @@ async function openNodeDetail(nodeRunId, traceItem) {
   const body = document.getElementById('node-detail-body');
   if (modal) modal.hidden = false;
   if (fallback) renderNodeDetail(fallback);
-  if (!nodeRunId) return;
+  if (!nodeRunId) {
+    if (!traceItem || !traceItem.taskId || !traceItem.nodeId) return;
+    if (body) body.textContent = 'Loading trace details…';
+    try {
+      const query = '?task_id=' + encodeURIComponent(traceItem.taskId) + '&node_id=' + encodeURIComponent(traceItem.nodeId);
+      const response = await fetch(apiUrl('/v1/session/agent-traces' + query), { cache: 'no-store' });
+      const data = await response.json();
+      if (!response.ok || !data.agent_trace) throw new Error(data.message || data.error || 'Agent trace unavailable');
+      nodeDetailState.data = data.agent_trace;
+      renderNodeDetail(data.agent_trace);
+    } catch (error) {
+      if (fallback) renderNodeDetail(fallback);
+      else if (body) body.textContent = error.message || 'Agent trace unavailable';
+    }
+    return;
+  }
   if (body) body.textContent = 'Loading…';
   try {
     const response = await fetch(apiUrl('/v1/studio/node-runs/' + encodeURIComponent(nodeRunId)), { cache: 'no-store' });
@@ -2116,7 +2154,7 @@ function hydrateGraphRun(graphRuns) {
     if (!["idle", "running", "succeeded", "failed"].includes(state)) state = "idle";
     const key = (run.task_id || 'runtime') + ':node:' + (node.node_id || index);
     agentTrace.nodes[key] = {
-      sequence: 0, order: node.order || index, nodeRunId: node.node_run_id, nodeId: node.node_id,
+      sequence: 0, order: node.order || index, taskId: run.task_id || 'runtime', nodeRunId: node.node_run_id, nodeId: node.node_id,
       state: state, label: node.label || node.node_id || 'node',
       meta: state === 'running' ? '节点运行中' : state === 'succeeded' ? '节点成功' : state === 'failed' ? '节点失败' : '节点未运行',
       input: node.input_artifact || node.input || null,

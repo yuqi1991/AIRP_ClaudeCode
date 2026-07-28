@@ -1157,6 +1157,152 @@ class SessionTurnRuntime:
             return None
         return self._node_run_payload(row)
 
+    def agent_trace_detail(self, task_id: str, node_id: str):
+        """Return prompt/model/output evidence for legacy ``agent_node`` traces.
+
+        The compatibility director path predates ``node_runs`` and only emits
+        ``agent_node.*`` telemetry. Its durable prompt lives in context
+        manifests, while model output is carried by model-call events and the
+        committed draft. Keep this read model separate from Graph Node Runs so
+        both runtime shapes remain independently debuggable.
+        """
+        if not isinstance(task_id, str) or not task_id.strip():
+            return None
+        if not isinstance(node_id, str) or not node_id.strip():
+            return None
+        with self._connect() as connection:
+            task = connection.execute(
+                "SELECT id, text, status, commit_id, source_snapshot FROM tasks "
+                "WHERE id = ? AND session_id = ?",
+                (task_id, self.session_id),
+            ).fetchone()
+            if task is None:
+                return None
+            manifest_rows = connection.execute(
+                "SELECT id, manifest_json, payload_json FROM context_manifests "
+                "WHERE session_id = ? AND task_id = ? ORDER BY call_ordinal",
+                (self.session_id, task_id),
+            ).fetchall()
+            model_rows = connection.execute(
+                "SELECT call_ordinal, manifest_id, model, prompt_tokens, completion_tokens, "
+                "total_tokens, stop_reason, latency_ms, cost_amount, cost_currency, cost_rate_version "
+                "FROM model_calls WHERE session_id = ? AND task_id = ? ORDER BY call_ordinal",
+                (self.session_id, task_id),
+            ).fetchall()
+            event_rows = connection.execute(
+                "SELECT type, payload FROM events WHERE session_id = ? ORDER BY sequence",
+                (self.session_id,),
+            ).fetchall()
+            commit = None
+            if task["commit_id"]:
+                commit = connection.execute(
+                    "SELECT draft FROM commits WHERE id = ? AND session_id = ?",
+                    (task["commit_id"], self.session_id),
+                ).fetchone()
+
+        manifests = []
+        for row in manifest_rows:
+            manifest = self._manifest_row(row)
+            provenance = manifest.get("graph_provenance") or {}
+            target = provenance.get("node") or {}
+            if target.get("id") and target.get("id") != node_id:
+                continue
+            manifests.append(manifest)
+        if not manifests:
+            # A single-node/legacy director has no graph provenance. Returning
+            # its manifests is more useful than an empty debug panel.
+            manifests = [self._manifest_row(row) for row in manifest_rows]
+
+        trace_events = []
+        for row in event_rows:
+            try:
+                payload = json.loads(row["payload"])
+            except (TypeError, json.JSONDecodeError):
+                continue
+            if isinstance(payload, dict) and payload.get("task_id") == task_id:
+                trace_events.append((row["type"], payload))
+
+        node_events = [
+            payload for event_type, payload in trace_events
+            if event_type in {"agent_node.started", "agent_node.finished"}
+            and payload.get("node_id") == node_id
+        ]
+        role = next((payload.get("role") for payload in node_events if payload.get("role")), None)
+        model_outputs = {}
+        model_requests = {}
+        for event_type, payload in trace_events:
+            if event_type == "model_call.started":
+                event_node_id = payload.get("agent_node_id")
+                if not event_node_id or event_node_id == node_id:
+                    model_requests[payload.get("call_ordinal")] = {
+                        "messages": payload.get("messages") or [],
+                        "tools": payload.get("tools") or [],
+                    }
+                continue
+            if event_type != "model_call.finished":
+                continue
+            event_node_id = payload.get("agent_node_id")
+            if event_node_id and event_node_id != node_id:
+                continue
+            output = payload.get("output")
+            if output:
+                model_outputs[payload.get("call_ordinal")] = output
+
+        model_calls = []
+        manifest_ids = {manifest.get("id") for manifest in manifests}
+        for row in model_rows:
+            if manifest_ids and row["manifest_id"] not in manifest_ids:
+                continue
+            call = dict(row)
+            call["output"] = model_outputs.get(row["call_ordinal"], "")
+            call.update(model_requests.get(row["call_ordinal"], {}))
+            model_calls.append(call)
+
+        prompt = next(
+            (call.get("messages") for call in reversed(model_calls) if call.get("messages")),
+            manifests[-1].get("payload", []) if manifests else [],
+        )
+        output = next((call["output"] for call in reversed(model_calls) if call.get("output")), "")
+        if not output and commit:
+            try:
+                output = json.loads(commit["draft"]).get("content", "")
+            except (TypeError, json.JSONDecodeError):
+                output = ""
+        if not output:
+            output = "".join(
+                payload.get("preview", "") for event_type, payload in trace_events
+                if event_type == "narrative.preview.delta"
+            )
+
+        source_snapshot = {}
+        try:
+            source_snapshot = json.loads(task["source_snapshot"] or "{}")
+        except (TypeError, json.JSONDecodeError):
+            pass
+        runtime_config = next(
+            (manifest.get("runtime_config") for manifest in reversed(manifests) if manifest.get("runtime_config")),
+            source_snapshot.get("runtime_config_manifest"),
+        )
+        state = next(
+            (payload.get("state") for payload in reversed(node_events) if payload.get("state")),
+            task["status"],
+        )
+        return _redact_trace({
+            "task_id": task_id,
+            "node_id": node_id,
+            "role": role or node_id,
+            "label": f"{role or 'agent'} · {node_id}",
+            "state": state,
+            "input": {"player_input": task["text"]},
+            "prompt": prompt,
+            "manifests": manifests,
+            "model_calls": model_calls,
+            "runtime_config": runtime_config or {},
+            "output": output,
+            "error": next((payload.get("error") for payload in reversed(node_events) if payload.get("error")), None),
+            "detail_source": "legacy agent trace",
+        })
+
     def graph_run_detail(self, graph_run_id):
         """Return one Graph Run and all persisted Node Run debug records."""
         with self._connect() as connection:
@@ -2549,6 +2695,8 @@ class SessionTurnRuntime:
                     "model": meta.get("model"),
                     "agent_node_id": meta.get("agent_node_id"),
                     "agent_role": meta.get("agent_role"),
+                    "messages": _redact_trace(meta.get("messages") or []),
+                    "tools": _redact_trace(meta.get("tools") or []),
                 },
             )
 
@@ -2595,6 +2743,7 @@ class SessionTurnRuntime:
                         "total_tokens": meta.get("total_tokens", 0),
                     },
                     "stop_reason": meta.get("stop_reason", ""),
+                    "output": meta.get("output", ""),
                     "latency_ms": meta.get("latency_ms", 0),
                     "cost_estimate": {
                         "amount": meta.get("cost_amount", 0.0),

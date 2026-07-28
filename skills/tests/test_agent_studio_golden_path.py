@@ -410,9 +410,21 @@ def test_browser_game_exposes_studio_link_and_trace_fallback_detail(tmp_path: Pa
             browser.wait_for('document.querySelector("#studio-link[href=\\"/studio\\"]")')
             browser.evaluate(
                 """(() => {
+                    const originalFetch = window.fetch.bind(window);
+                    window.fetch = (input, init) => {
+                        if (String(input).includes('/v1/session/agent-traces')) {
+                            return Promise.resolve(new Response(JSON.stringify({agent_trace: {
+                                label: 'Planner · director', node_id: 'director', state: 'succeeded',
+                                prompt: [{role: 'system', content: 'TRACE_PROMPT'}],
+                                output: 'TRACE_OUTPUT', detail_source: 'legacy agent trace'
+                            }}), {status: 200, headers: {'Content-Type': 'application/json'}}));
+                        }
+                        return originalFetch(input, init);
+                    };
                     agentTrace = {graphMode: true, events: [], nodes: {
                         fallback: {sequence: 1, order: 0, nodeRunId: null, state: 'idle',
-                            label: 'Planner', meta: '节点未运行', streamedOutput: ''}
+                            label: 'Planner', nodeId: 'director', taskId: 'task-1',
+                            meta: '节点未运行', streamedOutput: ''}
                     }};
                     renderAgentTrace();
                     return true;
@@ -420,6 +432,8 @@ def test_browser_game_exposes_studio_link_and_trace_fallback_detail(tmp_path: Pa
             )
             browser.click("#agent-trace .trace-node")
             browser.wait_for("!document.getElementById('node-detail-modal').hidden")
+            browser.wait_for("document.getElementById('node-detail-body').textContent.includes('TRACE_PROMPT')")
+            browser.wait_for("document.getElementById('node-detail-body').textContent.includes('TRACE_OUTPUT')")
             assert "Planner" in browser.evaluate("document.getElementById('node-detail-body').textContent")
 
 @pytest.mark.skipif(

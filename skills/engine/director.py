@@ -369,6 +369,8 @@ class ProviderDrivenDirector(NarrativeDirector):
                 "call_ordinal": call_ordinal,
                 "manifest_id": manifest_id,
                 "model": model,
+                "messages": messages,
+                "tools": tools,
             }
         )
         started = time.monotonic()
@@ -404,6 +406,7 @@ class ProviderDrivenDirector(NarrativeDirector):
                 "completion_tokens": usage.completion_tokens,
                 "total_tokens": usage.total_tokens,
                 "stop_reason": stop_reason,
+                "output": "".join(d.text or "" for d in deltas if d.text),
                 "latency_ms": latency_ms,
                 "cost_amount": rates.amount,
                 "cost_currency": rates.currency,

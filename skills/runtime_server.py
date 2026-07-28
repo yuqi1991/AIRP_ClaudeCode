@@ -102,6 +102,7 @@ STUDIO_PROJECT_CONTEXT_PATHS = ("/v1/studio/project-context", "/api/studio/proje
 STUDIO_GRAPH_RUN_PATHS = ("/v1/studio/graph-runs", "/api/studio/graph-runs")
 STUDIO_NODE_RUN_PATHS = ("/v1/studio/node-runs", "/api/studio/node-runs")
 STUDIO_DEBUG_REPLAY_PATHS = ("/v1/studio/debug-replays", "/api/studio/debug-replays")
+AGENT_TRACE_DETAIL_PATH = "/v1/session/agent-traces"
 
 
 def _event_to_dict(event: RuntimeEvent) -> dict:
@@ -1026,6 +1027,16 @@ class SessionRuntimeServer:
                 if path in ("/v1/session/events/stream", "/v1/studio/graph-runs/events/stream"):
                     after = _parse_after(query, self.headers)
                     self._stream_sse(after)
+                    return
+
+                if path == AGENT_TRACE_DETAIL_PATH:
+                    task_id = (query.get("task_id") or [""])[0]
+                    node_id = (query.get("node_id") or [""])[0]
+                    detail = server_ref.runtime.agent_trace_detail(task_id, node_id)
+                    if detail is None:
+                        self._send_json(404, {"ok": False, "error": "agent_trace_not_found"})
+                    else:
+                        self._send_json(200, {"ok": True, "agent_trace": detail})
                     return
 
                 if path == "/v1/session/events":

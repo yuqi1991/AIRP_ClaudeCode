@@ -28,7 +28,8 @@ import pytest
 SKILLS = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SKILLS))
 
-from engine.director import ScriptedDirector  # noqa: E402
+from engine.agent_graph import SequentialAgentGraph, SequentialGraphNode  # noqa: E402
+from engine.director import ProviderDrivenDirector, ScriptedDirector  # noqa: E402
 from engine.commands import SessionCommandService  # noqa: E402
 from engine.provider import FakeProvider  # noqa: E402
 from engine.runtime import SessionTurnRuntime  # noqa: E402
@@ -283,6 +284,46 @@ def test_serves_static_index_html_and_content_js_from_styles(tmp_path):
             assert "CONTENT_HTML" in resp.read().decode("utf-8")
 
 
+def test_agent_trace_detail_exposes_legacy_node_prompt_and_output(tmp_path):
+    styles = tmp_path / "styles"
+    styles.mkdir()
+    card = tmp_path / "card"
+    _write_card(card)
+    provider = FakeProvider(
+        [[
+            {"type": "text", "text": "<content>TRACE_OUTPUT</content>"},
+            {"type": "final", "stop_reason": "stop"},
+        ]],
+        model="trace-model",
+    )
+    runtime = SessionTurnRuntime(
+        database_path=tmp_path / "r.sqlite3",
+        card_folder=card,
+        projection_root=styles,
+        executor=SequentialAgentGraph([
+            SequentialGraphNode(
+                "director",
+                "narrative_director",
+                ProviderDrivenDirector(provider, model="trace-model", instruction="TRACE_INSTRUCTION"),
+            )
+        ]),
+    )
+    result = runtime.submit("TRACE_INPUT", idempotency_key="trace-detail")
+    assert result.status == "succeeded"
+
+    with SessionRuntimeServer(runtime, static_root=styles) as server:
+        status, payload = _http(
+            "GET",
+            f"{server.base_url}/v1/session/agent-traces?task_id={result.task_id}&node_id=director",
+        )
+    assert status == 200
+    trace = payload["agent_trace"]
+    assert trace["node_id"] == "director"
+    assert "TRACE_INSTRUCTION" in json.dumps(trace["prompt"], ensure_ascii=False)
+    assert "TRACE_OUTPUT" in trace["output"]
+    assert trace["model_calls"][0]["output"] == "<content>TRACE_OUTPUT</content>"
+
+
 def test_runtime_frontend_uses_same_origin_api_urls_and_runtime_config_ui():
     index_html = (SKILLS / "styles" / "index.html").read_text(encoding="utf-8")
     assert "http://localhost:8765" not in index_html
@@ -298,6 +339,7 @@ def test_runtime_frontend_uses_same_origin_api_urls_and_runtime_config_ui():
     assert "function toggleSidebar()" in index_html
     assert 'id="studio-link"' in index_html
     assert 'href="/studio"' in index_html
+    assert "/v1/session/agent-traces" in index_html
     assert "function refreshSubmittedTurn(taskId)" in index_html
     assert "runtime-task-status" in index_html
     assert "runtime-cancel-button" in index_html
