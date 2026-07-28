@@ -195,6 +195,12 @@ class WorldbookLibrary:
         if not isinstance(raw_ids, list):
             raise WorldbookLibraryError("invalid_project_binding", "worldbook_ids must be an array")
         with self._lock:
+            path = self._project_path(project_id)
+            current = self._read_project(path) if path.is_file() else {
+                "id": project_id,
+                "name": project_id,
+                "worldbook_ids": [],
+            }
             worldbook_ids: list[str] = []
             for worldbook_id in raw_ids:
                 self._validate_id(worldbook_id, "Worldbook")
@@ -204,11 +210,16 @@ class WorldbookLibrary:
                     )
                 if worldbook_id not in worldbook_ids:
                     worldbook_ids.append(worldbook_id)
-            name = payload.get("name", project_id)
+            name = payload.get("name", current.get("name", project_id))
             if not isinstance(name, str) or not name.strip():
                 raise WorldbookLibraryError("invalid_project_binding", "name must be a non-empty string")
-            project = {"id": project_id, "name": name.strip(), "worldbook_ids": worldbook_ids}
-            self._atomic_write(self._project_path(project_id), project)
+            project = {
+                **current,
+                "id": project_id,
+                "name": name.strip(),
+                "worldbook_ids": worldbook_ids,
+            }
+            self._atomic_write(path, project)
             return project
 
     def effective_worldbooks(self, project_id: str) -> list[dict[str, Any]]:
@@ -403,7 +414,12 @@ class WorldbookLibrary:
         name = raw.get("name", path.stem)
         if not isinstance(ids, list) or any(not isinstance(item, str) for item in ids):
             raise WorldbookLibraryError("invalid_project_binding", f"cannot read Project {path.stem!r}")
-        return {"id": path.stem, "name": name if isinstance(name, str) else path.stem, "worldbook_ids": ids}
+        return {
+            **raw,
+            "id": path.stem,
+            "name": name if isinstance(name, str) else path.stem,
+            "worldbook_ids": ids,
+        }
 
     @staticmethod
     def _read_json(path: Path, label: str) -> dict[str, Any]:

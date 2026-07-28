@@ -70,6 +70,7 @@ from engine.agent_definitions import AgentDefinitionError, AgentDefinitionServic
 from engine.commands import SessionCommandService
 from engine.provider import runtime_provider_api_key, set_runtime_provider_override
 from engine.provider_profiles import ProviderConnectionError, ProviderProfileService
+from engine.project_library import ProjectLibrary, ProjectLibraryError
 from engine.runtime import RuntimeEvent, SessionTurnRuntime
 from engine.runtime_config import CONFIG_ID_RE, RuntimeConfigError, RuntimeConfigStore
 from engine.session_manager import SessionManager, SessionManagerError
@@ -166,6 +167,11 @@ class SessionRuntimeServer:
         # Short alias for callers that use the Studio object name directly.
         self.agents = self.agent_definitions
         self.worldbooks = WorldbookLibrary(self.static_root) if self.static_root else None
+        self.projects = (
+            ProjectLibrary(self.static_root, worldbooks=self.worldbooks)
+            if self.static_root and self.worldbooks is not None
+            else None
+        )
         self._configure_runtime_worldbooks()
         self.config_store = (
             RuntimeConfigStore(
@@ -699,6 +705,26 @@ class SessionRuntimeServer:
         except WorldbookLibraryError as exc:
             return self._studio_worldbook_error(exc)
 
+    @staticmethod
+    def _studio_project_error(exc: ProjectLibraryError) -> tuple[dict[str, Any], int]:
+        return exc.to_dict(), exc.status
+
+    def _studio_project_action(self, action, *, status=200, key="project"):
+        if self.projects is None:
+            return {"ok": False, "error": "studio_library_unavailable"}, 501
+        try:
+            return {"ok": True, key: action()}, status
+        except ProjectLibraryError as exc:
+            return self._studio_project_error(exc)
+
+    def _studio_project_import(self, body):
+        if self.projects is None:
+            return {"ok": False, "error": "studio_library_unavailable"}, 501
+        try:
+            return {"ok": True, "project": self.projects.import_card(body)}, 201
+        except ProjectLibraryError as exc:
+            return self._studio_project_error(exc)
+
     def _studio_provider_test(self, profile_id: str) -> tuple[dict[str, Any], int]:
         try:
             models = self.provider_profiles.test_connection(profile_id)
@@ -866,8 +892,8 @@ class SessionRuntimeServer:
                             return
                         break
                 if path in STUDIO_PROJECT_PATHS:
-                    payload, status = server_ref._studio_worldbook_action(
-                        server_ref.worldbooks.list_projects if server_ref.worldbooks else lambda: [],
+                    payload, status = server_ref._studio_project_action(
+                        server_ref.projects.list_projects if server_ref.projects else lambda: [],
                         key="projects",
                     )
                     self._send_json(status, payload)
@@ -875,6 +901,12 @@ class SessionRuntimeServer:
                 for prefix in STUDIO_PROJECT_PATHS:
                     if path.startswith(prefix + "/"):
                         parts = path[len(prefix) + 1:].split("/")
+                        if len(parts) == 1:
+                            payload, status = server_ref._studio_project_action(
+                                lambda: server_ref.projects.get_project(parts[0]),
+                            )
+                            self._send_json(status, payload)
+                            return
                         if len(parts) == 2 and parts[1] in {"worldbooks", "bindings"}:
                             payload, status = server_ref._studio_project_bindings(parts[0])
                             self._send_json(status, payload)
@@ -994,6 +1026,16 @@ class SessionRuntimeServer:
                     payload, status = server_ref._studio_worldbook_import(body)
                     self._send_json(status, payload)
                     return
+                if path in tuple(prefix + "/import" for prefix in STUDIO_PROJECT_PATHS):
+                    payload, status = server_ref._studio_project_import(body)
+                    self._send_json(status, payload)
+                    return
+                if path in STUDIO_PROJECT_PATHS:
+                    payload, status = server_ref._studio_project_action(
+                        lambda: server_ref.projects.create_project(body), status=201
+                    )
+                    self._send_json(status, payload)
+                    return
                 if path in STUDIO_WORLDBOOK_PATHS:
                     payload, status = server_ref._studio_worldbook_action(
                         lambda: server_ref.worldbooks.create_worldbook(body), status=201
@@ -1006,6 +1048,16 @@ class SessionRuntimeServer:
                         if len(parts) == 2 and parts[1] == "copy":
                             payload, status = server_ref._studio_worldbook_action(
                                 lambda: server_ref.worldbooks.copy_worldbook(parts[0]), status=201
+                            )
+                            self._send_json(status, payload)
+                            return
+                        break
+                for prefix in STUDIO_PROJECT_PATHS:
+                    if path.startswith(prefix + "/"):
+                        parts = path[len(prefix) + 1:].split("/")
+                        if len(parts) == 2 and parts[1] in {"copy", "duplicate"}:
+                            payload, status = server_ref._studio_project_action(
+                                lambda: server_ref.projects.copy_project(parts[0], body), status=201
                             )
                             self._send_json(status, payload)
                             return
@@ -1346,6 +1398,12 @@ class SessionRuntimeServer:
                 for prefix in STUDIO_PROJECT_PATHS:
                     if path.startswith(prefix + "/"):
                         parts = path[len(prefix) + 1:].split("/")
+                        if len(parts) == 1:
+                            payload, status = server_ref._studio_project_action(
+                                lambda: server_ref.projects.update_project(parts[0], body),
+                            )
+                            self._send_json(status, payload)
+                            return
                         if len(parts) == 2 and parts[1] in {"worldbooks", "bindings"}:
                             payload, status = server_ref._studio_project_bindings(parts[0], body)
                             self._send_json(status, payload)
@@ -1389,6 +1447,16 @@ class SessionRuntimeServer:
                         profile_id = path[len(prefix) + 1:]
                         if "/" not in profile_id:
                             payload, status = server_ref._studio_provider_update(profile_id, body)
+                            self._send_json(status, payload)
+                            return
+                        break
+                for prefix in STUDIO_PROJECT_PATHS:
+                    if path.startswith(prefix + "/"):
+                        suffix = path[len(prefix) + 1:]
+                        if "/" not in suffix:
+                            payload, status = server_ref._studio_project_action(
+                                lambda: server_ref.projects.update_project(suffix, body),
+                            )
                             self._send_json(status, payload)
                             return
                         break

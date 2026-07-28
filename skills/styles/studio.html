@@ -198,16 +198,30 @@
           <div class="notice" id="worldbook-notice" role="status" aria-live="polite"></div>
         </section>
       </section>
-      <section class="workspace" id="projects-view" aria-label="Project bindings" hidden>
+      <section class="workspace" id="projects-view" aria-label="AIRP Project editor" hidden>
         <div>
-          <div class="section-head"><div><h2>Project bindings</h2></div></div>
+          <div class="section-head"><div><h2>Projects</h2><p id="project-count">Loading...</p></div><button class="button" id="new-project" type="button">New project</button></div>
           <div class="field"><label for="project-id">Project ID</label><input id="project-id" value="local" autocomplete="off"></div>
-          <div class="actions"><button class="button" id="load-project" type="button">Load project</button></div>
+          <div class="actions"><button class="button" id="load-project" type="button">Load project</button><label class="button file-button">Import card JSON<input id="project-import" type="file" accept="application/json,.json"></label></div>
+          <div class="list" id="project-list" aria-live="polite"></div>
         </div>
-        <section class="panel" aria-labelledby="project-binding-title">
-          <h2 id="project-binding-title">Bound Worldbooks</h2>
-          <div class="binding-list" id="project-worldbooks"></div>
-          <div class="actions"><button class="button primary" id="save-project-bindings" type="button">Save bindings</button></div>
+        <section class="panel" aria-labelledby="project-editor-title">
+          <h2 id="project-editor-title">New AIRP Project</h2>
+          <form class="form" id="project-form">
+            <div class="field"><label for="project-name">Name</label><input id="project-name" required autocomplete="off" placeholder="Character project"></div>
+            <div class="field"><label for="project-avatar">Avatar</label><input id="project-avatar" autocomplete="off" placeholder="assets/portrait.png"></div>
+            <div class="field"><label for="project-description">Description</label><textarea id="project-description"></textarea></div>
+            <div class="field"><label for="project-personality">Personality</label><textarea id="project-personality"></textarea></div>
+            <div class="field"><label for="project-scenario">Scenario</label><textarea id="project-scenario"></textarea></div>
+            <div class="field"><label for="project-card-system">Card system prompt</label><textarea id="project-card-system"></textarea></div>
+            <div class="field"><label for="project-card-post-history">Post-history instruction</label><textarea id="project-card-post-history"></textarea></div>
+            <section class="catalog" aria-labelledby="project-openings-title"><div class="section-head"><h2 id="project-openings-title">Openings</h2><button class="button" id="add-project-opening" type="button">Add opening</button></div><div class="entry-list" id="project-openings"></div></section>
+            <div class="field"><label for="project-variables">Variables</label><textarea id="project-variables" placeholder='{"state":{}}'></textarea></div>
+            <div class="field"><label for="project-assets">Assets</label><textarea id="project-assets" placeholder='[{"id":"portrait","path":"assets/portrait.png"}]'></textarea></div>
+            <div class="field"><label for="project-graph">Selected Graph</label><input id="project-graph" autocomplete="off" placeholder="writing"></div>
+            <div class="actions"><button class="button primary" type="submit">Save project</button><button class="button" id="copy-project" type="button" hidden>Copy</button></div>
+          </form>
+          <section class="catalog" aria-labelledby="project-binding-title"><h2 id="project-binding-title">Bound Worldbooks</h2><div class="binding-list" id="project-worldbooks"></div><div class="actions"><button class="button" id="save-project-bindings" type="button">Save bindings</button></div></section>
           <div class="notice" id="project-notice" role="status" aria-live="polite"></div>
         </section>
       </section>
@@ -383,7 +397,8 @@
     (() => {
       const endpoint = "/v1/studio/worldbooks";
       const projectEndpoint = "/v1/studio/projects/";
-      const state = { worldbooks: [], selectedId: null };
+      const projectCollectionEndpoint = projectEndpoint.slice(0, -1);
+      const state = { worldbooks: [], selectedId: null, projects: [], selectedProjectId: null };
       const $ = (id) => document.getElementById(id);
       const setNotice = (id, message, kind = "") => { const target = $(id); target.className = `notice ${kind}`; target.textContent = message; };
       const savedNotice = (action, renamedEntries = []) => {
@@ -396,6 +411,62 @@
         const target = $(id); target.className = "notice error"; target.textContent = payload.message || fallback;
         (payload.references || []).forEach((reference) => { const line = document.createElement("div"); line.textContent = `${reference.type}: ${reference.name} (${reference.id})`; target.appendChild(line); });
       };
+      const projectOpeningEditor = (opening = {}) => {
+        const wrapper = document.createElement("section"); wrapper.className = "entry-editor"; wrapper.dataset.openingId = opening.id || "";
+        const field = (labelText, fieldName, value, type = "input") => {
+          const box = document.createElement("div"); box.className = "field wide";
+          const label = document.createElement("label"); label.textContent = labelText;
+          const control = document.createElement(type); control.dataset.field = fieldName; control.value = value ?? "";
+          box.append(label, control); return box;
+        };
+        wrapper.append(field("Label", "label", opening.label), field("Content", "content", opening.content, "textarea"));
+        const defaultLabel = document.createElement("label"); defaultLabel.className = "check wide";
+        const toggle = document.createElement("input"); toggle.type = "checkbox"; toggle.dataset.field = "is_default"; toggle.checked = opening.is_default === true;
+        defaultLabel.append(toggle, " Default opening"); wrapper.append(defaultLabel);
+        const remove = document.createElement("button"); remove.type = "button"; remove.className = "button danger"; remove.textContent = "Remove opening"; remove.addEventListener("click", () => wrapper.remove());
+        wrapper.append(remove); return wrapper;
+      };
+      const readProjectJson = (id, fallback) => {
+        const value = $(id).value.trim(); if (!value) return fallback;
+        try { return JSON.parse(value); } catch (_) { setNotice("project-notice", `${id} must contain valid JSON.`, "error"); return null; }
+      };
+      const projectFromForm = () => {
+        const variables = readProjectJson("project-variables", {}); if (variables === null) return null;
+        const assets = readProjectJson("project-assets", []); if (assets === null) return null;
+        const payload = {
+          name: $("project-name").value.trim(), avatar: $("project-avatar").value.trim(), description: $("project-description").value,
+          personality: $("project-personality").value, scenario: $("project-scenario").value,
+          card_prompt: { system: $("project-card-system").value, post_history: $("project-card-post-history").value },
+          openings: [...$("project-openings").children].map((row, index) => {
+            const read = (name) => row.querySelector(`[data-field="${name}"]`);
+            const opening = { id: row.dataset.openingId || `opening-${index + 1}`, label: read("label").value.trim(), content: read("content").value, is_default: read("is_default").checked };
+            return opening;
+          }),
+          variables, assets, graph_id: $("project-graph").value.trim() || null,
+          worldbook_ids: [...$("project-worldbooks").querySelectorAll("input:checked")].map((input) => input.value),
+        };
+        const id = $("project-id").value.trim(); if (id) payload.id = id; return payload;
+      };
+      const resetProject = () => {
+        state.selectedProjectId = null; $("project-form").reset(); $("project-id").value = "local"; $("project-editor-title").textContent = "New AIRP Project";
+        $("project-openings").replaceChildren(projectOpeningEditor()); $("project-variables").value = "{}"; $("project-assets").value = "[]";
+        $("copy-project").hidden = true; renderProjects(); renderBindings(); setNotice("project-notice", "");
+      };
+      const fillProject = (project) => {
+        state.selectedProjectId = project.id; $("project-id").value = project.id; $("project-editor-title").textContent = `Edit ${project.name}`;
+        $("project-name").value = project.name; $("project-avatar").value = project.avatar || ""; $("project-description").value = project.description || "";
+        $("project-personality").value = project.personality || ""; $("project-scenario").value = project.scenario || "";
+        const prompt = project.card_prompt || {}; $("project-card-system").value = prompt.system || ""; $("project-card-post-history").value = prompt.post_history || "";
+        $("project-openings").replaceChildren(...(project.openings || []).map(projectOpeningEditor)); $("project-variables").value = JSON.stringify(project.variables || {}, null, 2); $("project-assets").value = JSON.stringify(project.assets || [], null, 2); $("project-graph").value = project.graph_id || "";
+        $("copy-project").hidden = false; renderProjects(); renderBindings(project.worldbook_ids || []); setNotice("project-notice", "");
+      };
+      const renderProjects = () => {
+        $("project-count").textContent = `${state.projects.length} saved`;
+        const rows = state.projects.map((project) => { const button = document.createElement("button"); button.type = "button"; button.className = `profile-row${project.id === state.selectedProjectId ? " selected" : ""}`; const title = document.createElement("span"); title.className = "profile-title"; title.textContent = project.name; const meta = document.createElement("span"); meta.className = "profile-meta"; meta.textContent = `${project.openings.length} openings · ${project.graph_id || "No graph selected"}`; button.append(title, meta); button.addEventListener("click", () => loadProject(project.id)); return button; });
+        if (!rows.length) { const empty = document.createElement("div"); empty.className = "empty"; empty.textContent = "No projects yet."; rows.push(empty); } $("project-list").replaceChildren(...rows);
+      };
+      const loadProjects = async () => { const response = await fetch(projectCollectionEndpoint, { headers: { Accept: "application/json" } }); if (!response.ok) { await showError("project-notice", response, "Could not load Projects."); return; } state.projects = (await response.json()).projects || []; renderProjects(); };
+      const loadProject = async (id = $("project-id").value.trim()) => { if (!id) return; const response = await fetch(`${projectEndpoint}${encodeURIComponent(id)}`, { headers: { Accept: "application/json" } }); if (!response.ok) { await showError("project-notice", response, "Could not load this Project."); return; } fillProject((await response.json()).project); };
       const entryEditor = (entry = {}) => {
         const wrapper = document.createElement("section"); wrapper.className = "entry-editor"; wrapper.dataset.entryId = entry.id || "";
         const field = (labelText, className, value, type = "input") => {
@@ -464,11 +535,19 @@
       $("export-worldbook").addEventListener("click", async () => { const response = await fetch(`${endpoint}/${encodeURIComponent(state.selectedId)}/export`); if (!response.ok) { await showError("worldbook-notice", response, "Could not export this Worldbook."); return; } const blob = new Blob([JSON.stringify(await response.json(), null, 2)], { type: "application/json" }); const link = document.createElement("a"); link.href = URL.createObjectURL(blob); link.download = `${$("worldbook-name").value.trim() || "worldbook"}.airp.json`; link.click(); URL.revokeObjectURL(link.href); });
       $("worldbook-import").addEventListener("change", async (event) => { const file = event.target.files[0]; if (!file) return; let documentValue; try { documentValue = JSON.parse(await file.text()); } catch (_) { setNotice("worldbook-notice", "The selected file is not valid JSON.", "error"); return; } const importBody = { name: file.name.replace(/\.json$/i, ""), document: documentValue }; const cardData = documentValue.data && typeof documentValue.data === "object" ? documentValue.data : {}; if ((cardData.character_book || documentValue.character_book) && $("project-id").value.trim()) importBody.project_id = $("project-id").value.trim(); const response = await fetch(`${endpoint}/import`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(importBody) }); event.target.value = ""; if (!response.ok) { await showError("worldbook-notice", response, "Could not import this Worldbook."); return; } const payload = await response.json(); await loadWorldbooks(); fillWorldbook(payload.worldbook); setNotice("worldbook-notice", savedNotice("Worldbook imported", payload.renamed_entries), "success"); });
       const renderBindings = (selected = []) => { const rows = state.worldbooks.map((book) => { const label = document.createElement("label"); label.className = "binding-row"; const input = document.createElement("input"); input.type = "checkbox"; input.value = book.id; input.checked = selected.includes(book.id); label.append(input, book.name); return label; }); if (!rows.length) { const empty = document.createElement("div"); empty.className = "empty"; empty.textContent = "No Worldbooks available."; rows.push(empty); } $("project-worldbooks").replaceChildren(...rows); };
-      const loadProject = async () => { const id = $("project-id").value.trim(); if (!id) return; const response = await fetch(`${projectEndpoint}${encodeURIComponent(id)}/worldbooks`); if (!response.ok) { await showError("project-notice", response, "Could not load Project bindings."); return; } const payload = await response.json(); renderBindings(payload.project.worldbook_ids); setNotice("project-notice", ""); };
       $("load-project").addEventListener("click", loadProject);
       $("save-project-bindings").addEventListener("click", async () => { const id = $("project-id").value.trim(); const worldbookIds = [...$("project-worldbooks").querySelectorAll("input:checked")].map((input) => input.value); const response = await fetch(`${projectEndpoint}${encodeURIComponent(id)}/worldbooks`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ worldbook_ids: worldbookIds }) }); if (!response.ok) { await showError("project-notice", response, "Could not save Project bindings."); return; } setNotice("project-notice", "Project bindings saved.", "success"); });
-      document.querySelectorAll("[data-studio-view]").forEach((button) => button.addEventListener("click", () => { const view = button.dataset.studioView; document.querySelectorAll("[data-studio-view]").forEach((item) => { item.classList.toggle("active", item === button); item.removeAttribute("aria-current"); }); button.setAttribute("aria-current", "page"); ["providers", "agents", "projects", "worldbooks"].forEach((name) => { $(`${name}-view`).hidden = name !== view; }); $("view-title").textContent = { providers: "Provider Profiles", agents: "Agent Definitions", projects: "Project bindings", worldbooks: "Worldbook Library" }[view]; if (view === "worldbooks") loadWorldbooks(); if (view === "projects") { loadWorldbooks().then(loadProject); } }));
-      resetWorldbook();
+      $("project-form").addEventListener("submit", async (event) => {
+        event.preventDefault(); const payload = projectFromForm(); if (!payload) return; const url = state.selectedProjectId ? `${projectEndpoint}${encodeURIComponent(state.selectedProjectId)}` : projectCollectionEndpoint; const response = await fetch(url, { method: state.selectedProjectId ? "PUT" : "POST", headers: { "Content-Type": "application/json", Accept: "application/json" }, body: JSON.stringify(payload) });
+        if (!response.ok) { await showError("project-notice", response, "Could not save this Project."); return; }
+        const project = (await response.json()).project; await loadProjects(); fillProject(project); setNotice("project-notice", "Project saved.", "success");
+      });
+      $("add-project-opening").addEventListener("click", () => $("project-openings").append(projectOpeningEditor({ label: `Opening ${$("project-openings").children.length + 1}` })));
+      $("new-project").addEventListener("click", () => { resetProject(); $("project-name").focus(); });
+      $("copy-project").addEventListener("click", async () => { if (!state.selectedProjectId) return; const response = await fetch(`${projectEndpoint}${encodeURIComponent(state.selectedProjectId)}/copy`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }); if (!response.ok) { await showError("project-notice", response, "Could not copy this Project."); return; } const project = (await response.json()).project; await loadProjects(); fillProject(project); setNotice("project-notice", "Project copied.", "success"); });
+      $("project-import").addEventListener("change", async (event) => { const file = event.target.files[0]; if (!file) return; let documentValue; try { documentValue = JSON.parse(await file.text()); } catch (_) { setNotice("project-notice", "The selected file is not valid JSON.", "error"); return; } const response = await fetch(`${projectEndpoint}import`, { method: "POST", headers: { "Content-Type": "application/json", Accept: "application/json" }, body: JSON.stringify({ document: documentValue }) }); event.target.value = ""; if (!response.ok) { await showError("project-notice", response, "Could not import this Project."); return; } const project = (await response.json()).project; await loadProjects(); fillProject(project); setNotice("project-notice", "Project imported.", "success"); });
+      document.querySelectorAll("[data-studio-view]").forEach((button) => button.addEventListener("click", () => { const view = button.dataset.studioView; document.querySelectorAll("[data-studio-view]").forEach((item) => { item.classList.toggle("active", item === button); item.removeAttribute("aria-current"); }); button.setAttribute("aria-current", "page"); ["providers", "agents", "projects", "worldbooks"].forEach((name) => { $(`${name}-view`).hidden = name !== view; }); $("view-title").textContent = { providers: "Provider Profiles", agents: "Agent Definitions", projects: "Projects", worldbooks: "Worldbook Library" }[view]; if (view === "worldbooks") loadWorldbooks(); if (view === "projects") { loadWorldbooks().then(() => Promise.all([loadProjects(), loadProject()])); } }));
+      resetWorldbook(); resetProject();
     })();
   </script>
 </body>
