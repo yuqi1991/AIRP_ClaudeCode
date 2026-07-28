@@ -68,6 +68,12 @@ class ProviderProfileService:
         self._secrets.delete(profile_id)
         return self._safe(profile)
 
+    def execution_adapter(self, profile_id: str, model: str) -> OpenAICompatibleProviderAdapter:
+        profile = self._profiles.get_profile(profile_id)
+        if not profile.get("enabled", True):
+            raise ValueError(f"Provider Profile {profile_id!r} is disabled")
+        return self._adapter(profile, model=model)
+
     def _save(self, payload: dict, persist: Callable[[dict], dict]) -> dict[str, Any]:
         clean, api_key = self._split_secret(payload)
         profile = persist(clean)
@@ -96,7 +102,7 @@ class ProviderProfileService:
     def _safe(self, profile: dict) -> dict[str, Any]:
         return {**profile, "key_configured": self._secrets.has(profile["id"])}
 
-    def _adapter(self, profile: dict) -> OpenAICompatibleProviderAdapter:
+    def _adapter(self, profile: dict, *, model: str | None = None) -> OpenAICompatibleProviderAdapter:
         api_key = self._secrets.get(profile["id"])
         if not api_key:
             raise ProviderError("API key is not configured", "provider_rejected", False)
@@ -104,6 +110,6 @@ class ProviderProfileService:
             base_url=profile["base_url"],
             api_key=api_key,
             api_format=profile["api_format"],
-            model=(profile.get("model_ids") or [""])[0],
+            model=model or (profile.get("model_ids") or [""])[0],
             timeout=self._discovery_timeout,
         )

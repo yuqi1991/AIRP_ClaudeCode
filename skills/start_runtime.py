@@ -313,6 +313,7 @@ def main() -> None:
     # in its source snapshot, so config edits affect only later tasks.
     from engine.context_compiler import ContextPolicy
     from engine.executor_factory import RuntimeExecutorFactory
+    from engine.provider_profiles import ProviderProfileService
     from engine.runtime import MultiTurnFakeExecutor, SessionTurnRuntime
     from engine.runtime_config import RuntimeConfigStore
     from engine.session_manager import SessionManager
@@ -326,11 +327,14 @@ def main() -> None:
         version=f"runtime-v1:{frozen_config['preset_id']}",
         token_budget=frozen_config["preset"]["token_budget"],
     )
+    provider_profile_service = ProviderProfileService(
+        ProviderProfileStore(styles),
+        LocalSecretStore(styles / "studio" / "secrets.json"),
+    )
     executor_factory = RuntimeExecutorFactory(
         mock=mock,
         base_url="https://api.deepseek.com",
-        provider_profiles=ProviderProfileStore(styles),
-        secret_store=LocalSecretStore(styles / "studio" / "secrets.json"),
+        provider_profile_service=provider_profile_service,
     )
     database_path = card_folder / ".runtime.sqlite3"
 

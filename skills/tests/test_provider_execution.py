@@ -22,6 +22,7 @@ from engine.provider import (  # noqa: E402
 )
 from engine.secret_store import LocalSecretStore  # noqa: E402
 from engine.executor_factory import RuntimeExecutorFactory  # noqa: E402
+from engine.provider_profiles import ProviderProfileService  # noqa: E402
 from engine.studio_library import ProviderProfileStore  # noqa: E402
 
 
@@ -297,8 +298,7 @@ def test_runtime_factory_resolves_profile_protocol_and_secret_without_freezing_k
     secrets.set(profile["id"], "runtime-secret")
     factory = RuntimeExecutorFactory(
         mock=False,
-        provider_profiles=profiles,
-        secret_store=secrets,
+        provider_profile_service=ProviderProfileService(profiles, secrets),
     )
     frozen = {
         "graph": {

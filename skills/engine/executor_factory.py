@@ -2,11 +2,7 @@ from __future__ import annotations
 
 from engine.agent_graph import SequentialAgentGraph, SequentialGraphNode
 from engine.director import NarrativeDirector, ProviderDrivenDirector
-from engine.provider import (
-    OpenAICompatibleProviderAdapter,
-    RealProviderAdapter,
-    runtime_provider_api_key,
-)
+from engine.provider import RealProviderAdapter, runtime_provider_api_key
 
 
 class DeterministicGraphDirector(NarrativeDirector):
@@ -41,13 +37,11 @@ class RuntimeExecutorFactory:
         *,
         mock: bool,
         base_url="https://api.deepseek.com",
-        provider_profiles=None,
-        secret_store=None,
+        provider_profile_service=None,
     ):
         self.mock = bool(mock)
         self.base_url = base_url
-        self.provider_profiles = provider_profiles
-        self.secret_store = secret_store
+        self.provider_profile_service = provider_profile_service
 
     def __call__(self, runtime_config):
         if not isinstance(runtime_config, dict):
@@ -77,20 +71,9 @@ class RuntimeExecutorFactory:
     def _provider_adapter(self, node, runtime_config):
         profile_id = node.get("provider_profile_id")
         if profile_id:
-            if self.provider_profiles is None or self.secret_store is None:
+            if self.provider_profile_service is None:
                 raise ValueError("provider profile execution is not configured")
-            profile = self.provider_profiles.get_profile(profile_id)
-            if not profile.get("enabled", True):
-                raise ValueError(f"Provider Profile {profile_id!r} is disabled")
-            api_key = self.secret_store.get(profile_id)
-            if not api_key:
-                raise ValueError(f"Provider Profile {profile_id!r} has no API key")
-            return OpenAICompatibleProviderAdapter(
-                base_url=profile["base_url"],
-                api_key=api_key,
-                api_format=profile["api_format"],
-                model=node["model"],
-            )
+            return self.provider_profile_service.execution_adapter(profile_id, node["model"])
 
         provider_settings = (runtime_config.get("settings") or {}).get("provider") or {}
         return RealProviderAdapter(
