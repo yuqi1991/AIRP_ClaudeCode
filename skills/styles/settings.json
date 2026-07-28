@@ -1,11 +1,5 @@
 {
-  "style": "北棱特调",
-  "nsfw": "直白",
-  "person": "第二人称",
-  "antiImpersonation": true,
-  "bgNpc": true,
   "charName": "kendrick",
-  "wordCount": 1200,
   "runtime": {
     "preset_id": "default",
     "graph_id": "default"
