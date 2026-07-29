@@ -2289,7 +2289,7 @@ class SessionRuntimeServer:
 
     def _switch_opening(self, opening_id) -> bool:
         """Switch the active opening and rebuild runtime-derived projections."""
-        import handler
+        from airp import handler
         try:
             resolved_id = int(opening_id or 0)
             settings = self._read_settings()

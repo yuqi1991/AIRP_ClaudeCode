@@ -1,0 +1,623 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Agent Studio | Providers</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #202529;
+      --muted: #687178;
+      --line: #d5dadd;
+      --surface: #ffffff;
+      --canvas: #f2f4f3;
+      --panel: #e8eceb;
+      --accent: #126b67;
+      --accent-strong: #0b514e;
+      --danger: #a33c37;
+      --danger-soft: #f8e9e7;
+      --success: #256c3d;
+      --success-soft: #e5f1e8;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; background: var(--canvas); color: var(--ink); }
+    button, input, select, textarea { font: inherit; }
+    button { cursor: pointer; }
+    .app { display: grid; grid-template-columns: 220px minmax(0, 1fr); min-height: 100vh; }
+    .rail { background: #172528; color: #dce7e5; padding: 24px 14px; }
+    .brand { padding: 0 12px 26px; }
+    .brand strong { display: block; font-size: 1.05rem; letter-spacing: .02em; }
+    .brand small { display: block; color: #9fb4b2; margin-top: 6px; }
+    .nav { display: grid; gap: 4px; }
+    .nav button { border: 0; background: transparent; color: #b8c9c7; text-align: left; border-radius: 5px; padding: 11px 12px; }
+    .nav button:hover, .nav button.active { background: #284144; color: #fff; }
+    .nav button:disabled { cursor: default; opacity: .54; }
+    main { min-width: 0; }
+    .topbar { display: flex; align-items: center; justify-content: space-between; gap: 18px; min-height: 80px; padding: 20px 34px; background: var(--surface); border-bottom: 1px solid var(--line); }
+    .eyebrow { margin: 0 0 5px; color: var(--accent); font-size: .72rem; font-weight: 700; letter-spacing: .13em; text-transform: uppercase; }
+    h1, h2, p { margin: 0; }
+    h1 { font-size: 1.52rem; letter-spacing: -.02em; }
+    .topbar a { color: var(--muted); text-decoration: none; font-size: .9rem; }
+    .topbar a:hover { color: var(--accent); }
+    .workspace { display: grid; grid-template-columns: minmax(260px, .76fr) minmax(360px, 1.24fr); gap: 22px; padding: 26px 34px 40px; max-width: 1240px; }
+    .section-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 13px; }
+    .section-head h2 { font-size: 1rem; }
+    .section-head p { color: var(--muted); font-size: .83rem; }
+    .list { display: grid; gap: 8px; align-content: start; }
+    .profile-row { width: 100%; display: grid; gap: 3px; padding: 13px 14px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: var(--ink); text-align: left; }
+    .profile-row:hover, .profile-row.selected { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(18, 107, 103, .1); }
+    .profile-title { display: flex; justify-content: space-between; gap: 12px; font-weight: 650; }
+    .profile-meta { color: var(--muted); font-size: .8rem; overflow-wrap: anywhere; }
+    .status { display: inline-flex; align-items: center; gap: 5px; font-size: .72rem; white-space: nowrap; }
+    .status::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--success); }
+    .status.off::before { background: #899197; }
+    .empty { padding: 28px 16px; color: var(--muted); border: 1px dashed var(--line); border-radius: 6px; background: rgba(255,255,255,.42); text-align: center; }
+    .panel { min-width: 0; padding: 22px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface); }
+    .panel h2 { margin-bottom: 18px; font-size: 1.1rem; }
+    .form { display: grid; gap: 16px; }
+    .field { display: grid; gap: 6px; }
+    label { font-size: .8rem; font-weight: 650; }
+    input, select, textarea { width: 100%; border: 1px solid #bdc5c8; border-radius: 4px; padding: 10px 11px; background: #fcfdfd; color: var(--ink); }
+    input:focus, select:focus, textarea:focus { outline: 2px solid rgba(18, 107, 103, .22); border-color: var(--accent); }
+    textarea { min-height: 104px; resize: vertical; line-height: 1.45; }
+    .hint { color: var(--muted); font-size: .76rem; line-height: 1.4; }
+    .check { display: flex; align-items: center; gap: 9px; color: var(--ink); font-size: .87rem; }
+    .check input { width: auto; }
+    .actions { display: flex; flex-wrap: wrap; gap: 8px; padding-top: 4px; }
+    .button { border: 1px solid var(--line); border-radius: 4px; padding: 9px 13px; background: var(--surface); color: var(--ink); }
+    .button:hover { border-color: var(--accent); color: var(--accent-strong); }
+    .button.primary { border-color: var(--accent); background: var(--accent); color: #fff; }
+    .button.primary:hover { background: var(--accent-strong); }
+    .button.danger { border-color: #d49a96; color: var(--danger); }
+    .button.danger:hover { background: var(--danger-soft); }
+    .notice { min-height: 22px; margin-top: 16px; padding: 10px 12px; border-radius: 4px; font-size: .82rem; line-height: 1.45; }
+    .notice:empty { display: none; }
+    .notice.success { color: var(--success); background: var(--success-soft); }
+    .notice.error { color: var(--danger); background: var(--danger-soft); }
+    .notice ul { margin: 6px 0 0; padding-left: 18px; }
+    .catalog { display: grid; gap: 7px; margin-top: 2px; padding-top: 14px; border-top: 1px solid var(--line); }
+    .catalog-title { font-size: .78rem; font-weight: 700; }
+    .model-list { display: flex; flex-wrap: wrap; gap: 5px; }
+    .model { padding: 4px 7px; border: 1px solid #c9d3d2; border-radius: 3px; color: var(--muted); font-size: .75rem; }
+    [hidden] { display: none !important; }
+    .entry-list { display: grid; gap: 12px; }
+    .entry-editor { display: grid; grid-template-columns: minmax(0, 1fr) 90px; gap: 10px; padding: 14px 0; border-top: 1px solid var(--line); }
+    .entry-editor:first-child { border-top: 0; }
+    .entry-editor .wide { grid-column: 1 / -1; }
+    .entry-editor textarea { min-height: 88px; }
+    .node-editor { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; padding: 14px 0; border-top: 1px solid var(--line); }
+    .node-editor:first-child { border-top: 0; }
+    .node-editor .wide { grid-column: 1 / -1; }
+    .binding-list { display: grid; gap: 8px; padding: 4px 0; }
+    .binding-row { display: flex; align-items: center; gap: 9px; padding: 10px; border: 1px solid var(--line); border-radius: 4px; }
+    .binding-row input { width: auto; }
+    .preview-list { display: grid; gap: 8px; max-height: 520px; overflow: auto; }
+    .preview-message { padding: 10px 12px; border-left: 3px solid var(--accent); background: #f5f8f7; white-space: pre-wrap; overflow-wrap: anywhere; }
+    .preview-message strong { display: block; margin-bottom: 5px; color: var(--accent-strong); font-size: .76rem; }
+    .tool-list { display: flex; flex-wrap: wrap; gap: 5px; }
+    .tool-chip { padding: 4px 7px; border: 1px solid #c9d3d2; border-radius: 3px; color: var(--muted); font-size: .75rem; }
+    .file-button input { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+    @media (max-width: 860px) {
+      .app { grid-template-columns: minmax(0, 1fr); width: 100%; max-width: 100%; overflow: hidden; }
+      .rail { min-width: 0; width: 100%; max-width: 100%; padding: 12px 16px; overflow: hidden; }
+      .brand { display: flex; align-items: baseline; gap: 10px; padding: 0 0 10px; }
+      .brand small { margin-top: 0; }
+      .nav { display: flex; width: 100%; max-width: 100%; overflow-x: auto; }
+      .nav button { white-space: nowrap; }
+      main, .workspace, .topbar { min-width: 0; width: 100%; max-width: 100%; }
+      .workspace { grid-template-columns: minmax(0, 1fr); padding: 22px 18px 32px; }
+      .topbar { flex-wrap: wrap; padding: 17px 18px; }
+      .topbar a { width: 100%; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <aside class="rail" aria-label="Studio navigation">
+      <div class="brand"><strong>Agent Studio</strong><small>Library workspace</small></div>
+      <nav class="nav">
+        <button class="active" type="button" aria-current="page" data-studio-view="providers">Providers</button>
+        <button type="button" data-studio-view="agents">Agents</button>
+        <button type="button" data-studio-view="graphs">Graphs</button>
+        <button type="button" data-studio-view="projects">Projects</button>
+        <button type="button" data-studio-view="worldbooks">Worldbooks</button>
+      </nav>
+    </aside>
+    <main>
+      <header class="topbar">
+        <div><p class="eyebrow">Studio Library</p><h1 id="view-title">Provider Profiles</h1></div>
+        <a href="/" aria-label="Return to game">Return to game</a>
+      </header>
+      <section class="workspace" id="providers-view" aria-label="Provider profile management">
+        <div>
+          <div class="section-head"><div><h2>Profiles</h2><p id="profile-count">Loading...</p></div><button class="button" id="new-profile" type="button">New profile</button></div>
+          <div class="list" id="profile-list" aria-live="polite"></div>
+        </div>
+        <section class="panel" aria-labelledby="editor-title">
+          <h2 id="editor-title">New provider profile</h2>
+          <form class="form" id="profile-form">
+            <div class="field"><label for="profile-name">Name</label><input id="profile-name" name="name" required autocomplete="off" placeholder="Writing provider"></div>
+            <div class="field"><label for="profile-base-url">Base URL</label><input id="profile-base-url" name="base_url" required type="url" placeholder="https://api.example.com/v1"></div>
+            <div class="field"><label for="profile-format">API format</label><select id="profile-format" name="api_format"><option value="responses">Responses</option><option value="chat_completions">Chat Completions</option></select></div>
+            <div class="field"><label for="profile-api-key">API key</label><input id="profile-api-key" name="api_key" type="password" autocomplete="new-password"><span class="hint" id="key-status">Not configured</span></div>
+            <label class="check"><input id="profile-enabled" name="enabled" type="checkbox" checked> Profile enabled for future Agent selection</label>
+            <div class="field"><label for="profile-models">Model catalog</label><textarea id="profile-models" name="model_ids" placeholder="one-model-per-line"></textarea><span class="hint">Optional placeholder catalog. Enter one model ID per line; an Agent may still enter a manual ID later.</span></div>
+            <div class="actions"><button class="button primary" type="submit" id="save-profile">Save profile</button><button class="button" type="button" id="test-profile" hidden>Test connection</button><button class="button" type="button" id="refresh-models" hidden>Refresh models</button><button class="button danger" type="button" id="delete-key" hidden>Delete key</button><button class="button danger" type="button" id="delete-profile" hidden>Delete profile</button></div>
+          </form>
+          <div class="notice" id="notice" role="status" aria-live="polite"></div>
+          <div class="catalog" id="catalog" hidden><span class="catalog-title">Saved model catalog</span><div class="model-list" id="catalog-models"></div></div>
+        </section>
+      </section>
+      <section class="workspace" id="agents-view" aria-label="Agent Definition management" hidden>
+        <div>
+          <div class="section-head"><div><h2>Agent Definitions</h2><p id="agent-count">Loading...</p></div><button class="button" id="new-agent" type="button">New agent</button></div>
+          <div class="list" id="agent-list" aria-live="polite"></div>
+        </div>
+        <section class="panel" aria-labelledby="agent-editor-title">
+          <h2 id="agent-editor-title">New Agent Definition</h2>
+          <form class="form" id="agent-form">
+            <div class="field"><label for="agent-name">Name</label><input id="agent-name" required autocomplete="off" placeholder="Scene writer"></div>
+            <div class="field"><label for="agent-instruction">Instruction</label><textarea id="agent-instruction" placeholder="Describe this Agent's writing behavior."></textarea></div>
+            <div class="field"><label for="agent-provider">Provider Profile</label><select id="agent-provider"><option value="">Manual or runtime provider</option></select></div>
+            <div class="field"><label for="agent-model">Model ID</label><input id="agent-model" autocomplete="off" placeholder="provider-model-id"></div>
+            <div class="field"><label for="agent-temperature">Temperature</label><input id="agent-temperature" type="number" min="0" max="2" step="0.01" placeholder="Provider default"></div>
+            <div class="field"><label for="agent-max-output-tokens">Max output tokens</label><input id="agent-max-output-tokens" type="number" min="1" step="1" placeholder="Provider default"></div>
+            <div class="field"><label for="agent-top-p">Top P</label><input id="agent-top-p" type="number" min="0" max="1" step="0.01" placeholder="Provider default"></div>
+            <div class="field"><label for="agent-stop">Stop</label><input id="agent-stop" autocomplete="off" placeholder="Comma-separated stop strings"></div>
+            <div class="field"><label for="agent-reasoning-effort">Reasoning effort</label><input id="agent-reasoning-effort" autocomplete="off" placeholder="Provider default"></div>
+            <div class="field"><label for="agent-seed">Seed</label><input id="agent-seed" type="number" step="1" placeholder="Provider default"></div>
+            <div class="field"><label for="agent-advanced">Advanced JSON</label><textarea id="agent-advanced" placeholder='{"response_format":{"type":"json_object"}}'></textarea><span class="hint">Forwarded without schema validation. Runtime-owned fields remain protected.</span></div>
+            <div class="field"><label for="agent-tools">Tool allowlist</label><input id="agent-tools" autocomplete="off" placeholder="get_recent_memory, load_worldbook_entry"></div>
+            <div class="actions"><button class="button primary" type="submit">Save Agent</button><button class="button" type="button" id="preview-agent" hidden>Prompt preview</button><button class="button" type="button" id="copy-agent" hidden>Copy</button><button class="button danger" type="button" id="delete-agent" hidden>Delete</button></div>
+          </form>
+          <div class="notice" id="agent-notice" role="status" aria-live="polite"></div>
+          <section class="catalog" aria-labelledby="preview-title"><span class="catalog-title" id="preview-title">Prompt preview</span><div class="field"><label for="preview-project-input">Project input</label><textarea id="preview-project-input" placeholder="Preview runtime input"></textarea></div><div class="field"><label for="preview-context">Runtime context JSON</label><textarea id="preview-context" placeholder='{"settings":{"style":"..."},"card_facts":{"name":"..."},"current_state":{}}'></textarea></div><div class="field"><label for="preview-handoff">Handoff JSON</label><textarea id="preview-handoff" placeholder='{"source_node_id":"planner","artifact":"..."}'></textarea></div><div class="field"><label for="preview-output-contract">Output contract JSON</label><textarea id="preview-output-contract" placeholder='{"kind":"narrative_draft"}'></textarea></div><div class="preview-list" id="agent-preview-output"></div></section>
+        </section>
+      </section>
+      <section class="workspace" id="graphs-view" aria-label="Graph Definition management" hidden>
+        <div>
+          <div class="section-head"><div><h2>Graph Definitions</h2><p id="graph-count">Loading...</p></div><button class="button" id="new-graph" type="button">New graph</button></div>
+          <div class="list" id="graph-list" aria-live="polite"></div>
+        </div>
+        <section class="panel" aria-labelledby="graph-editor-title">
+          <h2 id="graph-editor-title">New Graph Definition</h2>
+          <form class="form" id="graph-form">
+            <div class="field"><label for="graph-id">Graph ID</label><input id="graph-id" autocomplete="off" placeholder="Created automatically when blank"><span class="hint">Stable after the Graph is saved.</span></div>
+            <div class="field"><label for="graph-name">Name</label><input id="graph-name" required autocomplete="off" placeholder="Writing pipeline"></div>
+            <section class="catalog" aria-labelledby="graph-nodes-title"><div class="section-head"><h2 id="graph-nodes-title">Linear nodes</h2><button class="button" id="add-graph-node" type="button">Add node</button></div><div class="entry-list" id="graph-nodes"></div></section>
+            <div class="field"><label for="graph-output-node">Output node</label><select id="graph-output-node"></select><span class="hint">The output must be the final enabled node.</span></div>
+            <div class="actions"><button class="button primary" type="submit">Save Graph</button><button class="button" id="copy-graph" type="button" hidden>Copy</button><button class="button danger" id="delete-graph" type="button" hidden>Delete</button></div>
+          </form>
+          <div class="notice" id="graph-notice" role="status" aria-live="polite"></div>
+        </section>
+      </section>
+      <section class="workspace" id="worldbooks-view" aria-label="Worldbook Library" hidden>
+        <div>
+          <div class="section-head"><div><h2>Worldbook Library</h2><p id="worldbook-count">Loading...</p></div><button class="button" id="new-worldbook" type="button">New worldbook</button></div>
+          <div class="actions">
+            <label class="button file-button">Import JSON<input id="worldbook-import" type="file" accept="application/json,.json"></label>
+          </div>
+          <div class="list" id="worldbook-list" aria-live="polite"></div>
+        </div>
+        <section class="panel" aria-labelledby="worldbook-editor-title">
+          <h2 id="worldbook-editor-title">New Worldbook Definition</h2>
+          <form class="form" id="worldbook-form">
+            <div class="field"><label for="worldbook-name">Name</label><input id="worldbook-name" required autocomplete="off" placeholder="Shared setting lore"></div>
+            <div class="section-head"><div><h2>Entries</h2></div><button class="button" id="add-worldbook-entry" type="button">Add entry</button></div>
+            <div class="entry-list" id="worldbook-entries"></div>
+            <div class="actions">
+              <button class="button primary" type="submit">Save worldbook</button>
+              <button class="button" id="copy-worldbook" type="button" hidden>Copy</button>
+              <button class="button" id="export-worldbook" type="button" hidden>Export AIRP JSON</button>
+              <button class="button danger" id="delete-worldbook" type="button" hidden>Delete</button>
+            </div>
+          </form>
+          <div class="notice" id="worldbook-notice" role="status" aria-live="polite"></div>
+        </section>
+      </section>
+      <section class="workspace" id="projects-view" aria-label="AIRP Project editor" hidden>
+        <div>
+          <div class="section-head"><div><h2>Projects</h2><p id="project-count">Loading...</p></div><button class="button" id="new-project" type="button">New project</button></div>
+          <div class="field"><label for="project-id">Project ID</label><input id="project-id" value="local" autocomplete="off"></div>
+          <div class="actions"><button class="button" id="load-project" type="button">Load project</button><label class="button file-button">Import card JSON<input id="project-import" type="file" accept="application/json,.json"></label></div>
+          <div class="list" id="project-list" aria-live="polite"></div>
+        </div>
+        <section class="panel" aria-labelledby="project-editor-title">
+          <h2 id="project-editor-title">New AIRP Project</h2>
+          <form class="form" id="project-form">
+            <div class="field"><label for="project-name">Name</label><input id="project-name" required autocomplete="off" placeholder="Character project"></div>
+            <div class="field"><label for="project-avatar">Avatar</label><input id="project-avatar" autocomplete="off" placeholder="assets/portrait.png"></div>
+            <div class="field"><label for="project-description">Description</label><textarea id="project-description"></textarea></div>
+            <div class="field"><label for="project-personality">Personality</label><textarea id="project-personality"></textarea></div>
+            <div class="field"><label for="project-scenario">Scenario</label><textarea id="project-scenario"></textarea></div>
+            <div class="field"><label for="project-card-system">Card system prompt</label><textarea id="project-card-system"></textarea></div>
+            <div class="field"><label for="project-card-post-history">Post-history instruction</label><textarea id="project-card-post-history"></textarea></div>
+            <section class="catalog" aria-labelledby="project-openings-title"><div class="section-head"><h2 id="project-openings-title">Openings</h2><button class="button" id="add-project-opening" type="button">Add opening</button></div><div class="entry-list" id="project-openings"></div></section>
+            <div class="field"><label for="project-variables">Variables</label><textarea id="project-variables" placeholder='{"state":{}}'></textarea></div>
+            <div class="field"><label for="project-assets">Assets</label><textarea id="project-assets" placeholder='[{"id":"portrait","path":"assets/portrait.png"}]'></textarea></div>
+            <div class="field"><label for="project-graph">Selected Graph</label><select id="project-graph"><option value="">No Graph selected</option></select></div>
+            <div class="actions"><button class="button primary" type="submit">Save project</button><button class="button" id="copy-project" type="button" hidden>Copy</button></div>
+          </form>
+          <section class="catalog" aria-labelledby="project-binding-title"><h2 id="project-binding-title">Bound Worldbooks</h2><div class="binding-list" id="project-worldbooks"></div><div class="actions"><button class="button" id="save-project-bindings" type="button">Save bindings</button></div></section>
+          <div class="notice" id="project-notice" role="status" aria-live="polite"></div>
+        </section>
+      </section>
+    </main>
+  </div>
+  <script>
+    (() => {
+      const endpoint = "/v1/studio/providers";
+      const state = { profiles: [], selectedId: null };
+      const $ = (id) => document.getElementById(id);
+      const list = $("profile-list");
+      const notice = $("notice");
+      const form = $("profile-form");
+      const setNotice = (message, kind = "") => {
+        notice.className = `notice ${kind}`;
+        notice.textContent = message;
+      };
+      const setError = async (response, fallback) => {
+        let payload = {};
+        try { payload = await response.json(); } catch (_) { /* HTTP error without JSON */ }
+        notice.className = "notice error";
+        notice.textContent = payload.message || fallback;
+        if (Array.isArray(payload.references) && payload.references.length) {
+          const details = document.createElement("ul");
+          payload.references.forEach((reference) => {
+            const item = document.createElement("li");
+            item.textContent = `${reference.type}: ${reference.name} (${reference.id})`;
+            details.appendChild(item);
+          });
+          notice.appendChild(details);
+        }
+      };
+      const profileFromForm = () => {
+        const profile = {
+          name: $("profile-name").value.trim(),
+          base_url: $("profile-base-url").value.trim(),
+          api_format: $("profile-format").value,
+          enabled: $("profile-enabled").checked,
+          model_ids: $("profile-models").value.split(/\r?\n/).map((value) => value.trim()).filter(Boolean),
+        };
+        const apiKey = $("profile-api-key").value.trim();
+        if (apiKey) profile.api_key = apiKey;
+        return profile;
+      };
+      const resetForm = () => {
+        state.selectedId = null;
+        $("editor-title").textContent = "New provider profile";
+        form.reset();
+        $("profile-enabled").checked = true;
+        $("delete-profile").hidden = true;
+        $("test-profile").hidden = true;
+        $("refresh-models").hidden = true;
+        $("delete-key").hidden = true;
+        $("key-status").textContent = "Not configured";
+        $("catalog").hidden = true;
+        list.querySelectorAll(".profile-row").forEach((item) => item.classList.remove("selected"));
+      };
+      const fillForm = (profile) => {
+        state.selectedId = profile.id;
+        $("editor-title").textContent = `Edit ${profile.name}`;
+        $("profile-name").value = profile.name;
+        $("profile-base-url").value = profile.base_url;
+        $("profile-format").value = profile.api_format;
+        $("profile-enabled").checked = profile.enabled;
+        $("profile-models").value = profile.model_ids.join("\n");
+        $("profile-api-key").value = "";
+        $("key-status").textContent = profile.key_configured ? "Configured" : "Not configured";
+        $("delete-profile").hidden = false;
+        $("test-profile").hidden = false;
+        $("refresh-models").hidden = false;
+        $("delete-key").hidden = !profile.key_configured;
+        $("catalog").hidden = profile.model_ids.length === 0;
+        $("catalog-models").replaceChildren(...profile.model_ids.map((model) => { const tag = document.createElement("span"); tag.className = "model"; tag.textContent = model; return tag; }));
+      };
+      const renderList = () => {
+        $("profile-count").textContent = `${state.profiles.length} saved profile${state.profiles.length === 1 ? "" : "s"}`;
+        list.replaceChildren();
+        if (!state.profiles.length) {
+          const empty = document.createElement("div"); empty.className = "empty"; empty.textContent = "No provider profiles yet."; list.appendChild(empty); return;
+        }
+        state.profiles.forEach((profile) => {
+          const button = document.createElement("button"); button.type = "button"; button.className = `profile-row${profile.id === state.selectedId ? " selected" : ""}`;
+          const title = document.createElement("span"); title.className = "profile-title";
+          const name = document.createElement("span"); name.textContent = profile.name;
+          const status = document.createElement("span"); status.className = `status${profile.enabled ? "" : " off"}`; status.textContent = profile.enabled ? "Enabled" : "Disabled";
+          title.append(name, status);
+          const meta = document.createElement("span"); meta.className = "profile-meta"; meta.textContent = `${profile.api_format} · ${profile.base_url}`;
+          button.append(title, meta); button.addEventListener("click", () => loadProfile(profile.id)); list.appendChild(button);
+        });
+      };
+      const loadProfiles = async () => {
+        const response = await fetch(endpoint, { headers: { Accept: "application/json" } });
+        if (!response.ok) { await setError(response, "Could not load provider profiles."); return; }
+        const payload = await response.json(); state.profiles = payload.profiles || []; renderList();
+      };
+      const loadProfile = async (id) => {
+        const response = await fetch(`${endpoint}/${encodeURIComponent(id)}`);
+        if (!response.ok) { await setError(response, "Could not load this provider profile."); return; }
+        fillForm((await response.json()).profile); renderList(); setNotice("");
+      };
+      form.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const method = state.selectedId ? "PUT" : "POST";
+        const url = state.selectedId ? `${endpoint}/${encodeURIComponent(state.selectedId)}` : endpoint;
+        const response = await fetch(url, { method, headers: { "Content-Type": "application/json", Accept: "application/json" }, body: JSON.stringify(profileFromForm()) });
+        if (!response.ok) { await setError(response, "Could not save this provider profile."); return; }
+        const payload = await response.json(); const profile = payload.profile; state.selectedId = profile.id; await loadProfiles(); fillForm(profile); renderList();
+        if (payload.model_discovery && !payload.model_discovery.ok) {
+          setNotice(payload.model_discovery.error.message || "Provider profile saved; model discovery failed.", "error");
+        } else {
+          setNotice("Provider profile saved.", "success");
+        }
+      });
+      const profileAction = async (suffix, fallback, success) => {
+        if (!state.selectedId) return;
+        const response = await fetch(`${endpoint}/${encodeURIComponent(state.selectedId)}/${suffix}`, { method: "POST", headers: { Accept: "application/json" } });
+        if (!response.ok) { await setError(response, fallback); return; }
+        const payload = await response.json();
+        if (payload.profile) { fillForm(payload.profile); await loadProfiles(); renderList(); }
+        setNotice(success, "success");
+      };
+      $("test-profile").addEventListener("click", () => profileAction("test", "Connection test failed.", "Connection succeeded."));
+      $("refresh-models").addEventListener("click", () => profileAction("models/refresh", "Model refresh failed.", "Model catalog refreshed."));
+      $("delete-key").addEventListener("click", async () => {
+        if (!state.selectedId) return;
+        const response = await fetch(`${endpoint}/${encodeURIComponent(state.selectedId)}/secret`, { method: "DELETE", headers: { Accept: "application/json" } });
+        if (!response.ok) { await setError(response, "Could not delete the API key."); return; }
+        fillForm((await response.json()).profile); await loadProfiles(); renderList(); setNotice("API key deleted.", "success");
+      });
+      $("delete-profile").addEventListener("click", async () => {
+        if (!state.selectedId) return;
+        const response = await fetch(`${endpoint}/${encodeURIComponent(state.selectedId)}`, { method: "DELETE", headers: { Accept: "application/json" } });
+        if (!response.ok) { await setError(response, "Could not delete this provider profile."); return; }
+        resetForm(); await loadProfiles(); setNotice("Provider profile deleted.", "success");
+      });
+      $("new-profile").addEventListener("click", () => { resetForm(); setNotice(""); $("profile-name").focus(); });
+      loadProfiles().catch(() => setNotice("Could not connect to the Runtime Studio service.", "error"));
+    })();
+    (() => {
+      const endpoint = "/v1/studio/agents";
+      const providerEndpoint = "/v1/studio/providers";
+      const state = { agents: [], selectedId: null, providers: [] };
+      const $ = (id) => document.getElementById(id);
+      const setNotice = (message, kind = "") => { const target = $("agent-notice"); target.className = `notice ${kind}`; target.textContent = message; };
+      const showError = async (response, fallback) => { let payload = {}; try { payload = await response.json(); } catch (_) {} const target = $("agent-notice"); target.className = "notice error"; target.textContent = payload.message || fallback; (payload.references || []).forEach((reference) => { const line = document.createElement("div"); line.textContent = `${reference.type}: ${reference.name} (${reference.id})`; target.appendChild(line); }); };
+      const setOptions = (select, values, emptyLabel) => { const current = select.value; select.replaceChildren(); if (emptyLabel) { const empty = document.createElement("option"); empty.value = ""; empty.textContent = emptyLabel; select.appendChild(empty); } values.forEach((item) => { const option = document.createElement("option"); option.value = item.id; option.textContent = item.name || item.id; select.appendChild(option); }); if ([...select.options].some((item) => item.value === current)) select.value = current; };
+      const readJson = (id, fallback) => { const value = $(id).value.trim(); if (!value) return fallback; try { return JSON.parse(value); } catch (_) { setNotice(`${id} must contain valid JSON.`, "error"); return null; } };
+      const numberValue = (id) => { const value = $(id).value.trim(); return value ? Number(value) : null; };
+      const agentFromForm = () => {
+        const advanced = readJson("agent-advanced", {}); if (advanced === null) return null;
+        const generation = {};
+        const numeric = [["temperature", "agent-temperature"], ["max_output_tokens", "agent-max-output-tokens"], ["top_p", "agent-top-p"], ["seed", "agent-seed"]];
+        numeric.forEach(([key, id]) => { const value = numberValue(id); if (value !== null && Number.isFinite(value)) generation[key] = key === "max_output_tokens" || key === "seed" ? Math.trunc(value) : value; });
+        const stop = $("agent-stop").value.split(",").map((item) => item.trim()).filter(Boolean); if (stop.length) generation.stop = stop;
+        const reasoning = $("agent-reasoning-effort").value.trim(); if (reasoning) generation.reasoning_effort = reasoning;
+        return { name: $("agent-name").value.trim(), instruction: $("agent-instruction").value, provider_profile_id: $("agent-provider").value || null, model_id: $("agent-model").value.trim() || null, generation, advanced, tool_allowlist: $("agent-tools").value.split(",").map((item) => item.trim()).filter(Boolean) };
+      };
+      const resetAgent = () => { state.selectedId = null; $("agent-form").reset(); ["copy-agent", "preview-agent", "delete-agent"].forEach((id) => { $(id).hidden = true; }); $("agent-preview-output").replaceChildren(); $("agent-editor-title").textContent = "New Agent Definition"; setNotice(""); renderList(); };
+      const fillAgent = (agent) => { state.selectedId = agent.agent_id; $("agent-editor-title").textContent = `Edit ${agent.name}`; $("agent-name").value = agent.name; $("agent-instruction").value = agent.instruction; $("agent-provider").value = agent.provider_profile_id || ""; $("agent-model").value = agent.model_id || ""; const generation = agent.generation || {}; $("agent-temperature").value = generation.temperature ?? ""; $("agent-max-output-tokens").value = generation.max_output_tokens ?? ""; $("agent-top-p").value = generation.top_p ?? ""; $("agent-stop").value = Array.isArray(generation.stop) ? generation.stop.join(", ") : (generation.stop || ""); $("agent-reasoning-effort").value = generation.reasoning_effort || ""; $("agent-seed").value = generation.seed ?? ""; $("agent-advanced").value = JSON.stringify(agent.advanced || {}, null, 2); $("agent-tools").value = (agent.tool_allowlist || []).join(", "); ["copy-agent", "preview-agent", "delete-agent"].forEach((id) => { $(id).hidden = false; }); renderList(); setNotice(""); };
+      const renderList = () => { $("agent-count").textContent = `${state.agents.length} saved Agent Definition${state.agents.length === 1 ? "" : "s"}`; const rows = state.agents.map((agent) => { const button = document.createElement("button"); button.type = "button"; button.className = `profile-row${agent.agent_id === state.selectedId ? " selected" : ""}`; const title = document.createElement("span"); title.className = "profile-title"; title.textContent = agent.name; const meta = document.createElement("span"); meta.className = "profile-meta"; meta.textContent = `${agent.model_id || "Provider default"}`; button.append(title, meta); button.addEventListener("click", () => loadAgent(agent.agent_id)); return button; }); if (!rows.length) { const empty = document.createElement("div"); empty.className = "empty"; empty.textContent = "No Agent Definitions yet."; rows.push(empty); } $("agent-list").replaceChildren(...rows); };
+      const loadAgents = async () => { const response = await fetch(endpoint, { headers: { Accept: "application/json" } }); if (!response.ok) { await showError(response, "Could not load Agent Definitions."); return; } state.agents = (await response.json()).agents || []; renderList(); };
+      const loadAgent = async (id) => { const response = await fetch(`${endpoint}/${encodeURIComponent(id)}`); if (!response.ok) { await showError(response, "Could not load this Agent Definition."); return; } fillAgent((await response.json()).agent); };
+      const loadReferences = async () => { const providerResponse = await fetch(providerEndpoint); if (providerResponse.ok) { state.providers = (await providerResponse.json()).profiles || []; setOptions($("agent-provider"), state.providers, "Manual or runtime provider"); } };
+      const renderPreview = (preview) => { const target = $("agent-preview-output"); target.replaceChildren(...(preview.messages || []).map((message) => { const item = document.createElement("article"); item.className = "preview-message"; const label = document.createElement("strong"); label.textContent = `${message.source} · ${message.role}`; const body = document.createElement("span"); body.textContent = message.content; item.append(label, body); return item; })); };
+      $("agent-form").addEventListener("submit", async (event) => { event.preventDefault(); const payload = agentFromForm(); if (!payload) return; const url = state.selectedId ? `${endpoint}/${encodeURIComponent(state.selectedId)}` : endpoint; const response = await fetch(url, { method: state.selectedId ? "PUT" : "POST", headers: { "Content-Type": "application/json", Accept: "application/json" }, body: JSON.stringify(payload) }); if (!response.ok) { await showError(response, "Could not save this Agent Definition."); return; } const agent = (await response.json()).agent; state.selectedId = agent.agent_id; await loadAgents(); fillAgent(agent); setNotice("Agent Definition saved.", "success"); });
+      $("preview-agent").addEventListener("click", async () => { if (!state.selectedId) return; const context = readJson("preview-context", {}); const handoff = readJson("preview-handoff", undefined); const outputContract = readJson("preview-output-contract", undefined); if (context === null || handoff === null || outputContract === null) return; const response = await fetch(`${endpoint}/${encodeURIComponent(state.selectedId)}/prompt-preview`, { method: "POST", headers: { "Content-Type": "application/json", Accept: "application/json" }, body: JSON.stringify({ project_input: $("preview-project-input").value, context, ...(handoff === undefined ? {} : { handoff }), ...(outputContract === undefined ? {} : { output_contract: outputContract }) }) }); if (!response.ok) { await showError(response, "Could not compile the prompt preview."); return; } renderPreview((await response.json()).preview); setNotice("Prompt preview updated.", "success"); });
+      $("copy-agent").addEventListener("click", async () => { if (!state.selectedId) return; const response = await fetch(`${endpoint}/${encodeURIComponent(state.selectedId)}/copy`, { method: "POST", headers: { "Content-Type": "application/json", Accept: "application/json" }, body: "{}" }); if (!response.ok) { await showError(response, "Could not copy this Agent Definition."); return; } const agent = (await response.json()).agent; await loadAgents(); fillAgent(agent); setNotice("Agent Definition copied.", "success"); });
+      $("delete-agent").addEventListener("click", async () => { if (!state.selectedId) return; const response = await fetch(`${endpoint}/${encodeURIComponent(state.selectedId)}`, { method: "DELETE", headers: { Accept: "application/json" } }); if (!response.ok) { await showError(response, "Could not delete this Agent Definition."); return; } resetAgent(); await loadAgents(); setNotice("Agent Definition deleted.", "success"); });
+      $("new-agent").addEventListener("click", () => { resetAgent(); $("agent-name").focus(); });
+      document.addEventListener("studio:agents-visible", () => { loadReferences().then(loadAgents).catch(() => setNotice("Could not connect to the Runtime Studio service.", "error")); });
+      resetAgent(); loadReferences().then(loadAgents).catch(() => setNotice("Could not connect to the Runtime Studio service.", "error"));
+    })();
+    (() => {
+      const endpoint = "/v1/studio/graphs";
+      const agentEndpoint = "/v1/studio/agents";
+      const state = { graphs: [], agents: [], selectedId: null };
+      const $ = (id) => document.getElementById(id);
+      const setNotice = (message, kind = "") => { const target = $("graph-notice"); target.className = `notice ${kind}`; target.textContent = message; };
+      const showError = async (response, fallback) => { let payload = {}; try { payload = await response.json(); } catch (_) {} setNotice(payload.message || fallback, "error"); };
+      const nodeRows = () => [...$("graph-nodes").querySelectorAll(".node-editor")];
+      const nodeValues = () => nodeRows().map((row, index) => ({
+        node_id: row.querySelector('[data-field="node_id"]').value.trim(),
+        agent_id: row.querySelector('[data-field="agent_id"]').value,
+        label: row.querySelector('[data-field="label"]').value.trim() || null,
+        enabled: row.querySelector('[data-field="enabled"]').checked,
+        order: index,
+      }));
+      const refreshOutputNodes = () => {
+        const select = $("graph-output-node"); const previous = select.value;
+        const nodes = nodeValues().filter((node) => node.enabled && node.node_id);
+        select.replaceChildren(...nodes.map((node) => { const option = document.createElement("option"); option.value = node.node_id; option.textContent = node.label || node.node_id; return option; }));
+        select.value = nodes.some((node) => node.node_id === previous) ? previous : (nodes.at(-1) || {}).node_id || "";
+      };
+      const nodeEditor = (node = {}, index = nodeRows().length) => {
+        const wrapper = document.createElement("section"); wrapper.className = "node-editor";
+        const field = (labelText, fieldName, value, type = "input") => { const box = document.createElement("div"); box.className = "field"; const label = document.createElement("label"); label.textContent = labelText; const control = document.createElement(type); control.dataset.field = fieldName; control.value = value ?? ""; box.append(label, control); return box; };
+        const id = field("Node ID", "node_id", node.node_id || `node-${index + 1}`); id.querySelector("input").addEventListener("input", refreshOutputNodes);
+        const agent = field("Agent", "agent_id", "", "select"); const agentSelect = agent.querySelector("select"); agentSelect.replaceChildren(...state.agents.map((item) => { const option = document.createElement("option"); option.value = item.agent_id; option.textContent = item.name; return option; })); agentSelect.value = node.agent_id || "";
+        const label = field("Local label", "label", node.label || "");
+        const enabled = document.createElement("label"); enabled.className = "check"; const toggle = document.createElement("input"); toggle.type = "checkbox"; toggle.dataset.field = "enabled"; toggle.checked = node.enabled !== false; toggle.addEventListener("change", refreshOutputNodes); enabled.append(toggle, " Enabled");
+        const actions = document.createElement("div"); actions.className = "actions wide"; [["Move up", () => { const previous = wrapper.previousElementSibling; if (previous) { previous.before(wrapper); refreshOutputNodes(); } }], ["Move down", () => { const next = wrapper.nextElementSibling; if (next) { next.after(wrapper); refreshOutputNodes(); } }], ["Remove", () => { wrapper.remove(); refreshOutputNodes(); }]].forEach(([text, action]) => { const button = document.createElement("button"); button.type = "button"; button.className = text === "Remove" ? "button danger" : "button"; button.textContent = text; button.addEventListener("click", action); actions.append(button); });
+        wrapper.append(id, agent, label, enabled, actions); return wrapper;
+      };
+      const graphFromForm = () => ({ id: $("graph-id").value.trim() || undefined, name: $("graph-name").value.trim(), nodes: nodeValues(), output_node_id: $("graph-output-node").value });
+      const renderGraphs = () => { $("graph-count").textContent = `${state.graphs.length} saved Graph Definition${state.graphs.length === 1 ? "" : "s"}`; const rows = state.graphs.map((graph) => { const button = document.createElement("button"); button.type = "button"; button.className = `profile-row${graph.id === state.selectedId ? " selected" : ""}`; const title = document.createElement("span"); title.className = "profile-title"; title.textContent = graph.name; const meta = document.createElement("span"); meta.className = "profile-meta"; meta.textContent = `${graph.nodes.length} nodes · output ${graph.output_node_id}`; button.append(title, meta); button.addEventListener("click", () => loadGraph(graph.id)); return button; }); if (!rows.length) { const empty = document.createElement("div"); empty.className = "empty"; empty.textContent = "No Graph Definitions yet."; rows.push(empty); } $("graph-list").replaceChildren(...rows); };
+      const resetGraph = () => { state.selectedId = null; $("graph-form").reset(); $("graph-id").readOnly = false; $("graph-editor-title").textContent = "New Graph Definition"; $("graph-nodes").replaceChildren(nodeEditor()); ["copy-graph", "delete-graph"].forEach((id) => { $(id).hidden = true; }); setNotice(""); refreshOutputNodes(); renderGraphs(); };
+      const fillGraph = (graph) => { state.selectedId = graph.id; $("graph-id").value = graph.id; $("graph-id").readOnly = true; $("graph-name").value = graph.name; $("graph-editor-title").textContent = `Edit ${graph.name}`; $("graph-nodes").replaceChildren(...graph.nodes.map(nodeEditor)); $("graph-output-node").value = graph.output_node_id; ["copy-graph", "delete-graph"].forEach((id) => { $(id).hidden = false; }); refreshOutputNodes(); $("graph-output-node").value = graph.output_node_id; renderGraphs(); setNotice(""); };
+      const loadAgents = async () => { const response = await fetch(agentEndpoint); if (!response.ok) { await showError(response, "Could not load Agent Definitions."); return; } state.agents = (await response.json()).agents || []; };
+      const loadGraphs = async () => { const response = await fetch(endpoint); if (!response.ok) { await showError(response, "Could not load Graph Definitions."); return; } state.graphs = (await response.json()).graphs || []; renderGraphs(); };
+      const loadGraph = async (id) => { const response = await fetch(`${endpoint}/${encodeURIComponent(id)}`); if (!response.ok) { await showError(response, "Could not load this Graph Definition."); return; } fillGraph((await response.json()).graph); };
+      $("graph-form").addEventListener("submit", async (event) => { event.preventDefault(); const payload = graphFromForm(); if (!payload.nodes.length) { setNotice("A Graph requires at least one node.", "error"); return; } const response = await fetch(state.selectedId ? `${endpoint}/${encodeURIComponent(state.selectedId)}` : endpoint, { method: state.selectedId ? "PUT" : "POST", headers: { "Content-Type": "application/json", Accept: "application/json" }, body: JSON.stringify(payload) }); if (!response.ok) { await showError(response, "Could not save this Graph Definition."); return; } const graph = (await response.json()).graph; await loadGraphs(); fillGraph(graph); document.dispatchEvent(new Event("studio:graphs-changed")); setNotice("Graph Definition saved.", "success"); });
+      $("add-graph-node").addEventListener("click", () => { $("graph-nodes").append(nodeEditor()); refreshOutputNodes(); });
+      $("new-graph").addEventListener("click", () => { resetGraph(); $("graph-name").focus(); });
+      $("copy-graph").addEventListener("click", async () => { if (!state.selectedId) return; const response = await fetch(`${endpoint}/${encodeURIComponent(state.selectedId)}/copy`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }); if (!response.ok) { await showError(response, "Could not copy this Graph Definition."); return; } const graph = (await response.json()).graph; await loadGraphs(); fillGraph(graph); document.dispatchEvent(new Event("studio:graphs-changed")); setNotice("Graph Definition copied.", "success"); });
+      $("delete-graph").addEventListener("click", async () => { if (!state.selectedId) return; const response = await fetch(`${endpoint}/${encodeURIComponent(state.selectedId)}`, { method: "DELETE" }); if (!response.ok) { await showError(response, "Could not delete this Graph Definition."); return; } resetGraph(); await loadGraphs(); document.dispatchEvent(new Event("studio:graphs-changed")); setNotice("Graph Definition deleted.", "success"); });
+      document.addEventListener("studio:graphs-visible", () => { loadAgents().then(loadGraphs).then(() => { if (!state.selectedId) resetGraph(); }).catch(() => setNotice("Could not connect to the Runtime Studio service.", "error")); });
+      loadAgents().then(loadGraphs).then(resetGraph).catch(() => setNotice("Could not connect to the Runtime Studio service.", "error"));
+    })();
+    (() => {
+      const endpoint = "/v1/studio/worldbooks";
+      const projectEndpoint = "/v1/studio/projects/";
+      const projectCollectionEndpoint = projectEndpoint.slice(0, -1);
+      const state = { worldbooks: [], selectedId: null, projects: [], selectedProjectId: null, graphs: [], runtimeProjectId: null };
+      const $ = (id) => document.getElementById(id);
+      const setNotice = (id, message, kind = "") => { const target = $(id); target.className = `notice ${kind}`; target.textContent = message; };
+      const savedNotice = (action, renamedEntries = []) => {
+        const renamed = renamedEntries.map((item) => `${item.from} -> ${item.to}`).join(", ");
+        return renamed ? `${action}. Renamed: ${renamed}` : `${action}.`;
+      };
+      const showError = async (id, response, fallback) => {
+        let payload = {};
+        try { payload = await response.json(); } catch (_) { /* response without JSON */ }
+        const target = $(id); target.className = "notice error"; target.textContent = payload.message || fallback;
+        (payload.references || []).forEach((reference) => { const line = document.createElement("div"); line.textContent = `${reference.type}: ${reference.name} (${reference.id})`; target.appendChild(line); });
+      };
+      const projectOpeningEditor = (opening = {}) => {
+        const wrapper = document.createElement("section"); wrapper.className = "entry-editor"; wrapper.dataset.openingId = opening.id || "";
+        const field = (labelText, fieldName, value, type = "input") => {
+          const box = document.createElement("div"); box.className = "field wide";
+          const label = document.createElement("label"); label.textContent = labelText;
+          const control = document.createElement(type); control.dataset.field = fieldName; control.value = value ?? "";
+          box.append(label, control); return box;
+        };
+        wrapper.append(field("Label", "label", opening.label), field("Content", "content", opening.content, "textarea"));
+        const defaultLabel = document.createElement("label"); defaultLabel.className = "check wide";
+        const toggle = document.createElement("input"); toggle.type = "checkbox"; toggle.dataset.field = "is_default"; toggle.checked = opening.is_default === true;
+        defaultLabel.append(toggle, " Default opening"); wrapper.append(defaultLabel);
+        const remove = document.createElement("button"); remove.type = "button"; remove.className = "button danger"; remove.textContent = "Remove opening"; remove.addEventListener("click", () => wrapper.remove());
+        wrapper.append(remove); return wrapper;
+      };
+      const readProjectJson = (id, fallback) => {
+        const value = $(id).value.trim(); if (!value) return fallback;
+        try { return JSON.parse(value); } catch (_) { setNotice("project-notice", `${id} must contain valid JSON.`, "error"); return null; }
+      };
+      const renderGraphOptions = (selected = $("project-graph").value) => { const select = $("project-graph"); select.replaceChildren(); const empty = document.createElement("option"); empty.value = ""; empty.textContent = "No Graph selected"; select.append(empty); state.graphs.forEach((graph) => { const option = document.createElement("option"); option.value = graph.id; option.textContent = graph.name; select.append(option); }); select.value = [...select.options].some((option) => option.value === selected) ? selected : ""; };
+      const projectFromForm = () => {
+        const variables = readProjectJson("project-variables", {}); if (variables === null) return null;
+        const assets = readProjectJson("project-assets", []); if (assets === null) return null;
+        const payload = {
+          name: $("project-name").value.trim(), avatar: $("project-avatar").value.trim(), description: $("project-description").value,
+          personality: $("project-personality").value, scenario: $("project-scenario").value,
+          card_prompt: { system: $("project-card-system").value, post_history: $("project-card-post-history").value },
+          openings: [...$("project-openings").children].map((row, index) => {
+            const read = (name) => row.querySelector(`[data-field="${name}"]`);
+            const opening = { id: row.dataset.openingId || `opening-${index + 1}`, label: read("label").value.trim(), content: read("content").value, is_default: read("is_default").checked };
+            return opening;
+          }),
+          variables, assets, graph_id: $("project-graph").value.trim() || null,
+          worldbook_ids: [...$("project-worldbooks").querySelectorAll("input:checked")].map((input) => input.value),
+        };
+        const id = $("project-id").value.trim(); if (id) payload.id = id; return payload;
+      };
+      const resetProject = () => {
+        state.selectedProjectId = null; $("project-form").reset(); $("project-id").value = state.runtimeProjectId || "local"; $("project-editor-title").textContent = "New AIRP Project";
+        $("project-openings").replaceChildren(projectOpeningEditor()); $("project-variables").value = "{}"; $("project-assets").value = "[]";
+        $("copy-project").hidden = true; renderProjects(); renderBindings(); renderGraphOptions(); setNotice("project-notice", "");
+      };
+      const fillProject = (project) => {
+        state.selectedProjectId = project.id; $("project-id").value = project.id; $("project-editor-title").textContent = `Edit ${project.name}`;
+        $("project-name").value = project.name; $("project-avatar").value = project.avatar || ""; $("project-description").value = project.description || "";
+        $("project-personality").value = project.personality || ""; $("project-scenario").value = project.scenario || "";
+        const prompt = project.card_prompt || {}; $("project-card-system").value = prompt.system || ""; $("project-card-post-history").value = prompt.post_history || "";
+        $("project-openings").replaceChildren(...(project.openings || []).map(projectOpeningEditor)); $("project-variables").value = JSON.stringify(project.variables || {}, null, 2); $("project-assets").value = JSON.stringify(project.assets || [], null, 2); renderGraphOptions(project.graph_id || "");
+        $("copy-project").hidden = false; renderProjects(); renderBindings(project.worldbook_ids || []); setNotice("project-notice", "");
+      };
+      const renderProjects = () => {
+        $("project-count").textContent = `${state.projects.length} saved`;
+        const rows = state.projects.map((project) => { const button = document.createElement("button"); button.type = "button"; button.className = `profile-row${project.id === state.selectedProjectId ? " selected" : ""}`; const title = document.createElement("span"); title.className = "profile-title"; title.textContent = project.name; const meta = document.createElement("span"); meta.className = "profile-meta"; meta.textContent = `${project.openings.length} openings · ${project.graph_id || "No graph selected"}`; button.append(title, meta); button.addEventListener("click", () => loadProject(project.id)); return button; });
+        if (!rows.length) { const empty = document.createElement("div"); empty.className = "empty"; empty.textContent = "No projects yet."; rows.push(empty); } $("project-list").replaceChildren(...rows);
+      };
+      const loadProjects = async () => { const response = await fetch(projectCollectionEndpoint, { headers: { Accept: "application/json" } }); if (!response.ok) { await showError("project-notice", response, "Could not load Projects."); return; } state.projects = (await response.json()).projects || []; renderProjects(); };
+      const loadGraphs = async () => { const response = await fetch("/v1/studio/graphs", { headers: { Accept: "application/json" } }); if (!response.ok) { await showError("project-notice", response, "Could not load Graph Definitions."); return; } state.graphs = (await response.json()).graphs || []; renderGraphOptions(); };
+      const loadProject = async (id = $("project-id").value.trim(), quiet = false) => { if (!id) return; const response = await fetch(`${projectEndpoint}${encodeURIComponent(id)}`, { headers: { Accept: "application/json" } }); if (!response.ok) { if (!quiet) await showError("project-notice", response, "Could not load this Project."); return; } fillProject((await response.json()).project); };
+      const loadProjectContext = async () => { const response = await fetch("/v1/studio/project-context", { headers: { Accept: "application/json" } }); if (!response.ok) return; const payload = await response.json(); if (payload.project_id) { state.runtimeProjectId = payload.project_id; if (!state.selectedProjectId) $("project-id").value = payload.project_id; } };
+      const entryEditor = (entry = {}) => {
+        const wrapper = document.createElement("section"); wrapper.className = "entry-editor"; wrapper.dataset.entryId = entry.id || "";
+        const field = (labelText, className, value, type = "input") => {
+          const box = document.createElement("div"); box.className = `field ${className || ""}`.trim();
+          const label = document.createElement("label"); label.textContent = labelText;
+          const control = document.createElement(type); control.dataset.field = labelText.toLowerCase().replace("entry ", ""); control.value = value ?? "";
+          box.append(label, control); return box;
+        };
+        wrapper.append(
+          field("Entry title", "", entry.title),
+          field("Order", "", entry.order ?? 0),
+          field("Usage", "wide", entry.usage),
+          field("Content", "wide", entry.content, "textarea"),
+          field("Tags", "wide", (entry.tags || []).join(", ")),
+        );
+        const enabled = document.createElement("label"); enabled.className = "check wide";
+        const toggle = document.createElement("input"); toggle.type = "checkbox"; toggle.dataset.field = "enabled"; toggle.checked = entry.enabled !== false;
+        enabled.append(toggle, " Enabled");
+        const remove = document.createElement("button"); remove.type = "button"; remove.className = "button danger"; remove.textContent = "Remove entry"; remove.addEventListener("click", () => wrapper.remove());
+        wrapper.append(enabled, remove); return wrapper;
+      };
+      const resetWorldbook = () => {
+        state.selectedId = null; $("worldbook-form").reset(); $("worldbook-editor-title").textContent = "New Worldbook Definition";
+        $("worldbook-entries").replaceChildren(entryEditor());
+        ["copy-worldbook", "export-worldbook", "delete-worldbook"].forEach((id) => { $(id).hidden = true; });
+        setNotice("worldbook-notice", ""); renderWorldbooks();
+      };
+      const fillWorldbook = (worldbook) => {
+        state.selectedId = worldbook.id; $("worldbook-name").value = worldbook.name; $("worldbook-editor-title").textContent = `Edit ${worldbook.name}`;
+        $("worldbook-entries").replaceChildren(...worldbook.entries.map(entryEditor));
+        ["copy-worldbook", "export-worldbook", "delete-worldbook"].forEach((id) => { $(id).hidden = false; }); renderWorldbooks();
+      };
+      const worldbookFromForm = () => ({
+        name: $("worldbook-name").value.trim(),
+        entries: [...$("worldbook-entries").children].map((row) => {
+          const read = (name) => row.querySelector(`[data-field="${name}"]`);
+          const result = { title: read("title").value.trim(), usage: read("usage").value.trim(), content: read("content").value, enabled: read("enabled").checked, order: Number.parseInt(read("order").value, 10), tags: read("tags").value.split(",").map((tag) => tag.trim()).filter(Boolean) };
+          if (row.dataset.entryId) result.id = row.dataset.entryId; return result;
+        }),
+      });
+      const renderWorldbooks = () => {
+        $("worldbook-count").textContent = `${state.worldbooks.length} saved`;
+        const rows = state.worldbooks.map((book) => {
+          const button = document.createElement("button"); button.type = "button"; button.className = `profile-row${book.id === state.selectedId ? " selected" : ""}`;
+          const title = document.createElement("span"); title.className = "profile-title"; title.textContent = book.name;
+          const meta = document.createElement("span"); meta.className = "profile-meta"; meta.textContent = `${book.entries.length} entries`;
+          button.append(title, meta); button.addEventListener("click", () => fillWorldbook(book)); return button;
+        });
+        if (!rows.length) { const empty = document.createElement("div"); empty.className = "empty"; empty.textContent = "No worldbooks yet."; rows.push(empty); }
+        $("worldbook-list").replaceChildren(...rows);
+      };
+      const loadWorldbooks = async () => {
+        const response = await fetch(endpoint); if (!response.ok) { await showError("worldbook-notice", response, "Could not load Worldbooks."); return; }
+        state.worldbooks = (await response.json()).worldbooks || []; renderWorldbooks(); renderBindings();
+      };
+      $("worldbook-form").addEventListener("submit", async (event) => {
+        event.preventDefault(); const response = await fetch(state.selectedId ? `${endpoint}/${encodeURIComponent(state.selectedId)}` : endpoint, { method: state.selectedId ? "PUT" : "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(worldbookFromForm()) });
+        if (!response.ok) { await showError("worldbook-notice", response, "Could not save this Worldbook."); return; }
+        const payload = await response.json(); await loadWorldbooks(); fillWorldbook(payload.worldbook);
+        setNotice("worldbook-notice", savedNotice("Worldbook saved", payload.renamed_entries), "success");
+      });
+      $("add-worldbook-entry").addEventListener("click", () => $("worldbook-entries").append(entryEditor({ order: $("worldbook-entries").children.length })));
+      $("new-worldbook").addEventListener("click", resetWorldbook);
+      $("copy-worldbook").addEventListener("click", async () => { const response = await fetch(`${endpoint}/${encodeURIComponent(state.selectedId)}/copy`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }); if (!response.ok) { await showError("worldbook-notice", response, "Could not copy this Worldbook."); return; } const payload = await response.json(); await loadWorldbooks(); fillWorldbook(payload.worldbook); setNotice("worldbook-notice", savedNotice("Worldbook copied", payload.renamed_entries), "success"); });
+      $("delete-worldbook").addEventListener("click", async () => { const response = await fetch(`${endpoint}/${encodeURIComponent(state.selectedId)}`, { method: "DELETE" }); if (!response.ok) { await showError("worldbook-notice", response, "Could not delete this Worldbook."); return; } resetWorldbook(); await loadWorldbooks(); setNotice("worldbook-notice", "Worldbook deleted.", "success"); });
+      $("export-worldbook").addEventListener("click", async () => { const response = await fetch(`${endpoint}/${encodeURIComponent(state.selectedId)}/export`); if (!response.ok) { await showError("worldbook-notice", response, "Could not export this Worldbook."); return; } const blob = new Blob([JSON.stringify(await response.json(), null, 2)], { type: "application/json" }); const link = document.createElement("a"); link.href = URL.createObjectURL(blob); link.download = `${$("worldbook-name").value.trim() || "worldbook"}.airp.json`; link.click(); URL.revokeObjectURL(link.href); });
+      $("worldbook-import").addEventListener("change", async (event) => { const file = event.target.files[0]; if (!file) return; let documentValue; try { documentValue = JSON.parse(await file.text()); } catch (_) { setNotice("worldbook-notice", "The selected file is not valid JSON.", "error"); return; } const importBody = { name: file.name.replace(/\.json$/i, ""), document: documentValue }; const cardData = documentValue.data && typeof documentValue.data === "object" ? documentValue.data : {}; if ((cardData.character_book || documentValue.character_book) && $("project-id").value.trim()) importBody.project_id = $("project-id").value.trim(); const response = await fetch(`${endpoint}/import`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(importBody) }); event.target.value = ""; if (!response.ok) { await showError("worldbook-notice", response, "Could not import this Worldbook."); return; } const payload = await response.json(); await loadWorldbooks(); fillWorldbook(payload.worldbook); setNotice("worldbook-notice", savedNotice("Worldbook imported", payload.renamed_entries), "success"); });
+      const renderBindings = (selected = []) => { const rows = state.worldbooks.map((book) => { const label = document.createElement("label"); label.className = "binding-row"; const input = document.createElement("input"); input.type = "checkbox"; input.value = book.id; input.checked = selected.includes(book.id); label.append(input, book.name); return label; }); if (!rows.length) { const empty = document.createElement("div"); empty.className = "empty"; empty.textContent = "No Worldbooks available."; rows.push(empty); } $("project-worldbooks").replaceChildren(...rows); };
+      $("load-project").addEventListener("click", loadProject);
+      $("save-project-bindings").addEventListener("click", async () => { const id = $("project-id").value.trim(); const worldbookIds = [...$("project-worldbooks").querySelectorAll("input:checked")].map((input) => input.value); const response = await fetch(`${projectEndpoint}${encodeURIComponent(id)}/worldbooks`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ worldbook_ids: worldbookIds }) }); if (!response.ok) { await showError("project-notice", response, "Could not save Project bindings."); return; } setNotice("project-notice", "Project bindings saved.", "success"); });
+      $("project-form").addEventListener("submit", async (event) => {
+        event.preventDefault(); const payload = projectFromForm(); if (!payload) return; const url = state.selectedProjectId ? `${projectEndpoint}${encodeURIComponent(state.selectedProjectId)}` : projectCollectionEndpoint; const response = await fetch(url, { method: state.selectedProjectId ? "PUT" : "POST", headers: { "Content-Type": "application/json", Accept: "application/json" }, body: JSON.stringify(payload) });
+        if (!response.ok) { await showError("project-notice", response, "Could not save this Project."); return; }
+        const project = (await response.json()).project; await loadProjects(); fillProject(project); setNotice("project-notice", "Project saved.", "success");
+      });
+      $("add-project-opening").addEventListener("click", () => $("project-openings").append(projectOpeningEditor({ label: `Opening ${$("project-openings").children.length + 1}` })));
+      $("new-project").addEventListener("click", () => { resetProject(); $("project-name").focus(); });
+      $("copy-project").addEventListener("click", async () => { if (!state.selectedProjectId) return; const response = await fetch(`${projectEndpoint}${encodeURIComponent(state.selectedProjectId)}/copy`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }); if (!response.ok) { await showError("project-notice", response, "Could not copy this Project."); return; } const project = (await response.json()).project; await loadProjects(); fillProject(project); setNotice("project-notice", "Project copied.", "success"); });
+      $("project-import").addEventListener("change", async (event) => { const file = event.target.files[0]; if (!file) return; let documentValue; try { documentValue = JSON.parse(await file.text()); } catch (_) { setNotice("project-notice", "The selected file is not valid JSON.", "error"); return; } const response = await fetch(`${projectEndpoint}import`, { method: "POST", headers: { "Content-Type": "application/json", Accept: "application/json" }, body: JSON.stringify({ document: documentValue }) }); event.target.value = ""; if (!response.ok) { await showError("project-notice", response, "Could not import this Project."); return; } const project = (await response.json()).project; await loadProjects(); fillProject(project); setNotice("project-notice", "Project imported.", "success"); });
+      document.addEventListener("studio:graphs-changed", loadGraphs);
+      document.querySelectorAll("[data-studio-view]").forEach((button) => button.addEventListener("click", () => { const view = button.dataset.studioView; document.querySelectorAll("[data-studio-view]").forEach((item) => { item.classList.toggle("active", item === button); item.removeAttribute("aria-current"); }); button.setAttribute("aria-current", "page"); ["providers", "agents", "graphs", "projects", "worldbooks"].forEach((name) => { $(`${name}-view`).hidden = name !== view; }); $("view-title").textContent = { providers: "Provider Profiles", agents: "Agent Definitions", graphs: "Graph Definitions", projects: "Projects", worldbooks: "Worldbook Library" }[view]; if (view === "agents") document.dispatchEvent(new Event("studio:agents-visible")); if (view === "graphs") document.dispatchEvent(new Event("studio:graphs-visible")); if (view === "worldbooks") loadWorldbooks(); if (view === "projects") { loadWorldbooks().then(async () => { await loadGraphs(); await loadProjects(); await loadProject(undefined, true); }); } }));
+      resetWorldbook(); resetProject(); loadProjectContext().then(resetProject);
+    })();
+  </script>
+</body>
+</html>

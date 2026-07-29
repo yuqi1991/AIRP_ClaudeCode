@@ -1,0 +1,2815 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Claude Code RP</title>
+<script src="lib/jquery-3.5.1.min.js"></script>
+<script src="lib/lodash-4.17.21.min.js"></script>
+<link rel="stylesheet" href="lib/toastr-2.1.4.min.css">
+<script src="lib/toastr-2.1.4.min.js"></script>
+<script src="_regex_engine.js"></script>
+<style>
+:root {
+  --bg: #f5f0e8;
+  --surface: #ede6d8;
+  --border: #d4c9b0;
+  --accent: #b06a3d;
+  --accent2: #5a7a5a;
+  --text: #3a3028;
+  --muted: #8a7a65;
+  --input-bg: #fdfaf4;
+  --font-ui: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  --font-display: 'STKaiti', 'SimSun', serif;
+  --font-body: 'SimSun', '宋体', serif;
+  --ink: #3a3028;
+  --line: #d4c9b0;
+  --soft: #ede6d8;
+  --radius-md: 12px;
+  --radius-sm: 8px;
+  --radius-full: 999px;
+  --color-ember: #d97706;
+}
+[data-theme="dark"] {
+  --bg: #1b1b26;
+  --surface: #24242f;
+  --border: #3a3a50;
+  --accent: #d4946a;
+  --accent2: #7aaa7a;
+  --text: #d4c5b9;
+  --muted: #9a9aac;
+  --input-bg: #1e1e2a;
+  --ink: #d4c5b9;
+  --line: #3a3a50;
+  --soft: #24242f;
+  --color-ember: #f59e0b;
+}
+* { margin:0; padding:0; box-sizing:border-box; }
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #c4b9a0; border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: #a89880; }
+[data-theme="dark"] ::-webkit-scrollbar-thumb { background: #4a4a60; }
+[data-theme="dark"] ::-webkit-scrollbar-thumb:hover { background: #5a5a75; }
+html, body {
+  height: 100vh; overflow: hidden;
+  background: var(--bg); color: var(--text);
+  font-family: var(--font-ui);
+}
+body {
+  display: flex; flex-direction: column;
+  transition: none;
+}
+
+/* ═══ TOP BAR ═══ */
+#topbar {
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  padding: 6px 16px;
+  display: flex; align-items: center; gap: 12px;
+  font-size: 0.82em; flex-shrink: 0; min-height: 34px;
+}
+#topbar .dot { width: 7px; height: 7px; border-radius: 50%; }
+#topbar .dot.green { background: #7b9c6e; }
+#topbar .dot.yellow { background: #cc9a56; }
+#topbar .dot.red { background: #b0624a; }
+#topbar .tag {
+  background: var(--accent); color: #fff;
+  padding: 1px 10px; border-radius: 10px;
+  font-size: 0.8em; font-weight: 600; white-space: nowrap;
+}
+#topbar .sep { color: var(--border); }
+#topbar .dim { color: var(--muted); }
+#topbar .spacer { flex: 1; }
+#studio-link {
+  color: var(--text); text-decoration: none; font-size: .78em; font-weight: 650;
+  border: 1px solid var(--border); border-radius: 4px; padding: 4px 8px;
+  background: var(--input-bg); white-space: nowrap;
+}
+#studio-link:hover, #studio-link:focus-visible { color: var(--accent); border-color: var(--accent); outline: none; }
+#sidebar-toggle {
+  display: none; width: 28px; height: 26px; padding: 0;
+  border: 1px solid var(--border); border-radius: 4px;
+  background: var(--input-bg); color: var(--text); cursor: pointer;
+  font-size: 1rem; line-height: 1;
+}
+#sidebar-backdrop { display: none; }
+
+/* ═══ MAIN ═══ */
+#main {
+  display: flex; flex: 1; overflow: hidden;
+}
+
+/* ═══ CONTENT ═══ */
+#content-panel {
+  flex: 1; overflow-y: auto; padding: 20px 24px;
+  display: flex; flex-direction: column; align-items: center;
+  scroll-behavior: smooth;
+  background: linear-gradient(180deg, #faf7f0 0%, #f5f0e8 100%);
+}
+[data-theme="dark"] #content-panel {
+  background: linear-gradient(180deg, #1e1e2a 0%, #1b1b26 100%);
+}
+#content-panel #doc { width: 100%; max-width: 860px; }
+#content-panel #doc > * {
+  border-radius: 6px;
+  box-shadow: 0 1px 6px rgba(0,0,0,.06), 0 0 1px rgba(0,0,0,.04);
+}
+
+/* ═══ TURN DISPLAY ═══ */
+.turn-wrap { margin-bottom: 22px; }
+.turn-role {
+  font-size: 0.7em; font-weight: 700; text-transform: uppercase;
+  letter-spacing: 2.5px; margin-bottom: 5px; padding-left: 2px;
+}
+.turn-user .turn-role { color: var(--accent); }
+.turn-ai .turn-role { color: var(--accent2); }
+.turn-user .turn-text {
+  background: var(--surface);
+  border-left: 3px solid var(--accent);
+  padding: 12px 16px; border-radius: 0 6px 6px 0;
+  font-size: 0.88em; color: var(--muted);
+  line-height: 1.7; white-space: pre-wrap; overflow-wrap: anywhere;
+}
+.turn-ai .turn-text {
+  padding: 4px 0; line-height: 1.9; white-space: pre-wrap; overflow-wrap: anywhere;
+}
+.turn-ai .turn-text content {
+  display: block;
+}
+.turn-text strong { font-weight: 700; }
+
+/* ═══ SIDEBAR ═══ */
+#sidebar {
+  width: 300px; flex-shrink: 0;
+  background: var(--surface);
+  border-left: 1px solid var(--border);
+  overflow-y: auto; padding: 12px;
+  display: flex; flex-direction: column; gap: 8px;
+  font-size: 0.82em;
+}
+.side-card {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px; padding: 10px 12px;
+}
+.side-card h4 {
+  font-size: 0.82em; color: var(--accent); margin-bottom: 6px;
+  text-transform: uppercase; letter-spacing: 1px; font-weight: 600;
+}
+.side-card .kv { display: flex; justify-content: space-between; padding: 2px 0; }
+.side-card .kv .k { color: var(--muted); }
+.stat-bar-wrap { background: var(--border); border-radius: 3px; height: 5px; margin: 2px 0 6px; }
+.stat-bar { height: 100%; border-radius: 3px; transition: width 0.5s ease; }
+.stat-hp { background: #b0624a; }
+.stat-mp { background: #5a8a9a; }
+.stat-exp { background: #cc9a56; }
+.chip {
+  display: inline-block; padding: 2px 8px; border-radius: 10px;
+  font-size: 0.78em; margin: 2px 3px; cursor: default;
+}
+.chip-hot { background: var(--accent); color: #fff; }
+.chip-normal { background: var(--border); color: var(--muted); }
+/* clickable action chips */
+.chip-action {
+  display: inline-block; padding: 4px 10px; border-radius: 12px;
+  font-size: 0.78em; margin: 3px 4px; cursor: pointer;
+  background: var(--input-bg); color: var(--text);
+  border: 1px solid var(--border);
+  transition: background 0.15s, border-color 0.15s;
+}
+.chip-action:hover { background: #ede6d8; border-color: var(--accent); }
+.chip-action:active { background: var(--accent); color: #fff; }
+.summary-text { color: var(--muted); font-size: 0.82em; line-height: 1.55; }
+/* settings controls */
+.setting-row { display: flex; justify-content: space-between; align-items: center; padding: 3px 0; }
+.setting-row .label { font-size: 0.8em; color: var(--muted); }
+.setting-row select {
+  background: var(--input-bg); color: var(--text); border: 1px solid var(--border);
+  border-radius: 4px; padding: 2px 6px; font-size: 0.78em; font-family: var(--font-ui);
+  cursor: pointer; outline: none; width: 130px;
+}
+.setting-row select:focus { border-color: var(--accent2); }
+.toggle-switch { position: relative; width: 40px; height: 20px; flex-shrink: 0; }
+.toggle-switch input { opacity: 0; width: 0; height: 0; }
+.toggle-slider {
+  position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0;
+  background: var(--border); border-radius: 20px; transition: background 0.2s;
+}
+.toggle-slider:before {
+  content: ""; position: absolute; height: 14px; width: 14px;
+  left: 3px; bottom: 3px; background: #fff; border-radius: 50%; transition: transform 0.2s;
+}
+.toggle-switch input:checked + .toggle-slider { background: var(--accent2); }
+.toggle-switch input:checked + .toggle-slider:before { transform: translateX(20px); }
+.side-card textarea,
+.side-card .config-select {
+  width: 100%;
+  background: var(--input-bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 8px;
+  font-size: 0.78em;
+  font-family: var(--font-ui);
+  outline: none;
+}
+.side-card textarea {
+  min-height: 110px;
+  resize: vertical;
+  font-family: "SFMono-Regular", Consolas, Monaco, monospace;
+  line-height: 1.45;
+}
+.side-card textarea:focus,
+.side-card .config-select:focus { border-color: var(--accent2); }
+.side-buttons {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 6px;
+}
+.side-button {
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--input-bg);
+  color: var(--text);
+  font-size: 0.76em;
+  font-weight: 600;
+  cursor: pointer;
+}
+.side-button:hover { border-color: var(--accent); background: var(--surface); }
+.side-note { font-size: 0.72em; color: var(--muted); line-height: 1.45; margin-top: 4px; }
+#streaming-preview { margin-top: 18px; }
+#streaming-preview[hidden] { display: none; }
+.streaming-cursor {
+  display: inline-block; width: 7px; height: 1em; margin-left: 3px;
+  background: var(--accent2); vertical-align: text-bottom;
+  animation: streaming-blink 0.9s steps(2, start) infinite;
+}
+@keyframes streaming-blink { 50% { opacity: 0; } }
+.provider-input {
+  width: 100%; margin-top: 4px; padding: 6px 8px;
+  border: 1px solid var(--border); border-radius: 6px;
+  background: var(--input-bg); color: var(--text); font: inherit; font-size: .78em;
+}
+.provider-input:focus { outline: none; border-color: var(--accent2); }
+#agent-trace { max-height: 250px; overflow-y: auto; }
+.trace-node {
+  display: block; width: 100%; text-align: left;
+  border: 0; border-left: 3px solid var(--border); border-radius: 0;
+  padding: 5px 7px; margin: 4px 0; background: transparent;
+  color: var(--text); cursor: pointer; font: inherit;
+}
+.trace-node:hover, .trace-node:focus-visible { background: var(--surface); outline: 1px solid var(--border); }
+.trace-node.idle { border-left-color: var(--border); opacity: .7; }
+.trace-node.running { border-left-color: #cc9a56; animation: trace-node-pulse 1.2s ease-in-out infinite; }
+.trace-node.succeeded { border-left-color: var(--accent2); }
+.trace-node.failed { border-left-color: #b0624a; background: rgba(176,98,74,.08); }
+@keyframes trace-node-pulse { 50% { border-left-color: var(--accent); } }
+.trace-title { color: var(--text); font-size: .78em; }
+.trace-meta { color: var(--muted); font-size: .7em; margin-top: 2px; overflow-wrap: anywhere; }
+#node-detail-modal[hidden] { display: none; }
+#node-detail-modal {
+  position: fixed; inset: 0; z-index: 1000; display: flex;
+  align-items: center; justify-content: center; padding: 16px;
+  background: rgba(0,0,0,.42);
+}
+.node-detail-panel {
+  width: min(680px, 96vw); max-height: 88vh; overflow: auto;
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 8px; padding: 14px;
+}
+.node-detail-head { display: flex; align-items: center; gap: 8px; justify-content: space-between; }
+.node-detail-head h3 { font-size: .9em; color: var(--accent); }
+.node-detail-close { border: 1px solid var(--border); background: var(--input-bg); color: var(--text); border-radius: 4px; cursor: pointer; padding: 3px 8px; }
+#node-detail-body { margin-top: 10px; white-space: pre-wrap; overflow-wrap: anywhere; font: .72em/1.45 "SFMono-Regular", Consolas, monospace; color: var(--text); }
+#runtime-task-meta { color: var(--muted); line-height: 1.45; white-space: pre-wrap; }
+#runtime-cancel-button { margin-top: 6px; }
+#runtime-cancel-button[hidden] { display: none; }
+.session-toolbar { display: grid; grid-template-columns: minmax(0, 1fr) 30px 30px 30px; gap: 5px; }
+.session-toolbar select {
+  min-width: 0; width: 100%; padding: 5px 7px; border: 1px solid var(--border);
+  border-radius: 4px; background: var(--input-bg); color: var(--text); font: inherit;
+}
+.session-tool {
+  width: 30px; height: 30px; padding: 0; border: 1px solid var(--border);
+  border-radius: 4px; background: var(--input-bg); color: var(--text);
+  font-size: 0.92em; cursor: pointer;
+}
+.session-tool:hover { border-color: var(--accent); background: var(--surface); }
+.session-tool:disabled, .session-toolbar select:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* ═══ INPUT ═══ */
+#input-panel {
+  background: var(--surface);
+  border-top: 1px solid var(--border);
+  padding: 10px 16px; flex-shrink: 0;
+}
+#input-panel .input-row { display: flex; gap: 10px; align-items: flex-end; }
+#input-panel textarea {
+  flex: 1;
+  background: var(--input-bg); color: var(--text);
+  border: 1px solid var(--border); border-radius: 8px;
+  padding: 10px 14px; font-family: var(--font-ui);
+  font-size: 0.9em; line-height: 1.5;
+  resize: none; min-height: 56px; max-height: 110px;
+  outline: none; transition: border-color 0.2s;
+}
+#input-panel textarea:focus { border-color: var(--accent2); }
+.btn-group { display: flex; gap: 6px; flex-shrink: 0; }
+#input-panel button {
+  padding: 8px 18px; border: none; border-radius: 8px;
+  font-size: 0.85em; font-weight: 600; cursor: pointer;
+  transition: background 0.15s; font-family: var(--font-ui);
+}
+.btn-submit { background: var(--accent2); color: #fff; }
+.btn-submit:hover { background: #4a6a4a; }
+.btn-secondary { background: var(--border); color: var(--text); }
+.btn-secondary:hover { background: #c4b9a0; }
+.btn-reroll {
+  font-size: 0.85em; padding: 1px 6px; border: 1px solid var(--border);
+  border-radius: 4px; background: var(--bg); cursor: pointer;
+  color: var(--muted); margin-left: 6px; vertical-align: middle;
+  transition: background 0.15s, color 0.15s;
+}
+.btn-reroll:hover { background: var(--accent); color: #fff; border-color: var(--accent); }
+.btn-turn-del {
+  position: absolute; top: 4px; right: 8px;
+  font-size: 0.7em; padding: 2px 7px; border: 1px solid transparent;
+  border-radius: 3px; background: transparent; cursor: pointer;
+  color: var(--muted); opacity: 0; transition: opacity 0.15s, background 0.15s;
+}
+.turn-wrap:hover .btn-turn-del { opacity: 1; }
+.turn-wrap { position: relative; }
+.btn-turn-del:hover { background: #b0624a; color: #fff; border-color: #b0624a; }
+.btn-turn-del.confirming { background: #b0624a; color: #fff; opacity: 1; }
+#input-panel .meta-row {
+  display: flex; gap: 12px; align-items: center; margin-top: 6px;
+  font-size: 0.75em; color: var(--muted);
+}
+#input-panel .meta-row input {
+  background: var(--input-bg); color: var(--text);
+  border: 1px solid var(--border); border-radius: 4px;
+  padding: 2px 8px; font-size: 0.9em; width: 120px;
+  font-family: var(--font-ui); outline: none;
+}
+#input-panel .meta-row input:focus { border-color: var(--accent2); }
+#toast {
+  position: fixed; bottom: 90px; left: 50%; transform: translateX(-50%);
+  background: var(--accent2); color: #fff;
+  padding: 8px 22px; border-radius: 20px; font-weight: 600;
+  font-size: 0.85em; opacity: 0; transition: opacity 0.3s;
+  pointer-events: none; z-index: 100;
+}
+#toast.show { opacity: 1; }
+
+@media (max-width: 760px) {
+  #topbar {
+    min-height: 34px; height: 34px; padding: 4px 10px; gap: 8px;
+    position: relative; z-index: 70; overflow: hidden;
+  }
+  #topbar > .dot:not(#conn-dot),
+  #topbar > .sep,
+  #topbar > .dim { display: none; }
+  #topbar .tag { max-width: 110px; overflow: hidden; text-overflow: ellipsis; }
+  #sidebar-toggle { display: inline-grid; place-items: center; flex-shrink: 0; }
+  #main { min-width: 0; }
+  #content-panel {
+    min-width: 0; width: 100%; padding: 14px 16px;
+    align-items: stretch;
+  }
+  #content-panel #doc { max-width: none; }
+  #sidebar {
+    position: fixed; z-index: 60; top: 34px; right: 0; bottom: 0;
+    width: min(88vw, 340px); max-width: 100%;
+    border-left: 1px solid var(--border);
+    box-shadow: -8px 0 24px rgba(0,0,0,.18);
+    transform: translateX(100%); visibility: hidden;
+    transition: transform .18s ease, visibility 0s linear .18s;
+  }
+  body.sidebar-open #sidebar {
+    transform: translateX(0); visibility: visible;
+    transition: transform .18s ease;
+  }
+  #sidebar-backdrop {
+    position: fixed; z-index: 50; top: 34px; right: 0; bottom: 0; left: 0;
+    background: rgba(0,0,0,.35);
+  }
+  body.sidebar-open #sidebar-backdrop { display: block; }
+  #input-panel { padding: 8px 10px; min-width: 0; }
+  #input-panel .input-row { gap: 7px; }
+  #input-panel textarea { min-width: 0; padding: 8px 10px; }
+  #input-panel button { padding: 8px 11px; }
+  #input-panel .meta-row { gap: 6px; }
+  #input-panel .meta-row input { min-width: 0; width: 110px; }
+  .turn-ai .turn-text { line-height: 1.75; }
+  .turn-user .turn-text { padding: 10px 12px; }
+}
+
+/* ═══ DARK MODE OVERRIDES ═══ */
+[data-theme="dark"] .turn-ai .turn-text {
+  color: #e8dcc8;
+}
+[data-theme="dark"] .turn-user .turn-text {
+  background: #1e1e2a;
+  border-left-color: #d4946a;
+  color: #c4bcaa;
+}
+[data-theme="dark"] #topbar .tag { color: #1b1b26; }
+[data-theme="dark"] .btn-submit { color: #1b1b26; }
+[data-theme="dark"] .chip-hot { color: #1b1b26; }
+[data-theme="dark"] .toggle-slider:before { background: #d4c5b9; }
+[data-theme="dark"] input[type="range"] { accent-color: var(--accent); }
+[data-theme="dark"] #theme-toggle:hover { background: var(--surface); }
+[data-theme="dark"] .btn-reroll:hover { color: #1b1b26; }
+[data-theme="dark"] .btn-turn-del:hover,
+[data-theme="dark"] .btn-turn-del.confirming { color: #fff; }
+[data-theme="dark"] #toast { color: #1b1b26; }
+
+/* ═══ MVU Variable Tree ═══ */
+#sb-mvu-vars {
+  max-height: 300px; overflow-y: auto;
+  font-family: "Cascadia Code", "Consolas", "Monaco", monospace;
+  font-size: 0.78em; line-height: 1.6;
+}
+.mvu-entry { padding: 1px 0 1px 8px; }
+.mvu-key { color: var(--muted); }
+.mvu-str { color: var(--accent2); }
+.mvu-num { color: #b0624a; }
+.mvu-bool { color: #5a8a9a; font-weight: 600; }
+.mvu-null { color: var(--muted); font-style: italic; }
+.mvu-empty { color: var(--muted); font-style: italic; }
+#sb-mvu-vars details { margin-left: 4px; }
+#sb-mvu-vars summary {
+  cursor: pointer; color: var(--accent);
+  outline: none; font-size: 0.9em;
+}
+#sb-mvu-vars summary:hover { opacity: 0.8; }
+.mvu-delta {
+  animation: mvu-flash 2s ease-out;
+  border-radius: 2px;
+}
+@keyframes mvu-flash {
+  0% { background: rgba(176, 106, 61, 0.35); }
+  100% { background: transparent; }
+}
+[data-theme="dark"] @keyframes mvu-flash {
+  0% { background: rgba(212, 148, 106, 0.3); }
+  100% { background: transparent; }
+}
+
+/* ═══ BEAUTIFY DASHBOARD (card's 状态栏) ═══ */
+#sb-beautify {
+  font-family: var(--font-body);
+  font-size: 0.78em; line-height: 1.5;
+  color: var(--text);
+}
+.beautify-dashboard {
+  border: 1px solid var(--line);
+  background: var(--surface);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+.beautify-header {
+  padding: 10px 12px 6px;
+  background: var(--soft);
+  border-bottom: 1px solid var(--line);
+}
+.beautify-header-kicker {
+  font-size: 0.62rem; text-transform: uppercase;
+  letter-spacing: 0.12em; color: var(--muted);
+}
+.beautify-header-title {
+  font-family: var(--font-display);
+  font-size: 1rem; font-weight: 600;
+  color: var(--text); margin: 2px 0 6px;
+}
+.beautify-meta-chips {
+  display: flex; gap: 6px; flex-wrap: wrap;
+}
+.beautify-meta-chip {
+  font-size: 0.68rem; color: var(--muted);
+  background: var(--ink); padding: 2px 8px;
+  border-radius: var(--radius-full);
+  border: 1px solid var(--line);
+}
+.beautify-tabs {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(70px, 1fr));
+  gap: 1px; background: var(--line);
+  border-bottom: 1px solid var(--line);
+}
+.beautify-tab-btn {
+  background: var(--soft); border: none;
+  color: var(--muted); padding: 6px 4px; cursor: pointer;
+  font-size: 11px; text-align: center;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  font-family: var(--font-body);
+  transition: background 0.15s, color 0.15s;
+}
+.beautify-tab-btn.active {
+  background: var(--surface); color: var(--text);
+  font-weight: 600; border-bottom: 2px solid var(--color-ember);
+}
+.beautify-tab-btn:hover { color: var(--text); }
+.beautify-body {
+  padding: 8px;
+}
+.beautify-info-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 6px;
+}
+.beautify-info-card {
+  background: var(--soft);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+}
+.beautify-info-label {
+  font-size: 0.65rem; text-transform: uppercase;
+  letter-spacing: 0.1em; color: var(--muted);
+  margin-bottom: 3px;
+}
+.beautify-info-value {
+  font-size: 0.85rem; font-weight: 600;
+  color: var(--text);
+}
+.beautify-partner-header {
+  display: flex; gap: 6px; align-items: center;
+  flex-wrap: wrap; margin-bottom: 8px;
+}
+.beautify-partner-name {
+  font-family: var(--font-display); font-size: 0.95rem;
+  font-weight: 600; color: var(--text);
+}
+.beautify-partner-chip {
+  font-size: 0.68rem; color: var(--muted);
+  background: var(--soft); padding: 1px 8px;
+  border-radius: var(--radius-full);
+  border: 1px solid var(--line);
+}
+.beautify-detail-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 6px; margin-bottom: 8px;
+}
+.beautify-detail-item {
+  background: var(--soft);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  padding: 6px 8px;
+}
+.beautify-detail-label {
+  font-size: 0.62rem; text-transform: uppercase;
+  letter-spacing: 0.1em; color: var(--muted);
+}
+.beautify-detail-value {
+  font-size: 0.78rem; color: var(--text);
+  margin-top: 2px;
+}
+.beautify-jung-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(100px, 1fr));
+  gap: 4px; margin-top: 6px;
+}
+.beautify-jung-item {
+  background: var(--soft);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  padding: 5px 6px; text-align: center;
+}
+.beautify-jung-role {
+  font-size: 0.6rem; color: var(--muted);
+  text-transform: uppercase; letter-spacing: 0.08em;
+}
+.beautify-jung-func {
+  font-size: 0.9rem; font-weight: 700;
+  color: var(--color-ember);
+  font-family: var(--font-display);
+}
+.beautify-kink-text {
+  font-size: 0.82rem; color: var(--text);
+  line-height: 1.6; padding: 4px 0;
+}
+.beautify-empty {
+  color: var(--muted); font-style: italic;
+  padding: 8px; text-align: center;
+}
+.beautify-highlight { color: var(--color-ember); font-weight: 600; }
+.beautify-tag {
+  display: inline-block;
+  background: var(--soft); border: 1px solid var(--line);
+  padding: 1px 5px; border-radius: var(--radius-full);
+  margin: 1px 2px; font-size: 10px;
+}
+.beautify-section { margin-bottom: 2px; }
+.beautify-section-title {
+  color: var(--color-ember); font-weight: bold;
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 3px; padding-bottom: 2px;
+  font-size: 13px; cursor: pointer;
+}
+.beautify-flat-panel {
+  padding: 4px 0;
+}
+.beautify-npc-tabs {
+  display: flex; gap: 1px; flex-wrap: wrap;
+}
+.beautify-npc-panel {
+  padding: 4px 0;
+}
+.beautify-npc-details { display: flex; flex-direction: column; gap: 2px; }
+.beautify-npc-details .data-row { margin: 1px 0; }
+.beautify-sub {
+  margin: 1px 0;
+}
+.beautify-sub summary {
+  cursor: pointer; font-size: 11px;
+  color: var(--muted);
+}
+.beautify-sub summary:hover { color: var(--text); }
+.data-row {
+  display: flex; align-items: baseline; gap: 4px;
+  margin: 2px 0; padding: 1px 0;
+  border-bottom: 1px dotted rgba(90, 69, 48, 0.3);
+  font-size: 12px;
+}
+.data-row .k { color: var(--muted); font-size: 11px; min-width: 60px; flex-shrink: 0; }
+
+/* ═══ INLINE VARIABLE CARDS ═══ */
+.turn-vars {
+  margin: 6px 0 2px 0;
+  display: flex; flex-wrap: wrap; gap: 5px;
+  font-family: var(--font-ui);
+}
+.tv-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 5px 8px;
+  min-width: 140px;
+  flex: 1 1 auto;
+  max-width: 260px;
+}
+.tv-card.delta {
+  border-left: 3px solid var(--color-ember);
+  background: rgba(217, 119, 6, 0.04);
+}
+.tv-card-header {
+  display: flex; align-items: center; gap: 5px;
+  margin-bottom: 3px;
+  font-size: 0.78em; font-weight: 600;
+  color: var(--accent);
+}
+.tv-card-header .tv-name { flex: 1; }
+.tv-portrait-thumb {
+  width: 26px; height: 26px; border-radius: 50%;
+  object-fit: cover; border: 1px solid var(--border);
+  cursor: pointer; flex-shrink: 0;
+}
+.tv-portrait-thumb:hover { border-color: var(--accent); }
+.tv-stat-row {
+  display: flex; align-items: center; gap: 4px;
+  font-size: 0.68em; padding: 1px 0;
+}
+.tv-stat-label { color: var(--muted); min-width: 38px; flex-shrink: 0; }
+.tv-stat-value { color: var(--text); font-weight: 600; min-width: 20px; text-align: right; font-size: 0.9em; }
+.tv-stat-bar-bg {
+  flex: 1; height: 3px; background: var(--border);
+  border-radius: 2px; overflow: hidden;
+}
+.tv-stat-bar-fill {
+  height: 100%; border-radius: 2px;
+  transition: width 0.5s ease;
+}
+.tv-delta-item {
+  font-size: 0.68em; padding: 1px 0;
+  color: var(--text);
+}
+.tv-delta-item .old { color: var(--muted); text-decoration: line-through; margin-right: 2px; }
+.tv-delta-item .new { color: var(--color-ember); font-weight: 600; }
+.tv-card-compact {
+  display: inline-flex; align-items: center; gap: 3px;
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); padding: 2px 7px;
+  font-size: 0.68em; cursor: default;
+}
+.tv-card-compact .name { color: var(--muted); }
+.tv-card-compact .val { color: var(--text); font-weight: 600; }
+
+/* ═══ PORTRAIT THUMBNAILS ═══ */
+.beautify-portrait-thumb {
+  width: 48px; height: 64px; object-fit: cover;
+  border-radius: 3px; border: 1px solid var(--border);
+  cursor: pointer; transition: transform 0.15s;
+  flex-shrink: 0;
+}
+.beautify-portrait-thumb:hover { transform: scale(1.08); border-color: var(--accent); }
+
+/* ═══ INLINE BEAUTIFY PANEL (server-rendered, below chat, phone-theme) ═══ */
+#beautify-container {
+  position: sticky; top: 0; z-index: 5;
+  max-width: 860px; width: 100%;
+}
+.beautify-panel-inline {
+  margin: 20px 0 0 0;
+  padding: 0;
+  max-width: 860px;
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  position: relative;
+  background: var(--surface);
+  border: 1px solid var(--border);
+}
+.beautify-panel-inline .beautify-panel-overlay {
+  background: rgba(0,0,0,0.55);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+[data-theme="dark"] .beautify-panel-inline .beautify-panel-overlay {
+  background: rgba(0,0,0,0.65);
+}
+.beautify-panel-inline .beautify-dashboard {
+  position: relative;
+  z-index: 1;
+}
+/* Header */
+.beautify-panel-inline .beautify-header {
+  display: flex; align-items: center; gap: 10px;
+  padding: 12px 14px 10px;
+  border-bottom: 1px solid rgba(255,255,255,0.08);
+  background: rgba(0,0,0,0.15);
+}
+.beautify-panel-inline .beautify-user-avatar {
+  width: 36px; height: 36px; border-radius: 50%;
+  background-size: cover; background-position: center;
+  border: 2px solid rgba(255,255,255,0.25);
+  flex-shrink: 0;
+}
+.beautify-panel-inline .beautify-header-text {
+  display: flex; flex-direction: column; gap: 1px;
+}
+.beautify-panel-inline .beautify-header-title {
+  font-weight: 700; font-size: 0.95em; color: #fff;
+  text-shadow: 0 1px 2px rgba(0,0,0,0.5);
+}
+.beautify-panel-inline .beautify-header-sub {
+  font-size: 0.7em; color: rgba(255,255,255,0.65);
+}
+/* Tabs */
+.beautify-panel-inline .beautify-tabs {
+  display: flex; gap: 2px; flex-wrap: wrap;
+  padding: 6px 10px;
+  background: rgba(0,0,0,0.12);
+  border-bottom: 1px solid rgba(255,255,255,0.06);
+}
+.beautify-panel-inline .beautify-tab-btn {
+  display: flex; align-items: center; gap: 5px;
+  border: none;
+  background: rgba(255,255,255,0.06);
+  color: rgba(255,255,255,0.7);
+  padding: 4px 10px;
+  border-radius: 20px;
+  cursor: pointer;
+  font-size: 0.73em;
+  transition: background 0.15s, color 0.15s;
+}
+.beautify-panel-inline .beautify-tab-btn:hover {
+  color: #fff; background: rgba(255,255,255,0.14);
+}
+.beautify-panel-inline .beautify-tab-btn.active {
+  background: rgba(255,255,255,0.2);
+  color: #fff;
+  font-weight: 600;
+}
+.beautify-panel-inline .beautify-tab-avatar {
+  display: inline-block; width: 20px; height: 20px; border-radius: 50%;
+  background-size: cover; background-position: center;
+  flex-shrink: 0;
+  border: 1px solid rgba(255,255,255,0.3);
+}
+/* Tab content */
+.beautify-panel-inline .beautify-tab-content {
+  padding: 12px 14px;
+  color: rgba(255,255,255,0.9);
+}
+/* Character card */
+.beautify-panel-inline .beautify-char-card {
+  display: flex; gap: 12px; align-items: flex-start;
+  margin-bottom: 10px;
+}
+.beautify-panel-inline .beautify-char-avatar-wrap {
+  flex-shrink: 0;
+}
+.beautify-panel-inline .beautify-char-avatar {
+  width: 72px; height: 72px; border-radius: 12px;
+  background-size: cover; background-position: center top;
+  border: 2px solid rgba(255,255,255,0.25);
+  cursor: pointer; transition: transform 0.15s;
+}
+.beautify-panel-inline .beautify-char-avatar:hover { transform: scale(1.05); }
+.beautify-panel-inline .beautify-char-info {
+  flex: 1; min-width: 0;
+}
+.beautify-panel-inline .beautify-char-name {
+  font-weight: 700; font-size: 1.05em; color: #fff;
+  text-shadow: 0 1px 1px rgba(0,0,0,0.4);
+  margin-bottom: 4px;
+}
+.beautify-panel-inline .beautify-char-condition {
+  font-size: 0.72em; color: rgba(255,255,255,0.6);
+  line-height: 1.45; margin-bottom: 6px;
+}
+.beautify-panel-inline .beautify-stat-bars {
+  display: flex; flex-direction: column; gap: 2px;
+  max-width: 340px;
+}
+/* Badges */
+.beautify-panel-inline .beautify-badges {
+  display: flex; gap: 4px; margin-top: 4px;
+}
+.beautify-panel-inline .beautify-badge {
+  font-size: 0.63em; padding: 1px 7px; border-radius: 10px;
+  font-weight: 600; letter-spacing: 0.02em;
+}
+.beautify-panel-inline .badge-pregnant {
+  background: rgba(176,98,74,0.3); color: #e8a090;
+}
+.beautify-panel-inline .badge-stage {
+  background: rgba(90,138,154,0.3); color: #a0d0dd;
+}
+/* Sub-grid: 着装 + 身体 side by side */
+.beautify-panel-inline .beautify-sub-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-top: 8px;
+}
+.beautify-panel-inline .beautify-sub-card {
+  background: rgba(255,255,255,0.04);
+  border: 1px solid rgba(255,255,255,0.06);
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+}
+.beautify-panel-inline .beautify-sub-title {
+  font-weight: 600; font-size: 0.72em;
+  color: rgba(255,255,255,0.5);
+  text-transform: uppercase; letter-spacing: 0.06em;
+  margin-bottom: 4px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid rgba(255,255,255,0.06);
+}
+.beautify-panel-inline .beautify-sub-row {
+  display: flex; gap: 6px; font-size: 0.7em;
+  padding: 2px 0; line-height: 1.4;
+}
+.beautify-panel-inline .beautify-sub-key {
+  color: rgba(255,255,255,0.4);
+  min-width: 52px; flex-shrink: 0;
+}
+.beautify-panel-inline .beautify-sub-val {
+  color: rgba(255,255,255,0.75);
+}
+/* Delta changes */
+.beautify-panel-inline .beautify-delta {
+  margin-top: 8px; padding-top: 6px;
+  border-top: 1px solid rgba(255,255,255,0.08);
+}
+.beautify-panel-inline .beautify-delta-item {
+  font-size: 0.66em; padding: 1px 0;
+  color: rgba(255,255,255,0.55);
+}
+.beautify-panel-inline .beautify-delta-key {
+  color: rgba(255,255,255,0.35);
+  margin-right: 4px;
+}
+.beautify-panel-inline .beautify-delta-old {
+  text-decoration: line-through;
+  color: rgba(255,255,255,0.3);
+  margin-right: 3px;
+}
+.beautify-panel-inline .beautify-delta-new {
+  color: #f0b878; font-weight: 600;
+}
+/* World tab info grid */
+.beautify-panel-inline .beautify-info-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 4px;
+}
+.beautify-panel-inline .beautify-info-card {
+  display: flex; align-items: center; gap: 6px;
+  padding: 4px 0;
+  border-bottom: 1px solid rgba(255,255,255,0.05);
+  font-size: 0.75em;
+}
+.beautify-panel-inline .beautify-info-label {
+  color: rgba(255,255,255,0.45);
+  min-width: 48px; font-size: 0.9em;
+}
+.beautify-panel-inline .beautify-info-value {
+  color: rgba(255,255,255,0.85); font-weight: 500;
+}
+/* collapsible sub-sections (non-standard dicts) */
+.beautify-panel-inline .beautify-sub {
+  margin: 3px 0;
+  font-size: 0.72em;
+}
+.beautify-panel-inline .beautify-sub summary {
+  cursor: pointer;
+  color: rgba(255,255,255,0.45);
+  padding: 2px 0;
+}
+.beautify-panel-inline .beautify-sub summary:hover { color: rgba(255,255,255,0.7); }
+/* Stat bars (shared with sidebar, adapted for dark bg) */
+.beautify-panel-inline .tv-stat-row {
+  display: flex; align-items: center; gap: 5px;
+  font-size: 0.7em; padding: 1px 0;
+}
+.beautify-panel-inline .tv-stat-label {
+  color: rgba(255,255,255,0.5); min-width: 44px; flex-shrink: 0;
+}
+.beautify-panel-inline .tv-stat-value {
+  color: rgba(255,255,255,0.85); font-weight: 600;
+  min-width: 24px; text-align: right;
+}
+.beautify-panel-inline .tv-stat-bar-bg {
+  flex: 1; height: 4px;
+  background: rgba(255,255,255,0.1);
+  border-radius: 2px; overflow: hidden;
+}
+.beautify-panel-inline .tv-stat-bar-fill {
+  height: 100%; border-radius: 2px;
+  transition: width 0.5s ease;
+}
+</style>
+</head>
+<body>
+
+<div id="topbar">
+  <span class="dot green"></span>
+  <span class="dot yellow"></span>
+  <span class="dot red"></span>
+  <span class="tag" id="tb-world">—</span>
+  <span class="sep">|</span>
+  <span id="tb-stage">—</span>
+  <span class="sep">|</span>
+  <span class="dim" id="tb-time">—</span>
+  <span class="sep">|</span>
+  <span class="dim" id="tb-location">—</span>
+  <span class="spacer"></span>
+  <span class="dim" style="font-size:0.75em;" id="conn-label">桥接:</span>
+  <span id="conn-dot" class="dot red" title="服务器未连接"></span>
+  <span class="dim" id="tb-count">已生成: 0</span>
+  <span class="sep">|</span>
+  <span class="dim" id="tb-tokens" title="本轮Token / 累计Token">Token: —</span>
+  <span class="sep">|</span>
+  <a id="studio-link" href="/studio" aria-label="打开 Agent Studio">Studio</a>
+  <button id="theme-toggle" title="切换夜间模式" style="background:none;border:1px solid var(--border);border-radius:4px;cursor:pointer;font-size:0.9em;padding:1px 6px;line-height:1;color:var(--muted);">🌙</button>
+  <button id="sidebar-toggle" title="打开工具面板" aria-label="打开工具面板" aria-expanded="false" onclick="toggleSidebar()">☰</button>
+</div>
+
+<div id="sidebar-backdrop" onclick="closeSidebar()"></div>
+
+<div id="main">
+  <div id="content-panel">
+    <div id="doc">等待生成...</div>
+    <div id="beautify-container"></div>
+  </div>
+
+  <div id="sidebar">
+    <div class="side-card" id="actions-card" style="display:none;">
+      <h4>📂 可选项</h4>
+      <div id="sb-actions"></div>
+    </div>
+    <div class="side-card" id="sessions-card">
+      <h4>存档</h4>
+      <div class="session-toolbar">
+        <select id="session-select" aria-label="当前存档" onchange="switchSession(this.value)"></select>
+        <button class="session-tool" id="session-new" title="新建存档" aria-label="新建存档" onclick="createSession()">+</button>
+        <button class="session-tool" id="session-rename" title="重命名存档" aria-label="重命名存档" onclick="renameSession()">✎</button>
+        <button class="session-tool" id="session-delete" title="删除存档" aria-label="删除存档" onclick="deleteSession()">×</button>
+      </div>
+      <div class="side-note" id="session-meta">正在读取存档…</div>
+    </div>
+    <div class="side-card" id="runtime-config-card">
+      <h4>🧩 Runtime Config</h4>
+      <div class="side-note" id="runtime-config-status">运行时配置状态: 未连接</div>
+      <div class="side-note" id="runtime-task-status">任务: —</div>
+      <div class="side-note" id="runtime-task-id">Task ID: —</div>
+      <div class="side-note" id="runtime-task-meta"></div>
+      <button class="side-button" id="runtime-cancel-button" onclick="cancelRuntimeTask()" hidden>取消当前任务</button>
+      <div class="setting-row" style="display:block; margin-top:8px;">
+        <span class="label">Active Graph</span>
+        <select id="runtime-graph-select" class="config-select"></select>
+      </div>
+      <div class="side-buttons">
+        <button class="side-button" onclick="applyRuntimeConfigSelection()">应用选择</button>
+        <button class="side-button" onclick="loadRuntimeConfigPanel()">刷新列表</button>
+      </div>
+    </div>
+    <!-- Kept inert for extensions compiled against the old page contract. All
+         provider editing now lives in Studio and this template is never shown. -->
+    <template id="legacy-provider-controls-compat" hidden>
+      <input id="provider-base-url" type="url">
+      <input id="provider-api-key" type="password">
+      <select id="provider-model-select"></select>
+      <script type="application/json">["/v1/session/provider/models", "/v1/session/provider/config"]</script>
+    </template>
+    <div class="side-card" id="agent-trace-card">
+      <h4>🧭 Agent Trace</h4>
+      <div class="side-note" id="agent-trace-status">等待运行时事件</div>
+      <div id="agent-trace" aria-live="polite"></div>
+      <button class="side-button" id="graph-retry-button" type="button" onclick="retryGraphRun()" hidden>Retry complete Graph</button>
+    </div>
+    <div class="side-card">
+      <h4>📌 当前目标</h4>
+      <div style="color:var(--accent2);" id="sb-quest">—</div>
+    </div>
+    <div class="side-card" id="beautify-card" style="display:none;">
+      <h4>📊 状态面板</h4>
+      <div id="sb-beautify"></div>
+    </div>
+    <div class="side-card" id="mvu-card" style="display:none;">
+      <h4>🗃️ 变量</h4>
+      <div id="sb-mvu-vars"></div>
+    </div>
+    <div class="side-card" id="npcs-card" style="display:none;">
+      <h4>👥 场景人物</h4>
+      <div id="sb-npcs"></div>
+    </div>
+    <div class="side-card" id="openings-card" style="display:none;">
+      <h4>🎬 开场白</h4>
+      <select id="set-opening" onchange="doSwitchOpening()" style="width:100%;padding:4px 6px;border-radius:4px;border:1px solid var(--border);background:var(--input-bg);font-size:0.78em;font-family:var(--font-ui);">
+      </select>
+    </div>
+    <div class="side-card">
+      <h4>📋 剧情摘要</h4>
+      <div class="summary-text" id="sb-summary">暂无</div>
+    </div>
+  </div>
+</div>
+
+<div id="input-panel">
+  <div class="input-row">
+    <textarea id="user-input" placeholder="在此输入你的回复或指令..." rows="2"></textarea>
+    <!-- 酒馆桥接元素：卡脚本期望的 send_textarea / send_but -->
+    <textarea id="send_textarea" style="display:none"></textarea>
+    <div id="send_but" style="display:none"></div>
+    <div class="btn-group">
+      <button class="btn-submit" onclick="doSubmit()">▶ 提交</button>
+      <button class="btn-secondary" onclick="doClear()">清空</button>
+    </div>
+  </div>
+  <div class="meta-row">
+    <span>你的角色名:</span>
+    <input id="player-name-input" placeholder="可选" value="" oninput="onPlayerNameChange();">
+    <span style="flex:1;"></span>
+    <span id="last-action" style="font-style:italic;"></span>
+  </div>
+</div>
+
+<div id="toast">✓ 操作已发送</div>
+
+<div id="node-detail-modal" hidden role="dialog" aria-modal="true" aria-labelledby="node-detail-title" onclick="closeNodeDetail(event)">
+  <div class="node-detail-panel" onclick="event.stopPropagation()">
+    <div class="node-detail-head">
+      <h3 id="node-detail-title">Node Run</h3>
+      <button class="node-detail-close" id="node-debug-replay-button" type="button" title="Runs a new billable model call without changing the story" onclick="runDebugReplay()">Debug Replay</button>
+      <button class="node-detail-close" type="button" title="关闭详情" aria-label="关闭详情" onclick="closeNodeDetail()">×</button>
+    </div>
+    <div class="side-note">Debug Replay makes a new model call and never commits a story turn.</div>
+    <pre id="node-detail-body"></pre>
+  </div>
+</div>
+
+<!-- Portrait zoom modal -->
+<div id="beautify-modal" style="display:none;position:fixed;top:0;left:0;width:100vw;height:100vh;background:rgba(0,0,0,0.85);z-index:9999;justify-content:center;align-items:center;cursor:zoom-out;" onclick="this.style.display='none'">
+  <img id="beautify-modal-img" src="" alt="立绘放大" style="max-width:95%;max-height:95vh;border:2px solid #8b6b4a;box-shadow:0 0 20px #000;border-radius:4px;object-fit:contain;">
+</div>
+
+<script src="_st_shims.js?v=2"></script>
+<script>
+// ═══ Dynamic script reloader (no page flash) ═══
+console.log('[RP-Frontend] Initialized. jQuery:', typeof jQuery, 'lodash:', typeof window._, 'toastr:', typeof toastr);
+let pollTimer = null;
+let lastStateMtime = 0;
+let lastContentMtime = 0;
+let _prevContentHtml = '';  // cache to avoid spurious innerHTML resets
+let _prevBeautifyHtml = '';  // separate cache for beautify panel
+
+var _consecutiveFailures = 0;
+
+function reloadData() {
+  // Reload state.js via dynamic script
+  const ts = Date.now();
+  const oldState = document.getElementById('_state_js');
+  if (oldState) oldState.remove();
+  const s = document.createElement('script');
+  s.id = '_state_js';
+  s.src = 'state.js?v=' + ts;
+  s.onload = () => {
+    _consecutiveFailures = 0;
+    if (window.STATE) lastStateMtime = ts;
+    const oldContent = document.getElementById('_content_js');
+    if (oldContent) oldContent.remove();
+    const c = document.createElement('script');
+    c.id = '_content_js';
+    c.src = 'content.js?v=' + ts;
+    c.onload = () => { _consecutiveFailures = 0; if (window.CONTENT_HTML !== undefined) lastContentMtime = ts; render(); };
+    c.onerror = () => { _consecutiveFailures++; if (_consecutiveFailures >= 3) showError('内容加载失败，请刷新页面'); render(); };
+    document.head.appendChild(c);
+  };
+  s.onerror = () => {
+    _consecutiveFailures++;
+    const oldContent = document.getElementById('_content_js');
+    if (oldContent) oldContent.remove();
+    const c = document.createElement('script');
+    c.id = '_content_js';
+    c.src = 'content.js?v=' + ts;
+    c.onload = () => { _consecutiveFailures = 0; if (window.CONTENT_HTML !== undefined) lastContentMtime = ts; render(); };
+    c.onerror = () => { _consecutiveFailures++; if (_consecutiveFailures >= 3) showError('内容加载失败，请刷新页面'); render(); };
+    document.head.appendChild(c);
+  };
+  document.head.appendChild(s);
+}
+
+function userName() {
+  const el = document.getElementById('player-name-input');
+  if (!el || el.value === undefined) return '{{user}}';
+  const v = el.value.trim();
+  return v || '{{user}}';
+}
+
+function syncPlayerName() {
+  // Sync #player-name-input from MVU variables (initvar) on first load.
+  // The card stores the user reference under 主角.基础信息.姓名 (protagonist path),
+  // not under a separate 玩家 key.
+  var vars = window.MVU_VARIABLES;
+  if (!vars) return;
+  var playerName = '';
+  if (vars['主角'] && vars['主角']['基础信息'] && vars['主角']['基础信息']['姓名']) {
+    playerName = vars['主角']['基础信息']['姓名'];
+  }
+  if (!playerName || playerName === '{{user}}' || playerName === '{[user]}') return;
+  var input = document.getElementById('player-name-input');
+  if (input && input.tagName === 'INPUT' && !input.dataset.synced && (!input.value || input.value === '{{user}}')) {
+    input.value = playerName;
+    input.dataset.synced = '1';
+  }
+}
+
+function onPlayerNameChange() {
+  var input = document.getElementById('player-name-input');
+  if (!input || input.tagName !== 'INPUT') return;
+  var vars = window.MVU_VARIABLES;
+  if (!vars) return;
+  if (!vars['主角']) vars['主角'] = {};
+  if (!vars['主角']['基础信息']) vars['主角']['基础信息'] = {};
+  var newName = input.value.trim();
+  if (newName && newName !== '{{user}}') {
+    vars['主角']['基础信息']['姓名'] = newName;
+  }
+}
+
+function replaceUser(s) {
+  if (!s) return s;
+  const name = userName();
+  const replacement = (name !== '{{user}}') ? name : '{{user}}';
+  s = s.split('{{user}}').join(replacement);
+  s = s.split('{[user]}').join(replacement);
+  return s;
+}
+
+function applyBeautifyCSS() {
+  var beautifyData = window.BEAUTIFY_DATA || {};
+  var cssSource = beautifyData.panel_css || beautifyData.panel_inline_css || '';
+  var oldStyle = document.getElementById('_beautify_css');
+  if (oldStyle) oldStyle.remove();
+  if (cssSource) {
+    var style = document.createElement('style');
+    style.id = '_beautify_css';
+    style.textContent = cssSource;
+    document.head.appendChild(style);
+  }
+}
+
+// ═══ Client-side macro resolver — mirrors MVU engine display-time resolution ═══
+// In the real MVU pipeline, {{format_message_variable::stat_data.XXX}} macros
+// are resolved dynamically at render time against the live stat_data tree.
+// We replicate that here so the beautify panel always reflects current state.
+function resolveBeautifyMacros(html) {
+  if (!html || html.indexOf('{{') < 0) return html;
+  var vars = window.MVU_VARIABLES || {};
+  var statData = vars.stat_data || vars;
+
+  function _lookup(pathStr) {
+    // Strip stat_data. prefix — window.MVU_VARIABLES is the stat_data root
+    var p = pathStr;
+    if (p.indexOf('stat_data.') === 0) p = p.slice(10);
+    var keys = p.split('.');
+    var cur = statData;
+    for (var i = 0; i < keys.length; i++) {
+      if (cur == null || typeof cur !== 'object') return null;
+      cur = cur[keys[i]];
+    }
+    return cur;
+  }
+
+  function _format(v) {
+    if (v === null || v === undefined) return '(未定义)';
+    if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') return String(v);
+    // Nested objects: render as compact key: value lines
+    if (typeof v === 'object' && !Array.isArray(v)) {
+      var lines = [];
+      var keys = Object.keys(v);
+      for (var ki = 0; ki < keys.length; ki++) {
+        var kv = v[keys[ki]];
+        if (kv !== null && typeof kv === 'object') {
+          lines.push(keys[ki] + ': ' + JSON.stringify(kv));
+        } else {
+          lines.push(keys[ki] + ': ' + String(kv !== undefined ? kv : '—'));
+        }
+      }
+      return lines.join(', ');
+    }
+    if (Array.isArray(v)) {
+      return v.map(function(item) {
+        return typeof item === 'object' ? JSON.stringify(item) : String(item);
+      }).join(', ');
+    }
+    return String(v);
+  }
+
+  // {{format_message_variable::stat_data.XXX}} → formatted value
+  html = html.replace(/\{\{format_message_variable::stat_data\.([^}]+)\}\}/g, function(_, path) {
+    return _format(_lookup(path));
+  });
+
+  // {{format_message_variable::XXX}} without stat_data prefix → from root
+  html = html.replace(/\{\{format_message_variable::([^}]+)\}\}/g, function(_, path) {
+    return _format(_lookup(path));
+  });
+
+  // {{getvar::stat_data.XXX}} → scalar value (bare, no formatting)
+  html = html.replace(/\{\{getvar::stat_data\.([^}]+)\}\}/g, function(_, path) {
+    var v = _lookup(path);
+    return (v !== null && v !== undefined) ? String(v) : '(未定义)';
+  });
+
+  // {{getvar::XXX}} without stat_data prefix
+  html = html.replace(/\{\{getvar::([^}]+)\}\}/g, function(_, path) {
+    var v = _lookup(path);
+    return (v !== null && v !== undefined) ? String(v) : '(未定义)';
+  });
+
+  return html;
+}
+
+function render() {
+  if (!window.STATE) return;
+
+  syncPlayerName();
+  const S = window.STATE;
+  document.title = (S.world || 'RP') + ' — ' + (S.stage || '');
+
+  // Top bar (only update if changed to avoid DOM flicker)
+  setText('tb-world', replaceUser(S.world || '—'));
+  setText('tb-stage', S.stage || '—');
+  setText('tb-time', S.time || '—');
+  setText('tb-location', S.location || '—');
+  setText('tb-count', '已生成: ' + (S.generatedCount || 0));
+
+  // Content — only replace DOM when the source string actually
+  // changed.  Comparing against live innerHTML would fire every poll
+  // because initApp() mutates the DOM (flip-card backs, etc.), which
+  // would destroy card state and re-run scripts unnecessarily.
+  const contentEl = document.getElementById('doc');
+  let newContent = window.CONTENT_HTML || '<div style="padding:60px;text-align:center;color:var(--muted);">等待生成内容...</div>';
+  newContent = replaceUser(newContent);
+  // Apply card author's regex scripts via SillyTavern-compatible engine.
+  // Uses getRegexedString() from _regex_engine.js with proper placement
+  // filtering (markdownOnly/promptOnly/placement/depth).
+  var regexScripts = window.REGEX_SCRIPTS || [];
+  if (regexScripts.length && typeof window.registerRegexScripts === 'function') {
+    window.registerRegexScripts(regexScripts);
+    newContent = window.getRegexedString(newContent, 2 /* AI_OUTPUT */, { isMarkdown: true });
+  }
+  if (_prevContentHtml !== newContent) {
+    _prevContentHtml = newContent;
+    contentEl.innerHTML = newContent;
+    formatMessageBubbles(contentEl);
+    // Re-execute embedded <script> tags (innerHTML doesn't run them).
+    // The _st_shims.js globals are already loaded, so card-author
+    // beautify scripts find their expected ST/MVU APIs.
+    var embScripts = contentEl.querySelectorAll('script');
+    for (var si = 0; si < embScripts.length; si++) {
+      var oldS = embScripts[si];
+      var newS = document.createElement('script');
+      if (oldS.textContent) {
+        newS.textContent = 'try {\n' + oldS.textContent + '\n} catch(e) { console.error("[card-script] Execution error:", e); if (typeof toastr !== "undefined") toastr.error("[card-script] " + e.message); }';
+      }
+      if (oldS.src) newS.src = oldS.src;
+      oldS.parentNode.replaceChild(newS, oldS);
+    }
+    // Only auto-scroll if user is already near the bottom
+    const panel = document.getElementById('content-panel');
+    if (panel) {
+      const distToBottom = panel.scrollHeight - (panel.scrollTop + panel.clientHeight);
+      if (distToBottom < 200) {
+        setTimeout(() => { panel.scrollTop = panel.scrollHeight; }, 80);
+      }
+    }
+  }
+
+  renderStreamingPreview();
+
+  // Beautify panel — rendered independently of narrative content.
+  // Macros ({{format_message_variable::stat_data.XXX}}) are resolved
+  // client-side against window.MVU_VARIABLES at display time, mirroring
+  // the real MVU pipeline. Resolution runs every poll cycle so variable
+  // updates are reflected immediately without a server round-trip.
+  const beautifyEl = document.getElementById('beautify-container');
+  let rawBeautify = window.BEAUTIFY_HTML || '';
+  let newBeautify = resolveBeautifyMacros(rawBeautify);
+  newBeautify = replaceUser(newBeautify);
+  if (_prevBeautifyHtml !== newBeautify) {
+    _prevBeautifyHtml = newBeautify;
+    beautifyEl.innerHTML = newBeautify;
+    var embScriptsB = beautifyEl.querySelectorAll('script');
+    for (var sj = 0; sj < embScriptsB.length; sj++) {
+      var oldSB = embScriptsB[sj];
+      var newSB = document.createElement('script');
+      if (oldSB.textContent) {
+        newSB.textContent = 'try {\n' + oldSB.textContent + '\n} catch(e) { console.error("[beautify-script] Execution error:", e); }';
+      }
+      if (oldSB.src) newSB.src = oldSB.src;
+      oldSB.parentNode.replaceChild(newSB, oldSB);
+    }
+    console.log('[beautify] Re-executed ' + embScriptsB.length + ' script(s), jQuery=' + (typeof $) + ', _=' + (typeof _));
+  }
+
+  // Sidebar
+  setText('sb-quest', replaceUser(S.quest || '—'));
+  const sum = replaceUser(window.SUMMARY_TEXT || '暂无');
+  setText('sb-summary', sum);
+
+  // Actions — prefer per-turn TURN_OPTIONS, fall back to static S.actions
+  const actionsCard = document.getElementById('actions-card');
+  const turnOpts = window.TURN_OPTIONS;
+  const actionsH4 = actionsCard.querySelector('h4');
+  const actionsDiv = document.getElementById('sb-actions');
+  if (turnOpts && turnOpts.length > 0) {
+    actionsCard.style.display = '';
+    if (actionsH4) actionsH4.innerHTML = '🎯 下一步行动' + (S.generatedCount > 0 ? ' <button class="btn-reroll" onclick="doReroll()" title="重roll最后一轮">🔄</button>' : '');
+    renderOptions(actionsDiv, turnOpts);
+  } else if (S.actions && S.actions.length > 0) {
+    actionsCard.style.display = '';
+    if (actionsH4) actionsH4.innerHTML = '📂 可选项' + (S.generatedCount > 0 ? ' <button class="btn-reroll" onclick="doReroll()" title="重roll最后一轮">🔄</button>' : '');
+    renderOptions(actionsDiv, S.actions);
+  } else {
+    actionsCard.style.display = 'none';
+  }
+
+
+  // NPCs
+  const npcsCard = document.getElementById('npcs-card');
+  if (S.npcs && S.npcs.length > 0) {
+    npcsCard.style.display = '';
+    setHtml('sb-npcs', S.npcs.map(n =>
+      `<span class="chip ${n.important ? 'chip-hot' : 'chip-normal'}">${replaceUser(n.name)}</span>`
+    ).join(''));
+  } else {
+    npcsCard.style.display = 'none';
+  }
+
+  // MVU Variables
+  renderMvuVars();
+
+  // Beautify Dashboard
+  renderBeautify();
+
+  // Inject per-turn delete buttons
+  injectTurnButtons();
+
+  // Token count display
+  updateTokenCount();
+
+  // Openings switcher visibility
+  updateOpeningsCard(S);
+
+  // Notify beautify panel of fresh variable data.
+  // Matches real MVU lifecycle: mag_variable_update_ended fires after
+  // all updates for the reply are complete.  The card-author beautify
+  // script registered eventOn(Mvu.events.VARIABLE_UPDATE_ENDED, renderData)
+  // inside initApp(), so this triggers a data refresh without DOM reset.
+  if (window.eventEmit && window.Mvu) {
+    window.eventEmit(window.Mvu.events.VARIABLE_UPDATE_ENDED);
+  }
+}
+
+function updateOpeningsCard(S) {
+  const card = document.getElementById('openings-card');
+  const sel = document.getElementById('set-opening');
+  if (sel.options.length > 1) {
+    card.style.display = '';
+  } else {
+    card.style.display = 'none';
+  }
+}
+
+
+function injectTurnButtons() {
+  const doc = document.getElementById('doc');
+  const turns = doc.querySelectorAll('.turn-wrap');
+  turns.forEach(function(turn, i) {
+    // Remove existing btn if any
+    const old = turn.querySelector('.btn-turn-del');
+    if (old) old.remove();
+    // Don't add delete on first opening turn (index 0) if we want to keep the opener
+    const btn = document.createElement('button');
+    btn.className = 'btn-turn-del';
+    btn.textContent = '↩ 回退到此';
+    btn.title = '删除此轮及之后所有内容';
+    btn.addEventListener('click', function(e) {
+      e.stopPropagation();
+      if (btn.classList.contains('confirming')) {
+        doDeleteFrom(i);
+      } else {
+        btn.classList.add('confirming');
+        btn.textContent = '确认回退？';
+        setTimeout(function() {
+          btn.classList.remove('confirming');
+          btn.textContent = '↩ 回退到此';
+        }, 3000);
+      }
+    });
+    const aiDiv = turn.querySelector('.turn-ai');
+    if (aiDiv) aiDiv.appendChild(btn);
+  });
+}
+
+// DOM helpers that only touch if changed
+function setText(id, val) {
+  const el = document.getElementById(id);
+  if (el && el.textContent !== val) el.textContent = val;
+}
+function setHtml(id, val) {
+  const el = document.getElementById(id);
+  if (el && el.innerHTML !== val) el.innerHTML = val;
+}
+
+// Preserve card-authored HTML while enhancing plain text inside message
+// bubbles. Only **bold** / __bold__ and line breaks are intentionally supported.
+function formatMessageTextNode(node) {
+  const text = node.nodeValue || '';
+  if (!text || (!/[\r\n]/.test(text) && !/\\n/.test(text) && !/(\*\*[^*\r\n]+?\*\*|__[^_\r\n]+?__)/.test(text))) return;
+  const fragment = document.createDocumentFragment();
+  const tokenPattern = /(\r\n|\r|\n|\\n)|\*\*([^*\r\n]+?)\*\*|__([^_\r\n]+?)__/g;
+  let cursor = 0;
+  let match;
+  while ((match = tokenPattern.exec(text)) !== null) {
+    if (match.index > cursor) fragment.appendChild(document.createTextNode(text.slice(cursor, match.index)));
+    if (match[1]) {
+      fragment.appendChild(document.createElement('br'));
+    } else {
+      const strong = document.createElement('strong');
+      strong.textContent = match[2] || match[3] || '';
+      fragment.appendChild(strong);
+    }
+    cursor = match.index + match[0].length;
+  }
+  if (cursor < text.length) fragment.appendChild(document.createTextNode(text.slice(cursor)));
+  node.replaceWith(fragment);
+}
+
+function formatMessageTextNodes(root) {
+  if (!root) return;
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  const nodes = [];
+  let node;
+  while ((node = walker.nextNode())) nodes.push(node);
+  nodes.forEach(function(textNode) {
+    const parent = textNode.parentElement;
+    if (parent && parent.closest('script,style,code,pre')) return;
+    formatMessageTextNode(textNode);
+  });
+}
+
+function formatMessageBubbles(root) {
+  if (!root) return;
+  root.querySelectorAll('.turn-user .turn-text, .turn-ai .turn-text').forEach(formatMessageTextNodes);
+}
+
+function renderOptions(container, opts) {
+  container.innerHTML = '';
+  opts.forEach(function(optHtml) {
+    const span = document.createElement('span');
+    span.className = 'chip-action';
+    span.innerHTML = optHtml;
+    span.addEventListener('click', function() {
+      const tmp = document.createElement('div');
+      tmp.innerHTML = optHtml;
+      const plainText = (tmp.textContent || tmp.innerText || '').trim();
+      const ta = document.getElementById('user-input');
+      ta.value = ta.value ? ta.value + '\n' + plainText : plainText;
+      ta.focus();
+    });
+    container.appendChild(span);
+  });
+}
+
+function pickAction(action) {
+  const ta = document.getElementById('user-input');
+  const tmp = document.createElement('div');
+  tmp.innerHTML = action;
+  const plainText = (tmp.textContent || tmp.innerText || action).trim();
+  ta.value = ta.value ? ta.value + '\n' + plainText : plainText;
+  ta.focus();
+}
+
+const API_BASE = '';
+let bridgeOk = false;
+let runtimeConfigState = { presets: [], graphs: [], selected: { preset_id: null, graph_id: null } };
+let sessionState = { active_session_id: null, sessions: [] };
+const RUNTIME_ACTIVE_STATUSES = new Set(['queued', 'leased', 'running', 'projection_pending']);
+const RUNTIME_TERMINAL_EVENT_TYPES = new Set([
+  'task.succeeded', 'task.cancelled', 'task.failed_terminal', 'task.failed_retryable',
+  'task.stale_revision', 'task.quality_exhausted', 'task.quality_gate_failed',
+  'task.mvu_validation_failed', 'task.rolled_back', 'task.cannot_reroll_opening',
+  'task.unknown_revision'
+]);
+const RUNTIME_EVENT_TYPES = [
+  'player_message.submitted', 'task.queued', 'task.reroll_requested', 'task.leased',
+  'task.running', 'task.succeeded', 'task.cancelled', 'task.failed_terminal',
+  'task.failed_retryable', 'task.stale_revision', 'task.quality_exhausted',
+  'task.quality_gate_failed', 'task.mvu_validation_failed', 'task.rolled_back',
+  'task.cannot_reroll_opening', 'task.unknown_revision', 'turn.committed',
+  'session.opening_switched',
+  'session.head_moved', 'session.rolled_back', 'narrative.preview.delta',
+  'agent_node.started', 'agent_node.finished', 'model_call.started', 'model_call.finished',
+  'tool_run.started', 'tool_run.progress', 'tool_run.finished',
+  'graph.run.started', 'graph.node.started', 'graph.node.delta', 'graph.node.finished', 'graph.run.finished'
+];
+const RUNTIME_AFTER_KEY = 'rp-runtime-last-event-sequence';
+const RUNTIME_SESSION_KEY = 'rp-runtime-session-id';
+let runtimeEventSource = null;
+let runtimeEventReconnectTimer = null;
+let runtimeLastSequence = parseInt(sessionStorage.getItem(RUNTIME_AFTER_KEY) || '0', 10) || 0;
+let runtimeSessionId = sessionStorage.getItem(RUNTIME_SESSION_KEY) || null;
+let runtimeTask = null;
+let streamingPreview = { taskId: null, text: "" };
+let agentTrace = { nodes: {}, events: [], graphMode: false };
+let graphRunState = { graphRunId: null, status: null };
+let nodeDetailState = { nodeRunId: null, data: null, debugReplay: null };
+
+function renderStreamingPreview() {
+  const doc = document.getElementById("doc");
+  if (!doc) return;
+  let preview = document.getElementById("streaming-preview");
+  if (!streamingPreview.text) {
+    if (preview) preview.remove();
+    return;
+  }
+  if (!preview) {
+    preview = document.createElement("div");
+    preview.id = "streaming-preview";
+    preview.className = "turn-wrap turn-ai";
+    preview.innerHTML = "<div class=\"turn-role\">AI · 生成中</div><div class=\"turn-text\"><content></content><span class=\"streaming-cursor\" aria-label=\"生成中\"></span></div>";
+    doc.appendChild(preview);
+  }
+  const content = preview.querySelector("content");
+  if (content) {
+    content.textContent = streamingPreview.text;
+    formatMessageTextNodes(content);
+  }
+  const panel = document.getElementById("content-panel");
+  if (panel) panel.scrollTop = panel.scrollHeight;
+}
+
+function clearStreamingPreview(taskId) {
+  if (taskId && streamingPreview.taskId && taskId !== streamingPreview.taskId) return;
+  streamingPreview = { taskId: null, text: "" };
+  renderStreamingPreview();
+}
+
+function renderAgentTrace() {
+  const target = document.getElementById("agent-trace");
+  const status = document.getElementById("agent-trace-status");
+  if (!target || !status) return;
+  const entries = Object.keys(agentTrace.nodes).map(function(key) { return agentTrace.nodes[key]; });
+  entries.sort(function(a, b) { return (a.order || 0) - (b.order || 0) || a.sequence - b.sequence; });
+  target.innerHTML = "";
+  entries.slice(0, 20).forEach(function(item) {
+    const row = document.createElement("button");
+    row.type = "button";
+    row.className = "trace-node " + item.state;
+    row.title = "打开节点详情";
+    row.onclick = function() { openNodeDetail(item.nodeRunId, item); };
+    const title = document.createElement("div");
+    title.className = "trace-title";
+    title.textContent = item.label;
+    const meta = document.createElement("div");
+    meta.className = "trace-meta";
+    meta.textContent = item.meta + (item.streamedOutput ? " · " + item.streamedOutput.slice(-80) : "");
+    row.appendChild(title); row.appendChild(meta); target.appendChild(row);
+  });
+  status.textContent = entries.length ? "最近 " + entries.length + " 个运行节点" : "等待运行时事件";
+  const retry = document.getElementById("graph-retry-button");
+  if (retry) retry.hidden = !(graphRunState.graphRunId && graphRunState.status === "failed");
+}
+
+function recordAgentTrace(type, payload, sequence) {
+  const taskId = payload.task_id || "runtime";
+  let key; let state; let label; let meta;
+  if (type === "graph.run.started") {
+    agentTrace.graphMode = true;
+    agentTrace.nodes = {};
+    graphRunState = { graphRunId: payload.graph_run_id || payload.run_id || null, status: "running" };
+    (payload.nodes || []).forEach(function(nodeId, index) {
+      const nodeKey = taskId + ":node:" + nodeId;
+      agentTrace.nodes[nodeKey] = {
+        sequence: sequence || 0, order: index, taskId: taskId, nodeRunId: null, nodeId: nodeId, state: "idle",
+        label: nodeId, meta: "节点未运行", input: null, output: "", streamedOutput: ""
+      };
+    });
+    renderAgentTrace();
+    return;
+  } else if (type === "graph.run.finished") {
+    graphRunState = { graphRunId: payload.graph_run_id || payload.run_id || graphRunState.graphRunId, status: payload.status || payload.state || null };
+    renderAgentTrace();
+    return;
+  } else if (type === "graph.node.started" || type === "graph.node.finished" || type === "graph.node.delta") {
+    agentTrace.graphMode = true;
+    key = taskId + ":node:" + (payload.node_id || "unknown");
+    state = payload.state || (type === "graph.node.started" ? "running" : "idle");
+    if (!["idle", "running", "succeeded", "failed"].includes(state)) state = "idle";
+    label = (payload.label || payload.node_id || "node");
+    meta = state === "running" ? "节点运行中" : state === "succeeded" ? "节点成功" : state === "failed" ? "节点失败" : "节点未运行";
+    agentTrace.nodes[key] = Object.assign({}, agentTrace.nodes[key] || {}, {
+      sequence: sequence || 0, taskId: taskId, nodeRunId: payload.node_run_id || (agentTrace.nodes[key] || {}).nodeRunId,
+      nodeId: payload.node_id || (agentTrace.nodes[key] || {}).nodeId,
+      state: state, label: label, meta: meta,
+      input: payload.input_artifact || payload.input || (agentTrace.nodes[key] || {}).input || null,
+      output: payload.final_output || payload.artifact || payload.streamed_output || payload.delta || (agentTrace.nodes[key] || {}).output || "",
+      streamedOutput: payload.streamed_output || payload.delta || (agentTrace.nodes[key] || {}).streamedOutput || ""
+    });
+    if (nodeDetailState.nodeRunId && nodeDetailState.nodeRunId === payload.node_run_id && type === "graph.node.delta") {
+      nodeDetailState.data = Object.assign({}, nodeDetailState.data || {}, { streamed_output: payload.streamed_output || "" });
+      renderNodeDetail(nodeDetailState.data);
+    }
+    renderAgentTrace();
+    return;
+  } else if (type.indexOf("agent_node.") === 0) {
+    key = taskId + ":node:" + (payload.node_id || "unknown");
+    state = type.endsWith("finished") ? (payload.state || "succeeded") : "running";
+    label = (payload.role || "agent") + " · " + (payload.node_id || "unknown");
+    meta = state === "succeeded" ? "节点成功" : state === "failed" ? "节点失败" : "节点运行中";
+    if (agentTrace.graphMode) return;
+  } else if (type.indexOf("model_call.") === 0) {
+    if (agentTrace.graphMode) return;
+    if (payload.agent_node_id) {
+      key = taskId + ":node:" + payload.agent_node_id;
+      const previous = agentTrace.nodes[key] || {};
+      const calls = (previous.modelCalls || []).slice();
+      calls.push({
+        call_ordinal: payload.call_ordinal || null,
+        manifest_id: payload.manifest_id || null,
+        model: payload.model || null,
+        messages: payload.messages || [],
+        tools: payload.tools || [],
+        output: payload.output || "",
+        state: type.endsWith("finished") ? "succeeded" : "running"
+      });
+      agentTrace.nodes[key] = Object.assign({}, previous, {
+        sequence: sequence || 0, taskId: taskId, nodeId: payload.agent_node_id,
+        state: previous.state || "running", label: previous.label || ((payload.agent_role || "agent") + " · " + payload.agent_node_id),
+        meta: previous.meta || "节点运行中", modelCalls: calls,
+        input: previous.input || (payload.messages || null),
+        output: payload.output || previous.output || ""
+      });
+      renderAgentTrace();
+      return;
+    }
+    key = taskId + ":model:" + (payload.call_ordinal || 0);
+    state = type.endsWith("finished") ? "succeeded" : "running";
+    label = "模型调用 #" + (payload.call_ordinal || "?") + (payload.model ? " · " + payload.model : "");
+    meta = type.endsWith("finished") ? "完成 · " + (payload.latency_ms || 0) + " ms · " + ((payload.usage || {}).total_tokens || 0) + " tokens" : "请求中";
+  } else {
+    if (agentTrace.graphMode) return;
+    key = taskId + ":tool:" + (payload.tool || "unknown") + ":" + (payload.args_hash || sequence);
+    state = type.endsWith("finished") ? (payload.ok === false ? "failed" : "succeeded") : "running";
+    label = "工具 · " + (payload.tool || "unknown");
+    meta = type.endsWith("finished") ? (payload.ok === false ? "失败" : "完成") + (payload.duration_ms ? " · " + payload.duration_ms + " ms" : "") : "运行中";
+  }
+  agentTrace.nodes[key] = Object.assign({}, agentTrace.nodes[key] || {}, {
+    sequence: sequence || 0, taskId: taskId, state: state, label: label,
+    nodeId: payload.node_id || (agentTrace.nodes[key] || {}).nodeId,
+    meta: meta, nodeRunId: payload.node_run_id || (agentTrace.nodes[key] || {}).nodeRunId,
+    input: payload.input_artifact || payload.input || (agentTrace.nodes[key] || {}).input || null,
+    output: payload.final_output || payload.artifact || payload.output || (agentTrace.nodes[key] || {}).output || "",
+    error: payload.error || (agentTrace.nodes[key] || {}).error || null,
+    streamedOutput: (agentTrace.nodes[key] || {}).streamedOutput || ""
+  });
+  renderAgentTrace();
+}
+
+function renderNodeDetail(detail) {
+  const body = document.getElementById('node-detail-body');
+  const title = document.getElementById('node-detail-title');
+  if (!body || !detail) return;
+  if (title) title.textContent = (detail.label || detail.node_id || 'Node Run') + ' · ' + (detail.state || 'idle');
+  const replayButton = document.getElementById('node-debug-replay-button');
+  if (replayButton) replayButton.hidden = !nodeDetailState.nodeRunId;
+  const view = Object.assign({}, detail);
+  if (nodeDetailState.debugReplay) view.debug_replay = nodeDetailState.debugReplay;
+  body.textContent = JSON.stringify(view, null, 2);
+}
+
+async function openNodeDetail(nodeRunId, traceItem) {
+  const fallback = traceItem ? {
+    node_run_id: nodeRunId || null,
+    node_id: traceItem.nodeId || null,
+    label: traceItem.label || traceItem.nodeId || 'Node Run',
+    state: traceItem.state || 'idle',
+    input: traceItem.input || null,
+    output: traceItem.output || traceItem.streamedOutput || '',
+    error: traceItem.error || null,
+    meta: traceItem.meta || '',
+    detail_source: nodeRunId ? 'live trace' : 'live trace (node run not created yet)'
+  } : null;
+  nodeDetailState = { nodeRunId: nodeRunId || null, data: fallback, debugReplay: null };
+  const modal = document.getElementById('node-detail-modal');
+  const body = document.getElementById('node-detail-body');
+  if (modal) modal.hidden = false;
+  if (fallback) renderNodeDetail(fallback);
+  if (!nodeRunId) {
+    if (!traceItem || !traceItem.taskId || !traceItem.nodeId) return;
+    if (body) body.textContent = 'Loading trace details…';
+    try {
+      const query = '?task_id=' + encodeURIComponent(traceItem.taskId) + '&node_id=' + encodeURIComponent(traceItem.nodeId);
+      const response = await fetch(apiUrl('/v1/session/agent-traces' + query), { cache: 'no-store' });
+      const data = await response.json();
+      if (!response.ok || !data.agent_trace) throw new Error(data.message || data.error || 'Agent trace unavailable');
+      nodeDetailState.data = data.agent_trace;
+      renderNodeDetail(data.agent_trace);
+    } catch (error) {
+      if (fallback) renderNodeDetail(fallback);
+      else if (body) body.textContent = error.message || 'Agent trace unavailable';
+    }
+    return;
+  }
+  if (body) body.textContent = 'Loading…';
+  try {
+    const response = await fetch(apiUrl('/v1/studio/node-runs/' + encodeURIComponent(nodeRunId)), { cache: 'no-store' });
+    const data = await response.json();
+    if (!response.ok || !data.node_run) throw new Error(data.message || data.error || 'Node detail unavailable');
+    nodeDetailState.data = data.node_run;
+    renderNodeDetail(data.node_run);
+  } catch (error) {
+    if (body) body.textContent = error.message || 'Node detail unavailable';
+  }
+}
+
+async function runDebugReplay() {
+  if (!nodeDetailState.nodeRunId) return;
+  const button = document.getElementById('node-debug-replay-button');
+  if (button) { button.disabled = true; button.textContent = 'Replaying…'; }
+  try {
+    const response = await fetch(apiUrl('/v1/studio/node-runs/' + encodeURIComponent(nodeDetailState.nodeRunId) + '/replay'), {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ idempotency_key: 'debug-replay-' + nodeDetailState.nodeRunId + '-' + Date.now() })
+    });
+    const data = await response.json();
+    if (!response.ok || !data.debug_replay) throw new Error(data.message || data.error || 'Debug Replay unavailable');
+    nodeDetailState.debugReplay = data.debug_replay;
+    renderNodeDetail(nodeDetailState.data);
+  } catch (error) {
+    const body = document.getElementById('node-detail-body');
+    if (body) body.textContent = error.message || 'Debug Replay unavailable';
+  } finally {
+    if (button) { button.disabled = false; button.textContent = 'Debug Replay'; }
+  }
+}
+
+function closeNodeDetail(event) {
+  if (event && event.target && event.target.id !== 'node-detail-modal') return;
+  const modal = document.getElementById('node-detail-modal');
+  if (modal) modal.hidden = true;
+  nodeDetailState = { nodeRunId: null, data: null, debugReplay: null };
+}
+
+async function retryGraphRun() {
+  const button = document.getElementById('graph-retry-button');
+  if (button) button.disabled = true;
+  try {
+    const snapshotResponse = await fetch(apiUrl('/v1/studio/graph-runs'), { cache: 'no-store' });
+    const snapshot = await snapshotResponse.json();
+    const run = snapshot.most_recent || snapshot.current;
+    if (!snapshotResponse.ok || !run || run.status !== 'failed') throw new Error('No failed Graph Run is available to retry.');
+    const response = await fetch(apiUrl('/v1/studio/graph-runs/' + encodeURIComponent(run.graph_run_id) + '/retry'), {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ idempotency_key: 'graph-retry-' + run.graph_run_id + '-' + Date.now() })
+    });
+    const data = await response.json();
+    if (!response.ok || !data.task_id) throw new Error(data.message || data.error || 'Graph retry unavailable');
+    graphRunState = { graphRunId: null, status: 'running' };
+    renderAgentTrace();
+    refreshSubmittedTurn(data.task_id);
+    showToast('Graph retry started with the latest saved configuration.');
+  } catch (error) {
+    showError(error.message || 'Graph retry unavailable');
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
+
+function apiUrl(path) {
+  return API_BASE + path;
+}
+
+function setRuntimeConfigStatus(msg) {
+  setText('runtime-config-status', msg || '运行时配置状态: —');
+}
+
+function setRuntimeTaskStatus(task) {
+  runtimeTask = task && (task.task_id || (task.status && RUNTIME_ACTIVE_STATUSES.has(task.status))) ? task : null;
+  const status = task && task.status ? task.status : 'idle';
+  const taskId = task && task.task_id ? task.task_id : '—';
+  const meta = [];
+  if (task && task.error) meta.push('错误: ' + task.error);
+  if (task && task.message) meta.push('说明: ' + task.message);
+  if (task && typeof task.retryable === 'boolean') meta.push(task.retryable ? '可重试' : '不可重试');
+  setText('runtime-task-status', '任务: ' + status);
+  setText('runtime-task-id', 'Task ID: ' + taskId);
+  setText('runtime-task-meta', meta.join(' · '));
+  const cancel = document.getElementById('runtime-cancel-button');
+  if (cancel) {
+    cancel.hidden = !task || !task.task_id || !RUNTIME_ACTIVE_STATUSES.has(status);
+    cancel.disabled = false;
+  }
+  updateRuntimeControls();
+}
+
+function updateRuntimeControls() {
+  const busy = runtimeTask && RUNTIME_ACTIVE_STATUSES.has(runtimeTask.status);
+  document.querySelectorAll('.btn-submit, .btn-reroll').forEach(function(btn) {
+    btn.disabled = !!busy;
+  });
+  document.querySelectorAll('#session-select, .session-tool').forEach(function(control) {
+    control.disabled = !!busy;
+  });
+  const remove = document.getElementById('session-delete');
+  if (remove && !busy) remove.disabled = sessionState.sessions.length <= 1;
+}
+
+function renderSessions() {
+  const select = document.getElementById('session-select');
+  if (!select) return;
+  select.innerHTML = '';
+  sessionState.sessions.forEach(function(session) {
+    const option = document.createElement('option');
+    option.value = session.id;
+    option.textContent = session.title + ' · Rev ' + Number(session.active_revision || 0);
+    option.selected = session.id === sessionState.active_session_id;
+    select.appendChild(option);
+  });
+  const current = sessionState.sessions.find(function(item) {
+    return item.id === sessionState.active_session_id;
+  });
+  setText('session-meta', current
+    ? '当前: ' + current.title + ' · Revision ' + Number(current.active_revision || 0)
+    : '暂无存档');
+  updateRuntimeControls();
+}
+
+function applySessionsPayload(data) {
+  sessionState = {
+    active_session_id: data.active_session_id || null,
+    sessions: Array.isArray(data.sessions) ? data.sessions : []
+  };
+  renderSessions();
+}
+
+async function loadSessions() {
+  try {
+    const response = await fetch(apiUrl('/v1/session/sessions'), { cache: 'no-store' });
+    const data = await response.json();
+    if (!response.ok || !data.ok) throw new Error(data.message || data.error || '读取失败');
+    applySessionsPayload(data);
+  } catch (error) {
+    setText('session-meta', '存档读取失败: ' + (error.message || '未知错误'));
+  }
+}
+
+function activateSessionSnapshot(snapshot) {
+  if (!snapshot) return;
+  runtimeSessionId = snapshot.session_id || sessionState.active_session_id;
+  runtimeLastSequence = Number(snapshot.last_event_sequence || 0);
+  sessionStorage.setItem(RUNTIME_SESSION_KEY, runtimeSessionId || '');
+  sessionStorage.setItem(RUNTIME_AFTER_KEY, String(runtimeLastSequence));
+  clearStreamingPreview();
+  agentTrace = { nodes: {}, events: [], graphMode: false };
+  hydrateGraphRun(snapshot.graph_runs);
+  renderAgentTrace();
+  setRuntimeTaskStatus(snapshot.current_task || null);
+  if (runtimeEventReconnectTimer) {
+    clearTimeout(runtimeEventReconnectTimer);
+    runtimeEventReconnectTimer = null;
+  }
+  connectRuntimeEvents();
+  reloadData();
+}
+
+async function createSession() {
+  const title = window.prompt('新存档名称', '新存档');
+  if (title === null) return;
+  await mutateSession('/v1/session/sessions', 'POST', { title: title }, '已创建新存档');
+}
+
+async function switchSession(sessionId) {
+  if (!sessionId || sessionId === sessionState.active_session_id) return;
+  await mutateSession('/v1/session/sessions/switch', 'POST', { session_id: sessionId }, '已切换存档');
+}
+
+async function renameSession() {
+  const current = sessionState.sessions.find(function(item) {
+    return item.id === sessionState.active_session_id;
+  });
+  if (!current) return;
+  const title = window.prompt('存档名称', current.title);
+  if (title === null) return;
+  await mutateSession('/v1/session/sessions/rename', 'POST', {
+    session_id: current.id, title: title
+  }, '存档已重命名', false);
+}
+
+async function deleteSession() {
+  const current = sessionState.sessions.find(function(item) {
+    return item.id === sessionState.active_session_id;
+  });
+  if (!current || sessionState.sessions.length <= 1) return;
+  if (!window.confirm('删除存档“' + current.title + '”？此操作不可撤销。')) return;
+  await mutateSession('/v1/session/sessions/' + encodeURIComponent(current.id), 'DELETE', null, '存档已删除');
+}
+
+async function mutateSession(path, method, body, successMessage, activate = true) {
+  try {
+    const options = { method: method, headers: { 'Content-Type': 'application/json' } };
+    if (body !== null) options.body = JSON.stringify(body);
+    const response = await fetch(apiUrl(path), options);
+    const data = await response.json();
+    if (!response.ok || !data.ok) throw new Error(data.message || data.error || '操作失败');
+    applySessionsPayload(data);
+    if (activate && data.snapshot) {
+      activateSessionSnapshot(data.snapshot);
+      closeSidebar();
+    }
+    showToast(successMessage);
+  } catch (error) {
+    showError('存档操作失败: ' + (error.message || '未知错误'));
+    await loadSessions();
+  }
+}
+
+function setSidebarOpen(open) {
+  document.body.classList.toggle('sidebar-open', !!open);
+  const toggle = document.getElementById('sidebar-toggle');
+  if (toggle) {
+    toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+    toggle.title = open ? '关闭工具面板' : '打开工具面板';
+    toggle.setAttribute('aria-label', toggle.title);
+  }
+}
+
+function toggleSidebar() {
+  setSidebarOpen(!document.body.classList.contains('sidebar-open'));
+}
+
+function closeSidebar() {
+  setSidebarOpen(false);
+}
+
+document.addEventListener('keydown', function(event) {
+  if (event.key === 'Escape') closeSidebar();
+});
+
+function runtimeEventPayload(event) {
+  try { return JSON.parse(event.data || '{}'); } catch (e) { return {}; }
+}
+
+function applyRuntimeEvent(event) {
+  const payload = runtimeEventPayload(event);
+  const sequence = Number(payload.sequence || event.lastEventId || 0);
+  if (sequence && sequence <= runtimeLastSequence) return;
+  if (sequence) {
+    runtimeLastSequence = sequence;
+    sessionStorage.setItem(RUNTIME_AFTER_KEY, String(sequence));
+  }
+  if (event.type.indexOf('graph.') === 0) {
+    recordAgentTrace(event.type, payload, sequence);
+  }
+  if (event.type === 'narrative.preview.delta') {
+    if (!streamingPreview.taskId || streamingPreview.taskId === payload.task_id) {
+      streamingPreview.taskId = payload.task_id || streamingPreview.taskId;
+      streamingPreview.text += payload.preview || '';
+      renderStreamingPreview();
+    }
+  }
+  if (event.type.indexOf('agent_node.') === 0 || event.type.indexOf('model_call.') === 0 || event.type.indexOf('tool_run.') === 0) {
+    recordAgentTrace(event.type, payload, sequence);
+  }
+  if (payload.task_id && (!runtimeTask || runtimeTask.task_id === payload.task_id || RUNTIME_TERMINAL_EVENT_TYPES.has(event.type))) {
+    const next = Object.assign({}, runtimeTask || {}, payload, { status: payload.status || event.type.replace(/^task\./, '') });
+    setRuntimeTaskStatus(next);
+  }
+  if (RUNTIME_TERMINAL_EVENT_TYPES.has(event.type) || event.type === 'session.opening_switched') {
+    clearStreamingPreview(payload.task_id);
+    if (event.type === 'session.opening_switched') agentTrace = { nodes: {}, events: [] };
+    renderAgentTrace();
+    reloadData();
+    checkBridge();
+  }
+}
+
+function scheduleRuntimeReconnect() {
+  if (runtimeEventReconnectTimer) return;
+  runtimeEventReconnectTimer = setTimeout(function() {
+    runtimeEventReconnectTimer = null;
+    connectRuntimeEvents();
+  }, 1000);
+}
+
+function connectRuntimeEvents() {
+  if (!window.EventSource) return;
+  if (runtimeEventSource) runtimeEventSource.close();
+  const url = apiUrl('/v1/session/events/stream?after=' + encodeURIComponent(runtimeLastSequence));
+  runtimeEventSource = new EventSource(url);
+  RUNTIME_EVENT_TYPES.forEach(function(type) {
+    runtimeEventSource.addEventListener(type, applyRuntimeEvent);
+  });
+  runtimeEventSource.onerror = function() {
+    runtimeEventSource.close();
+    runtimeEventSource = null;
+    scheduleRuntimeReconnect();
+  };
+}
+
+async function hydrateRuntimeSnapshot() {
+  try {
+    const r = await fetch(apiUrl('/v1/session/snapshot'), { cache: 'no-store' });
+    if (!r.ok) throw new Error('snapshot unavailable');
+    const snapshot = await r.json();
+    const seq = Number(snapshot.last_event_sequence || 0);
+    if (snapshot.session_id && snapshot.session_id !== runtimeSessionId) {
+      clearStreamingPreview();
+      agentTrace = { nodes: {}, events: [], graphMode: false };
+      renderAgentTrace();
+      runtimeSessionId = snapshot.session_id;
+      runtimeLastSequence = seq;
+      sessionStorage.setItem(RUNTIME_SESSION_KEY, runtimeSessionId);
+      sessionStorage.setItem(RUNTIME_AFTER_KEY, String(seq));
+    } else if (seq > runtimeLastSequence) {
+      runtimeLastSequence = seq;
+      sessionStorage.setItem(RUNTIME_AFTER_KEY, String(seq));
+    }
+    setRuntimeTaskStatus(snapshot.current_task || null);
+    hydrateGraphRun(snapshot.graph_runs);
+  } catch (e) {
+    // Legacy /api/session_status polling remains the projection fallback.
+  }
+}
+
+function hydrateGraphRun(graphRuns) {
+  const run = graphRuns && (graphRuns.current || graphRuns.most_recent);
+  if (!run || !Array.isArray(run.nodes)) return;
+  agentTrace.graphMode = true;
+  graphRunState = { graphRunId: run.graph_run_id || run.run_id || null, status: run.status || null };
+  agentTrace.nodes = {};
+  run.nodes.forEach(function(node, index) {
+    let state = node.state || 'idle';
+    if (!["idle", "running", "succeeded", "failed"].includes(state)) state = "idle";
+    const key = (run.task_id || 'runtime') + ':node:' + (node.node_id || index);
+    agentTrace.nodes[key] = {
+      sequence: 0, order: node.order || index, taskId: run.task_id || 'runtime', nodeRunId: node.node_run_id, nodeId: node.node_id,
+      state: state, label: node.label || node.node_id || 'node',
+      meta: state === 'running' ? '节点运行中' : state === 'succeeded' ? '节点成功' : state === 'failed' ? '节点失败' : '节点未运行',
+      input: node.input_artifact || node.input || null,
+      output: node.final_output || node.artifact || node.streamed_output || '',
+      error: node.error || null,
+      streamedOutput: node.streamed_output || ''
+    };
+  });
+  renderAgentTrace();
+}
+
+async function cancelRuntimeTask() {
+  if (!runtimeTask || !runtimeTask.task_id) return;
+  const button = document.getElementById('runtime-cancel-button');
+  if (button) button.disabled = true;
+  try {
+    const r = await fetch(apiUrl('/v1/session/commands/cancel'), {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ task_id: runtimeTask.task_id })
+    });
+    const data = await r.json();
+    if (!r.ok || !data.ok) throw new Error(data.message || data.error || '取消失败');
+    setRuntimeTaskStatus(Object.assign({}, runtimeTask, data));
+    showToast('已请求取消当前任务');
+  } catch (e) {
+    if (button) button.disabled = false;
+    showError('取消任务失败: ' + (e.message || '未知错误'));
+  }
+}
+
+// ═══ 酒馆桥接：卡脚本 → 我们前端 ═══
+// 卡内嵌脚本使用 SillyTavern 标准元素 ID:
+//   #send_textarea (输入框)  #send_but (发送按钮)
+// 这些隐藏元素接收卡脚本的写入/点击，同步到我们的 #user-input / doSubmit()
+$(function() {
+  var $st = $('#send_textarea');
+  var $ui = $('#user-input');
+  $st.on('input change', function() {
+    $ui.val($st.val());
+  });
+  $('#send_but').on('click', function() {
+    $ui.val($st.val() || $ui.val());
+    doSubmit();
+  });
+});
+
+async function doReroll() {
+  const btn = document.querySelector('.btn-reroll');
+  if (btn) { btn.disabled = true; btn.textContent = '⏳'; }
+  try {
+    const currentSession = sessionState.sessions.find(function(item) {
+      return item.id === sessionState.active_session_id;
+    });
+    const r = await fetch(apiUrl('/v1/session/commands/reroll'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        revision: Number((currentSession && currentSession.active_revision) || 0),
+        idempotency_key: 'reroll-' + Date.now() + '-' + Math.random().toString(16).slice(2)
+      })
+    });
+    const data = await r.json();
+    if (data.ok) {
+      setRuntimeTaskStatus({
+        status: data.status || 'queued',
+        task_id: data.task_id || null,
+        error: data.error,
+        retryable: data.retryable,
+        message: data.message
+      });
+      showToast('🔄 已触发重roll，等待重新生成...');
+      // Poll more frequently for a bit
+      let tries = 0;
+      const check = setInterval(function() {
+        reloadData();
+        tries++;
+        if (tries > 20) clearInterval(check); // stop after ~60s
+      }, 2500);
+      setTimeout(function() { clearInterval(check); }, 60000);
+    } else {
+      showError('重roll失败: ' + (data.error || '未知错误'));
+    }
+  } catch(e) {
+    showError('无法连接服务器');
+  }
+  if (!runtimeTask || !RUNTIME_ACTIVE_STATUSES.has(runtimeTask.status)) {
+    if (btn) { btn.disabled = false; btn.textContent = '🔄'; }
+  }
+}
+
+async function loadOpenings() {
+  try {
+    const r = await fetch(apiUrl('/v1/session/openings'))
+    if (!r.ok) return;
+    const openings = await r.json();
+    const sel = document.getElementById('set-opening');
+    sel.innerHTML = openings.map(function(o) {
+      return '<option value=\"' + o.id + '\">' + o.label + '</option>';
+    }).join('');
+    if (openings.length <= 1) {
+      document.getElementById('openings-card').style.display = 'none';
+    }
+  } catch(e) { /* server not ready */ }
+}
+
+async function doSwitchOpening() {
+  const sel = document.getElementById('set-opening');
+  const openingId = parseInt(sel.value);
+  if (isNaN(openingId)) return;
+  try {
+    const r = await fetch(apiUrl('/v1/session/openings/switch'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ opening_id: openingId })
+    });
+    const data = await r.json();
+    if (data.ok) {
+      showToast('✓ 已切换开场白');
+      reloadData();
+    } else {
+      showError('切换失败: ' + (data.error || '未知错误'));
+    }
+  } catch(e) {
+    showError('无法连接服务器');
+  }
+}
+
+async function doDeleteFrom(index) {
+  try {
+    const r = await fetch(apiUrl('/v1/session/turns/delete'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ from_index: index })
+    });
+    const data = await r.json();
+    if (data.ok) {
+      showToast('✓ 已回退，可重新输入');
+      reloadData();
+    } else {
+      showError('回退失败: ' + (data.error || '未知错误'));
+    }
+  } catch(e) {
+    showError('无法连接服务器');
+  }
+}
+
+async function checkBridge() {
+  try {
+    const r = await fetch(apiUrl('/v1/session/status'));
+    if (!r.ok) throw new Error('offline');
+    const data = await r.json();
+    bridgeOk = true;
+    const snapshot = data.snapshot || {};
+    setRuntimeConfigStatus('运行时配置状态: ' + (data.status || 'idle') + ' | Rev ' + (snapshot.active_revision || 0));
+    setRuntimeTaskStatus(snapshot.current_task || { status: data.status, task_id: data.task_id });
+  } catch(e) {
+    bridgeOk = false;
+    setRuntimeConfigStatus('运行时配置状态: 未连接');
+    setRuntimeTaskStatus(null);
+  }
+  document.getElementById('conn-dot').className = bridgeOk ? 'dot green' : 'dot red';
+  document.getElementById('conn-dot').title = bridgeOk ? '服务器已连接' : '服务器未连接 — 请启动当前运行时服务';
+}
+
+function setSelectOptions(selectId, items, selectedId, emptyLabel) {
+  const sel = document.getElementById(selectId);
+  if (!sel) return;
+  const safeItems = items || [];
+  const options = ['<option value="">' + (emptyLabel || '未选择') + '</option>'];
+  safeItems.forEach(function(item) {
+    const label = item.name || item.label || item.id;
+    options.push('<option value="' + item.id + '">' + label + ' (' + item.id + ')</option>');
+  });
+  sel.innerHTML = options.join('');
+  sel.value = selectedId || '';
+}
+
+async function loadRuntimeConfigPanel() {
+  try {
+    const r = await fetch(apiUrl('/v1/session/runtime/config'));
+    if (!r.ok) throw new Error('unavailable');
+    const data = await r.json();
+    runtimeConfigState = data;
+    setSelectOptions('runtime-graph-select', data.graphs, data.selected && data.selected.graph_id, '未选择 Graph');
+    setRuntimeConfigStatus('运行时配置状态: 配置接口已就绪');
+  } catch(e) {
+    runtimeConfigState = { presets: [], graphs: [], selected: { preset_id: null, graph_id: null } };
+    setSelectOptions('runtime-graph-select', [], '', 'Graph 接口不可用');
+    setRuntimeConfigStatus('运行时配置状态: 配置接口不可用');
+  }
+}
+
+async function applyRuntimeConfigSelection() {
+  const graphId = document.getElementById('runtime-graph-select').value || null;
+  try {
+    const r = await fetch(apiUrl('/v1/session/runtime/config'), {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ graph_id: graphId })
+    });
+    const data = await r.json();
+    if (!r.ok || !data.ok) throw Object.assign(new Error(data.message || data.error || 'save failed'), { serverData: data });
+    showToast('✓ Runtime 选择已保存，改动将应用于下一任务');
+    setRuntimeTaskStatus((data.snapshot || {}).current_task || null);
+    await loadRuntimeConfigPanel();
+  } catch(e) {
+    showError('应用 Runtime 选择失败: ' + (e.message || '未知错误') + (e.serverData && e.serverData.path ? ' [' + e.serverData.path + ']' : ''));
+  }
+}
+
+async function doSubmit() {
+  console.log('[RP-Frontend] doSubmit called');
+  const input = document.getElementById('user-input').value.trim();
+  const charNameEl = document.querySelector('#input-panel input[id*="char-name"]');
+  const charName = charNameEl ? charNameEl.value.trim() : '';
+  if (!input) return;
+
+  const btn = document.querySelector('.btn-submit');
+  btn.disabled = true; btn.textContent = '...';
+
+  try {
+    const r = await fetch(apiUrl('/v1/session/commands/submit'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        text: input,
+        charName: charName,
+        idempotency_key: 'submit-' + Date.now() + '-' + Math.random().toString(16).slice(2)
+      })
+    });
+    const data = await r.json();
+    if (data.ok) {
+      document.getElementById('user-input').value = '';
+      const toast = document.getElementById('toast');
+      toast.textContent = '✓ 已发送，等待运行时回应...';
+      toast.style.background = 'var(--accent2)';
+      toast.classList.add('show');
+      document.getElementById('last-action').textContent = '上次提交: ' + new Date().toLocaleTimeString();
+      setRuntimeTaskStatus({ status: data.status || 'queued', task_id: data.task_id || null, error: data.error, retryable: data.retryable, message: data.message });
+      reloadData();
+      refreshSubmittedTurn(data.task_id || null);
+      setTimeout(() => toast.classList.remove('show'), 2500);
+    } else {
+      showError('发送失败: ' + (data.error || '未知错误'));
+    }
+  } catch(e) {
+    showError('无法连接服务器 — 请确保当前运行时服务已启动');
+  }
+  if (!runtimeTask || !RUNTIME_ACTIVE_STATUSES.has(runtimeTask.status)) {
+    btn.disabled = false; btn.textContent = '▶ 提交';
+  }
+}
+
+function refreshSubmittedTurn(taskId) {
+  let attempts = 0;
+  const timer = setInterval(async function() {
+    attempts += 1;
+    try {
+      const response = await fetch(apiUrl('/v1/session/snapshot'), { cache: 'no-store' });
+      const snapshot = await response.json();
+      if (!response.ok) return;
+      const task = snapshot.current_task || null;
+      setRuntimeTaskStatus(task);
+      hydrateGraphRun(snapshot.graph_runs);
+      if (!taskId || !task || task.task_id === taskId) reloadData();
+      if (!task || !RUNTIME_ACTIVE_STATUSES.has(task.status) || attempts >= 80) {
+        clearInterval(timer);
+      }
+    } catch (error) {
+      if (attempts >= 80) clearInterval(timer);
+    }
+  }, 750);
+}
+
+function showError(msg) {
+  const toast = document.getElementById('toast');
+  toast.textContent = '✗ ' + msg;
+  toast.style.background = '#b0624a';
+  toast.classList.add('show');
+  setTimeout(() => { toast.classList.remove('show'); toast.style.background = 'var(--accent2)'; }, 3000);
+}
+
+function showToast(msg) {
+  const toast = document.getElementById('toast');
+  toast.textContent = msg;
+  toast.style.background = 'var(--accent2)';
+  toast.classList.add('show');
+  setTimeout(() => toast.classList.remove('show'), 3000);
+}
+
+function doClear() {
+  document.getElementById('user-input').value = '';
+  document.getElementById('user-input').focus();
+}
+
+document.getElementById('user-input').addEventListener('keydown', function(e) {
+  if (e.ctrlKey && e.key === 'Enter') { e.preventDefault(); doSubmit(); }
+});
+
+function updateTokenCount() {
+  var el = document.getElementById('tb-tokens');
+  if (!el) return;
+  var turnTokens = window.TURN_TOKENS || {};
+  var startupCost = window.STARTUP_COST || {};
+  var keys = Object.keys(turnTokens);
+  var parts = [];
+
+  // Startup cost (one-time import/setup — persistent line item)
+  var startupTotal = startupCost.total || 0;
+  if (startupTotal > 0) {
+    parts.push('启动 ' + formatNum(startupTotal));
+  }
+
+  if (keys.length > 0) {
+    var last = turnTokens[keys[keys.length - 1]];
+    // Skip per-round display for opening turn — its tokens are the startup cost
+    var isOpening = (keys.length === 1 && last.is_startup);
+    if (!isOpening) {
+      var roundTotal = last.round_total || last.total || 0;
+      if (roundTotal > 0) {
+        parts.push('本轮 ' + formatNum(roundTotal));
+      }
+    }
+    // Cache hit rate (prefer latest round, fall back to startup)
+    var cacheHit = last.cache_hit || startupCost.cache_hit || 0;
+    if (cacheHit > 0) {
+      parts.push('缓存 ' + cacheHit.toFixed(1) + '%');
+    }
+  } else if (startupCost.cache_hit && startupCost.cache_hit > 0) {
+    parts.push('缓存 ' + startupCost.cache_hit.toFixed(1) + '%');
+  }
+
+  // Cumulative total
+  var cumulativeTotal = 0;
+  if (keys.length > 0) {
+    var last = turnTokens[keys[keys.length - 1]];
+    cumulativeTotal = last.cumulative_total || 0;
+  }
+  if (!cumulativeTotal) {
+    cumulativeTotal = (window.STATE && window.STATE.totalTokens) ? window.STATE.totalTokens : 0;
+  }
+  if (cumulativeTotal > 0) {
+    parts.push('累计 ' + formatNum(cumulativeTotal));
+  }
+  el.textContent = parts.length > 0 ? 'Token: ' + parts.join(' | ') : 'Token: —';
+}
+
+// ═══ MVU Variables Panel ═══
+
+function renderMvuVars() {
+  // MVU variable tree now rendered server-side in inline beautify panel
+  var card = document.getElementById('mvu-card');
+  if (card) card.style.display = 'none';
+}
+
+function _renderMvuTree(data, delta, pathPrefix) {
+  if (data === null || data === undefined) return '<span class="mvu-null">null</span>';
+
+  var type = Array.isArray(data) ? 'array' : typeof data;
+
+  if (type === 'string' || type === 'number' || type === 'boolean') {
+    var valClass = type === 'string' ? 'mvu-str' : (type === 'number' ? 'mvu-num' : 'mvu-bool');
+    var fullPath = pathPrefix;
+    var isDelta = delta.hasOwnProperty(fullPath) || delta.hasOwnProperty(fullPath.replace(/^\./, ''));
+    return '<span class="' + valClass + (isDelta ? ' mvu-delta' : '') + '">' + String(data) + '</span>';
+  }
+
+  if (type === 'object') {
+    var keys = Object.keys(data);
+    if (keys.length === 0) return '<span class="mvu-empty">(empty)</span>';
+
+    var html = '<details' + (keys.length <= 3 ? ' open' : '') + '><summary>' + (Array.isArray(data) ? '[' + keys.length + ']' : '{' + keys.length + ' keys}') + '</summary>';
+    for (var i = 0; i < keys.length; i++) {
+      var k = keys[i];
+      if (k.indexOf('$') === 0) continue; // Skip $meta / $internal
+      var v = data[k];
+      var childPath = pathPrefix + '.' + k;
+      var entryClass = '';
+      if (delta) {
+        for (var dk in delta) {
+          if (dk === childPath || dk.indexOf(childPath + '.') === 0 || dk.indexOf(childPath + '[') === 0) {
+            entryClass = ' mvu-delta';
+            break;
+          }
+        }
+      }
+      html += '<div class="mvu-entry' + entryClass + '"><span class="mvu-key">' + k + ':</span> ';
+      if (v !== null && (typeof v === 'object')) {
+        html += _renderMvuTree(v, delta, childPath);
+      } else {
+        html += _renderMvuTree(v, delta, childPath);
+      }
+      html += '</div>';
+    }
+    html += '</details>';
+    return html;
+  }
+
+  return '<span>' + String(data) + '</span>';
+}
+
+function formatNum(n) {
+  if (n >= 1000) return (n / 1000).toFixed(1) + 'k';
+  return String(n);
+}
+
+// ═══ Generic Status Panel (driven by card's initvar) ═══
+// Detects initvar structure and renders appropriately:
+//   - Tabbed sections for objects containing similar sub-objects (e.g., NPCs)
+//   - Key-value lists for flat/simple objects
+//   - Portraits if BEAUTIFY_PORTRAITS is populated for matching keys
+
+function renderBeautify() {
+  // Beautify dashboard now rendered server-side in inline panel
+  var card = document.getElementById('beautify-card');
+  if (card) card.style.display = 'none';
+  return;
+
+  // ── Discover tabs from variable structure ──
+  var topKeys = Object.keys(vars);
+  // Group: flat objects/scalars → "概况" tab; objects-with-subobjects → individual tabs
+  var overviewItems = [];
+  var subTabs = []; // [{key, subKeys, isRecord: bool}]
+  for (var i = 0; i < topKeys.length; i++) {
+    var k = topKeys[i];
+    var v = vars[k];
+    if (v && typeof v === 'object' && !Array.isArray(v)) {
+      var childKeys = Object.keys(v);
+      var hasNestedObj = false;
+      for (var ci = 0; ci < childKeys.length; ci++) {
+        var cv = v[childKeys[ci]];
+        if (cv && typeof cv === 'object' && !Array.isArray(cv)) { hasNestedObj = true; break; }
+      }
+      if (hasNestedObj && childKeys.length > 0) {
+        // Object containing sub-objects → individual tabs per sub-key
+        for (var ci2 = 0; ci2 < childKeys.length; ci2++) {
+          subTabs.push({topKey: k, subKey: childKeys[ci2], parent: k});
+        }
+      } else {
+        // Flat object (or empty record) → overview + its own tab
+        subTabs.push({topKey: k, subKey: null, parent: null});
+      }
+    } else {
+      // Scalar/array at top level → overview
+      overviewItems.push(k);
+    }
+  }
+
+  // Active tab persistence
+  if (!window._beautifyActiveTab) window._beautifyActiveTab = '_overview';
+  var activeTab = window._beautifyActiveTab;
+  // Validate active tab still exists
+  var validTabs = ['_overview'];
+  for (var ti = 0; ti < subTabs.length; ti++) {
+    validTabs.push(subTabs[ti].topKey + (subTabs[ti].subKey ? '|||' + subTabs[ti].subKey : ''));
+  }
+  if (validTabs.indexOf(activeTab) < 0) {
+    activeTab = '_overview';
+    window._beautifyActiveTab = '_overview';
+  }
+
+  var S = window.STATE || {};
+  var beautifyData = window.BEAUTIFY_DATA || {};
+
+  // ── Dynamic title ──
+  var panelTitle = beautifyData.panel_title || (S.world ? S.world + ' · 状态栏' : 'MVU · 状态栏');
+  var panelKicker = beautifyData.panel_kicker || '变量追踪 · MVU';
+
+  var html = '<div class="beautify-dashboard">';
+
+  // ── Header ──
+  html += '<div class="beautify-header">';
+  html += '<div class="beautify-header-kicker">' + escHtml(panelKicker) + '</div>';
+  html += '<div class="beautify-header-title">' + escHtml(panelTitle) + '</div>';
+  html += '<div class="beautify-meta-chips">';
+  html += '<span class="beautify-meta-chip">' + escHtml(S.time || '—') + '</span>';
+  html += '<span class="beautify-meta-chip">' + escHtml(S.world || '—') + '</span>';
+  html += '</div></div>';
+
+  // ── Tabs ──
+  html += '<div class="beautify-tabs">';
+  html += '<div class="beautify-tab-btn' + (activeTab === '_overview' ? ' active' : '') + '" data-tab="_overview">概况</div>';
+  for (var ti2 = 0; ti2 < subTabs.length; ti2++) {
+    var st = subTabs[ti2];
+    var tabId = st.topKey + (st.subKey ? '|||' + st.subKey : '');
+    var tabLabel = st.subKey || st.topKey;
+    html += '<div class="beautify-tab-btn' + (activeTab === tabId ? ' active' : '') + '" data-tab="' + escHtml(tabId) + '">' + escHtml(tabLabel) + '</div>';
+  }
+  html += '</div>';
+
+  // ── Body ──
+  html += '<div class="beautify-body">';
+
+  if (activeTab === '_overview') {
+    // Overview: show all top-level scalar values + flat object summaries
+    html += '<div class="beautify-info-grid">';
+    for (var oi = 0; oi < topKeys.length; oi++) {
+      var ok = topKeys[oi];
+      var ov = vars[ok];
+      if (ov === null || ov === undefined) {
+        html += _biCard(ok, '—');
+      } else if (typeof ov === 'object' && !Array.isArray(ov)) {
+        var childCount = Object.keys(ov).length;
+        if (childCount === 0) {
+          html += _biCard(ok, '(空)');
+        } else {
+          // Show first few keys as summary
+          var previewKeys = Object.keys(ov).slice(0, 3);
+          var preview = previewKeys.map(function(pk) { return pk + ': ' + _fmtScalar(ov[pk]); }).join(' / ');
+          if (childCount > 3) preview += ' ... (+' + (childCount - 3) + ')';
+          html += _biCard(ok, preview);
+        }
+      } else if (Array.isArray(ov)) {
+        html += _biCard(ok, '[' + ov.length + ' 项]');
+      } else {
+        html += _biCard(ok, _fmtScalar(ov));
+      }
+    }
+    html += '</div>';
+  } else {
+    // Find the active sub-tab
+    var activeParts = activeTab.split('|||');
+    var activeTopKey = activeParts[0];
+    var activeSubKey = activeParts.length > 1 ? activeParts[1] : null;
+    var activeData = vars[activeTopKey];
+
+    if (activeSubKey && activeData && activeData[activeSubKey] && typeof activeData[activeSubKey] === 'object') {
+      // Sub-object detail
+      var detail = activeData[activeSubKey];
+      html += '<div class="beautify-partner-header">';
+      // Portrait thumbnail if available
+      var portrait = BEAUTIFY_PORTRAITS[activeSubKey];
+      if (portrait && portrait.normal && portrait.normal.length > 0) {
+        var pidx = (window._beautifyPortraitIdx && window._beautifyPortraitIdx[activeSubKey]) || 0;
+        html += '<img class="beautify-portrait-thumb" src="' + escHtml(portrait.normal[pidx]) + '" onclick="event.stopPropagation();zoomPortrait(\'' + escHtml(portrait.normal[pidx]) + '\')" title="点击放大">';
+      }
+      html += '<span class="beautify-partner-name">' + escHtml(activeSubKey) + '</span>';
+      html += '</div>';
+      html += '<div class="beautify-detail-grid">';
+      var detailKeys = Object.keys(detail);
+      for (var dk = 0; dk < detailKeys.length; dk++) {
+        var dkk = detailKeys[dk];
+        var dv = detail[dkk];
+        if (dv && typeof dv === 'object' && !Array.isArray(dv)) {
+          // Nested sub-object: render inline
+          html += '<div style="font-size:0.65rem;text-transform:uppercase;letter-spacing:0.1em;color:var(--muted);margin:8px 0 4px;">' + escHtml(dkk) + '</div>';
+          var nestedKeys = Object.keys(dv);
+          for (var nk = 0; nk < nestedKeys.length; nk++) {
+            html += _bdItem(nestedKeys[nk], _fmtScalar(dv[nestedKeys[nk]]));
+          }
+        } else {
+          html += _bdItem(dkk, _fmtScalar(dv));
+        }
+      }
+      html += '</div>';
+    } else if (activeData && typeof activeData === 'object' && !Array.isArray(activeData)) {
+      // Flat object detail
+      var flatKeys = Object.keys(activeData);
+      if (flatKeys.length === 0) {
+        html += '<div class="beautify-empty">暂无数据</div>';
+      } else {
+        html += '<div class="beautify-info-grid">';
+        for (var fk = 0; fk < flatKeys.length; fk++) {
+          var fkk = flatKeys[fk];
+          html += _biCard(fkk, _fmtScalar(activeData[fkk]));
+        }
+        html += '</div>';
+      }
+    } else {
+      html += '<div class="beautify-empty">暂无数据</div>';
+    }
+  }
+
+  html += '</div>'; // close beautify-body
+  html += '</div>'; // close beautify-dashboard
+  div.innerHTML = html;
+
+  // Re-bind tab clicks
+  var tabs = div.querySelectorAll('.beautify-tab-btn');
+  for (var j = 0; j < tabs.length; j++) {
+    tabs[j].addEventListener('click', function() {
+      window._beautifyActiveTab = this.getAttribute('data-tab');
+      renderBeautify();
+    });
+  }
+}
+
+function _fmtScalar(v) {
+  if (v === null || v === undefined) return '—';
+  if (typeof v === 'boolean') return v ? '是' : '否';
+  if (typeof v === 'number') return String(v);
+  return String(v);
+}
+
+function _biCard(label, value) {
+  var num = parseFloat(value);
+  if (!isNaN(num) && num >= 0) {
+    return '<div class="beautify-info-card">' +
+      '<div class="beautify-info-label">' + escHtml(label) + '</div>' +
+      '<div style="display:flex;align-items:center;gap:5px;flex:1;">' +
+      '<div class="tv-stat-bar-bg" style="flex:1;"><div class="tv-stat-bar-fill" style="width:' + Math.min(num, _statMaxGuess(num)) / _statMaxGuess(num) * 100 + '%;background:' + _statColor(label) + '"></div></div>' +
+      '<span class="tv-stat-value">' + num + '</span></div></div>';
+  }
+  return '<div class="beautify-info-card"><div class="beautify-info-label">' + escHtml(label) + '</div><div class="beautify-info-value">' + escHtml(value) + '</div></div>';
+}
+
+function _bdItem(label, value) {
+  var num = parseFloat(value);
+  if (!isNaN(num) && num >= 0) {
+    return '<div class="beautify-detail-item"><div class="beautify-detail-label">' + escHtml(label) + '</div>' +
+      '<div style="display:flex;align-items:center;gap:5px;flex:1;max-width:200px;">' +
+      '<div class="tv-stat-bar-bg" style="flex:1;"><div class="tv-stat-bar-fill" style="width:' + Math.min(num, _statMaxGuess(num)) / _statMaxGuess(num) * 100 + '%;background:' + _statColor(label) + '"></div></div>' +
+      '<span class="tv-stat-value">' + num + '</span></div></div>';
+  }
+  var display = value || '—';
+  return '<div class="beautify-detail-item"><div class="beautify-detail-label">' + escHtml(label) + '</div><div class="beautify-detail-value">' + escHtml(display) + '</div></div>';
+}
+
+function _renderFlatObject(obj, indent) {
+  indent = indent || 0;
+  if (!obj || typeof obj !== 'object') return escHtml(String(obj));
+  var html = '';
+  var keys = Object.keys(obj);
+  for (var i = 0; i < keys.length; i++) {
+    var k = keys[i];
+    var v = obj[k];
+    if (v !== null && typeof v === 'object' && !Array.isArray(v)) {
+      // Nested object → collapsible details
+      var subKeys = Object.keys(v);
+      if (subKeys.length === 0) {
+        html += '<div class="data-row"><span class="k">' + escHtml(k) + '</span> <span style="color:var(--muted)">(empty)</span></div>';
+      } else {
+        html += '<details class="beautify-sub" style="padding-left:' + (indent * 6) + 'px;"><summary><b>' + escHtml(k) + '</b> <span style="color:var(--muted);font-size:10px">(' + subKeys.length + ' fields)</span></summary>';
+        html += _renderFlatObject(v, indent + 1);
+        html += '</details>';
+      }
+    } else if (Array.isArray(v)) {
+      html += '<div class="data-row"><span class="k">' + escHtml(k) + '</span> <span style="color:var(--muted)">[' + v.length + ' items]</span></div>';
+    } else if (typeof v === 'boolean') {
+      html += '<div class="data-row"><span class="k">' + escHtml(k) + '</span> <span style="color:' + (v ? '#7a9a5a' : '#9a7a5a') + '">' + (v ? '✓' : '✗') + '</span></div>';
+    } else if (typeof v === 'number') {
+      html += '<div class="data-row"><span class="k">' + escHtml(k) + '</span> <span class="beautify-highlight">' + v + '</span></div>';
+    } else if (typeof v === 'string') {
+      var display = escHtml(v);
+      var trunc = display.length > 20 ? display.substring(0, 20) + '…' : '';
+      html += '<div class="data-row"><span class="k">' + escHtml(k) + '</span> <span' + (trunc ? ' title="' + display + '"' : '') + '>' + (trunc || display) + '</span></div>';
+    }
+  }
+  return html;
+}
+
+// NPC portrait URLs — from card's .beautify.json (no hardcoded fallback)
+var BEAUTIFY_PORTRAITS = (window.BEAUTIFY_DATA && window.BEAUTIFY_DATA.portraits) || {};
+
+// Initialize random portrait indices
+(function() {
+  if (!window._beautifyPortraitIdx) {
+    window._beautifyPortraitIdx = {};
+    for (var k in BEAUTIFY_PORTRAITS) {
+      var normalPool = BEAUTIFY_PORTRAITS[k].normal;
+      if (normalPool && normalPool.length > 0) {
+        window._beautifyPortraitIdx[k] = Math.floor(Math.random() * normalPool.length);
+      }
+    }
+  }
+})();
+
+// renderBeautify defined above (generic, card-agnostic)
+
+function zoomPortrait(url) {
+  var modal = document.getElementById('beautify-modal');
+  var img = document.getElementById('beautify-modal-img');
+  if (!modal || !img || !url) return;
+  img.src = url;
+  modal.style.display = 'flex';
+}
+
+function escHtml(s) {
+  if (!s) return '';
+  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+// No page flash: use dynamic script reloading instead of meta refresh
+reloadData();
+checkBridge();
+hydrateRuntimeSnapshot().finally(connectRuntimeEvents);
+loadSessions();
+loadOpenings();
+loadRuntimeConfigPanel();
+renderAgentTrace();
+pollTimer = setInterval(reloadData, 3000);
+setInterval(checkBridge, 5000);
+setInterval(loadRuntimeConfigPanel, 20000);
+
+// ═══ Dark Mode Toggle ═══
+(function() {
+  var saved = localStorage.getItem('theme');
+  if (saved === 'dark') {
+    document.documentElement.setAttribute('data-theme', 'dark');
+    document.getElementById('theme-toggle').textContent = '☀️';
+  }
+  document.getElementById('theme-toggle').addEventListener('click', function() {
+    var isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+    if (isDark) {
+      document.documentElement.removeAttribute('data-theme');
+      this.textContent = '🌙';
+      localStorage.setItem('theme', 'light');
+    } else {
+      document.documentElement.setAttribute('data-theme', 'dark');
+      this.textContent = '☀️';
+      localStorage.setItem('theme', 'dark');
+    }
+    if (typeof updateTokenCount === 'function') updateTokenCount();
+  });
+})();
+</script>
+</body>
+</html>

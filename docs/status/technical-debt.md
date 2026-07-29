@@ -10,7 +10,7 @@
 
 **状态：Broken**
 
-`skills/styles/.card_path`、`state.js`、`content.js` 和输入/上下文文件是当前激活卡的全局单例；多卡并发会互相覆盖。`state.js/content.js` 同时写在 styles 与卡片目录，缺乏单一事实源。
+兼容 projection root 中的 `.card_path`、`state.js`、`content.js` 和输入/上下文文件仍是当前激活卡的全局单例；多卡并发会互相覆盖。`state.js/content.js` 同时写在 projection 与卡片目录，缺乏单一事实源。独立 runtime 已通过 Workspace/session SQLite 降低该风险，但 legacy Claude Code loop 仍受此限制。
 
 ## P1：上下文仍不可精确控制
 

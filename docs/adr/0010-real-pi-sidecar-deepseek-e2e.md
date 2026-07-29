@@ -75,8 +75,8 @@ Python 映射：
 - **默认 model**：`deepseek-v4-flash`（`RealProviderAdapter.DEFAULT_MODEL` / `model=` 构造参数）
 - **默认 base_url**：`https://api.deepseek.com`（构造参数 / metadata 覆盖，供代理）
 - **Mock**：`RealProviderAdapter(mock=True)` 或 env `PI_SIDECAR_MOCK=1` 或 sidecar `--mock` — 无网络/无 key 的 IPC 单测路径
-- **Sidecar 脚本**：`skills/sidecar/pi_provider_sidecar.mjs`
-- **Adapter**：`skills/engine/provider.py` → `RealProviderAdapter`
+- **Sidecar 脚本**：`src/airp/resources/sidecar/pi_provider_sidecar.mjs`（`skills/sidecar/` 仅为兼容副本）
+- **Adapter**：`src/airp/engine/provider.py` → `RealProviderAdapter`
 
 ### 5. 凭证纪律
 

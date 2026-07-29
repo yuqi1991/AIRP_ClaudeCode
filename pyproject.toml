@@ -14,5 +14,9 @@ airp-runtime = "airp.launcher:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+airp = ["web/**/*", "resources/**/*"]
+"airp.resources" = ["sidecar/*.mjs"]
+
 [tool.pytest.ini_options]
 pythonpath = ["src", "skills"]

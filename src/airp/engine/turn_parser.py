@@ -24,7 +24,7 @@ import re
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from engine.runtime import TurnDraft
+    from airp.engine.runtime import TurnDraft
 
 
 _TAG_RE = {
@@ -67,7 +67,7 @@ def parse_turn_text(text: str, *, fallback_input: str = "") -> "TurnDraft":
     """
     # Lazy import avoids circular import with engine.runtime (which owns TurnDraft
     # and calls this parser from the harness commit path).
-    from engine.runtime import TurnDraft
+    from airp.engine.runtime import TurnDraft
 
     raw = text if isinstance(text, str) else ""
     polished = _first(_TAG_RE["polished_input"], raw)

@@ -1,47 +1,35 @@
-"""Installable entrypoint for the transitional local AIRP runtime."""
+"""Installable entrypoint for the AIRP runtime."""
 
 from __future__ import annotations
 
-import importlib
-import os
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Sequence
 
-from airp.bootstrap import RepositoryLayout, bootstrap_legacy_runtime
+from airp import cli
 
 
-def _repository_root() -> Path:
-    override = os.environ.get("AIRP_REPOSITORY_ROOT")
-    if override:
-        return Path(override).expanduser()
-    # ``src/airp/launcher.py`` in a source checkout.
-    return Path(__file__).resolve().parents[2]
+def load_legacy_launcher(root=None):
+    """Return a compatibility-shaped view backed by the packaged CLI.
 
-
-def load_legacy_launcher(root: str | Path | None = None):
-    """Return the legacy launcher module after applying the compatibility seam."""
-
-    layout = bootstrap_legacy_runtime(root or _repository_root())
-    if not layout.legacy_entrypoint.is_file():
-        raise RuntimeError(
-            "AIRP runtime source tree is unavailable; set AIRP_REPOSITORY_ROOT "
-            "to a checkout containing skills/start_runtime.py"
-        )
-    return importlib.import_module("start_runtime")
+    ``root`` is retained for callers that used the old bootstrap helper.  It
+    is metadata only; installed execution never imports a checkout script.
+    """
+    skills_root = Path(root).expanduser().resolve() / "skills" if root is not None else None
+    return SimpleNamespace(__name__="start_runtime", SKILLS=skills_root, main=cli.main)
 
 
 def main(argv: Sequence[str] | None = None) -> int | None:
-    """Delegate to ``skills/start_runtime.py`` without duplicating behavior."""
+    """Run the packaged runtime CLI."""
 
-    launcher = load_legacy_launcher()
     if argv is None:
-        return launcher.main()
+        return cli.main()
 
     original_argv = sys.argv
     sys.argv = [original_argv[0], *argv]
     try:
-        return launcher.main()
+        return cli.main()
     finally:
         sys.argv = original_argv
 

@@ -630,22 +630,16 @@ class FakeProvider(ProviderAdapter):
 
 def _default_sidecar_script() -> Path:
     """Resolve the sidecar through explicit resource or repository seams."""
-    configured = os.environ.get("AIRP_SIDECAR_SCRIPT")
-    if configured:
-        return Path(configured).expanduser().resolve()
-    repository_root = os.environ.get("AIRP_REPOSITORY_ROOT")
-    if repository_root:
-        return Path(repository_root).expanduser().resolve() / "skills" / "sidecar" / "pi_provider_sidecar.mjs"
-    # Source checkout fallback during the skills-to-src migration.
-    return Path(__file__).resolve().parents[3] / "skills" / "sidecar" / "pi_provider_sidecar.mjs"
+    from airp.resources import sidecar_script
+
+    return sidecar_script()
 
 
 def _default_repo_root() -> Path:
     """Resolve the provider working directory without assuming ``skills``."""
-    configured = os.environ.get("AIRP_REPOSITORY_ROOT")
-    if configured:
-        return Path(configured).expanduser().resolve()
-    return Path(__file__).resolve().parents[3]
+    from airp.resources import repository_root
+
+    return repository_root()
 
 
 class RealProviderAdapter(ProviderAdapter):

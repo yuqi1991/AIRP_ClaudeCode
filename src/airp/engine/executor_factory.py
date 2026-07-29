@@ -38,10 +38,12 @@ class RuntimeExecutorFactory:
         mock: bool,
         base_url="https://api.deepseek.com",
         provider_profile_service=None,
+        cwd=None,
     ):
         self.mock = bool(mock)
         self.base_url = base_url
         self.provider_profile_service = provider_profile_service
+        self.cwd = cwd
 
     def __call__(self, runtime_config):
         if not isinstance(runtime_config, dict):
@@ -82,4 +84,5 @@ class RuntimeExecutorFactory:
             base_url=provider_settings.get("base_url") or self.base_url,
             provider=node["provider"],
             runtime_api_key=runtime_provider_api_key(node["provider"]),
+            cwd=self.cwd,
         )

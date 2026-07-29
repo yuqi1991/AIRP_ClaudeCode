@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta http-equiv="refresh" content="3">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>公文模拟器</title>
+<style>
+:root {
+  --bg: #0f0f1a;
+  --card: #1a1a2e;
+  --accent: #c0392b;
+  --text: #e0e0e0;
+  --muted: #888;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: "Segoe UI", "PingFang SC", sans-serif;
+  padding: 24px;
+  display: flex; flex-direction: column; align-items: center; gap: 16px;
+}
+
+.header-card {
+  width: 100%; max-width: 860px;
+  background: var(--card);
+  border: 1px solid #2a2a3e;
+  border-radius: 10px;
+  padding: 20px 24px;
+}
+.header-card .world-tag {
+  display: inline-block;
+  padding: 4px 14px; border-radius: 12px;
+  background: var(--accent); color: #fff;
+  font-size: 0.82em; font-weight: 600;
+  margin-bottom: 8px;
+}
+.header-card h1 {
+  font-size: 1.35em; font-weight: 700;
+  color: #f0f0f0; margin-bottom: 10px;
+  line-height: 1.4;
+}
+.header-card .meta-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 4px 16px;
+  font-size: 0.8em; color: var(--muted);
+}
+.header-card .meta-grid span b {
+  color: #c0c0c0; font-weight: 500;
+}
+
+.content-card {
+  width: 100%; max-width: 860px;
+  background: #fff; color: #1a1a1a;
+  border: 1px solid #2a2a3e; border-radius: 10px; overflow: hidden;
+}
+.content-card .bar {
+  background: var(--card);
+  padding: 14px 20px;
+  border-bottom: 1px solid #2a2a3e;
+}
+.content-card .bar h2 {
+  margin: 0; color: var(--accent);
+  font-size: 1.05em; font-weight: 700;
+}
+#doc { padding: 20px 24px; }
+#doc > * { margin: 0; }
+
+.summary-card {
+  width: 100%; max-width: 860px;
+  background: var(--card); border: 1px solid #2a2a3e; border-radius: 10px;
+  padding: 14px 20px; font-size: 0.82em; color: var(--muted);
+}
+.summary-card b { color: var(--accent); }
+</style>
+</head>
+<body>
+
+<script src="content.js"></script>
+<script>
+const STATE = {
+  world: "公文模拟器系统 v1.0",
+  stage: "文件已签发 · 等待指令",
+  time: "合欢宗历 辛丑年 霜月 初七",
+  location: "合欢宗 · 戒律堂签发室",
+  env: "朱红大印落定，墨迹已干。执事将副本收入档案柜。",
+  quest: "合欢宗关于进一步规范女弟子行为要求的通知",
+  generatedCount: 1,
+  contentFile: "content.html"
+};
+
+document.addEventListener("DOMContentLoaded", render);
+
+function render() {
+  document.title = `${STATE.world}`;
+
+  const contentHtml = window.CONTENT_HTML || '<div style="padding:40px;text-align:center;color:#999;">等待生成公文...</div>';
+  const summaryText = window.SUMMARY_TEXT || '';
+
+  document.body.innerHTML = `
+    <div class="header-card">
+      <div class="world-tag">${STATE.world}</div>
+      <h1>${STATE.stage}</h1>
+      <div class="meta-grid">
+        <span><b>时间</b> ${STATE.time}</span>
+        <span><b>地点</b> ${STATE.location}</span>
+        <span><b>已生成</b> ${STATE.generatedCount} 轮</span>
+        <span><b>环境</b> ${STATE.env}</span>
+      </div>
+    </div>
+
+    <div class="content-card">
+      <div class="bar">
+        <h2>${STATE.quest}</h2>
+      </div>
+      <div id="doc">${contentHtml}</div>
+    </div>
+
+    <div class="summary-card">
+      <b>摘要</b> ${summaryText || '暂无'}
+    </div>
+  `;
+}
+</script>
+</body>
+</html>

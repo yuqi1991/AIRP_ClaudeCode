@@ -3097,7 +3097,7 @@ class SessionTurnRuntime:
 
     def _rebuild_active_projections(self, head_revision):
         """Rewrite compatibility files from opening + active lineage + head state."""
-        from engine.card import write_chat_log, write_state
+        from airp.engine.card import write_chat_log, write_state
 
         projection_log = self._projection_log(head_revision)
         state_js = self._state_js_for_projection(projection_log, head_revision)

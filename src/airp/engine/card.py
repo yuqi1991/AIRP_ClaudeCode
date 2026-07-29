@@ -5,21 +5,20 @@ are explicit when supplied and otherwise resolved through AIRP environment
 configuration during the source-checkout migration.
 """
 import json
-import os
 import re
 from pathlib import Path
 
 
 
 def _default_projection_root() -> Path:
+    import os
+
     configured = os.environ.get("AIRP_PROJECTION_ROOT")
     if configured:
         return Path(configured).expanduser().resolve()
-    repository_root = os.environ.get("AIRP_REPOSITORY_ROOT")
-    if repository_root:
-        return Path(repository_root).expanduser().resolve() / "skills" / "styles"
-    # Source checkout fallback during the skills-to-src migration.
-    return Path(__file__).resolve().parents[3] / "skills" / "styles"
+    from airp.resources import projection_root
+
+    return projection_root()
 
 
 STYLES = _default_projection_root()
