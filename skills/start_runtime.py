@@ -189,7 +189,7 @@ def _deliver_opening(
         RealProviderAdapter,
         UsageRecord,
     )
-    from engine.agent_framework import AgentArtifact
+    from airp.engine.agent_framework import AgentArtifact
 
     config = runtime_config
     if not isinstance(config, dict):
@@ -333,14 +333,14 @@ def main() -> None:
 
     # 4. Construct the runtime. Normal turns resolve their graph from the
     # Workspace-backed Studio Project; legacy config is opening compatibility.
-    from engine.context_compiler import ContextPolicy
-    from engine.executor_factory import RuntimeExecutorFactory
-    from engine.provider_profiles import ProviderProfileService
-    from engine.runtime import MultiTurnFakeExecutor, SessionTurnRuntime
-    from engine.runtime_config import RuntimeConfigStore
-    from engine.session_manager import SessionManager
+    from airp.engine.context_compiler import ContextPolicy
+    from airp.engine.executor_factory import RuntimeExecutorFactory
+    from airp.engine.provider_profiles import ProviderProfileService
+    from airp.engine.runtime import MultiTurnFakeExecutor, SessionTurnRuntime
+    from airp.engine.runtime_config import RuntimeConfigStore
+    from airp.engine.session_manager import SessionManager
     from engine.secret_store import LocalSecretStore
-    from engine.studio_library import ProviderProfileStore
+    from airp.engine.studio_library import ProviderProfileStore
 
     config_store = RuntimeConfigStore(styles)
     frozen_config = config_store.freeze().data

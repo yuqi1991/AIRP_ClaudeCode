@@ -2,7 +2,7 @@
 
 ## 当前架构
 
-当前系统仍由浏览器前端、本地 HTTP bridge、CLI 编排脚本和 `skills/engine/` 深模块组成；迁移目标是将生产实现收敛到 `src/airp`，把 `skills/` 降为过渡期工具入口。独立 runtime 已有可玩的 card-local 多 Session 黄金路径；原 Claude Code loop 仍保留为 legacy 路径。
+当前系统仍由浏览器前端、本地 HTTP bridge、CLI 编排脚本和兼容入口组成；生产 engine 实现已收敛到 `src/airp/engine/`，`skills/engine/` 只保留兼容 import Adapter。`skills/` 中的 handler、静态资源和启动脚本仍处于兼容迁移期。独立 runtime 已有可玩的 card-local 多 Session 黄金路径；原 Claude Code loop 仍保留为 legacy 路径。
 
 ADR-0018 确定后续架构方向：Agent Framework 只负责内容中立的 Agent/Graph 运作，RP 回合解析与 `<content>` 等格式规则属于 Project 选择的 RP Turn Adapter。Studio 定义是正常运行的唯一来源，旧配置仅用于迁移和回放；用户可变数据统一进入 Workspace，HTTP 正式入口统一为 `/v1/*`。
 

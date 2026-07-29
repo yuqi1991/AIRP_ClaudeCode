@@ -391,8 +391,8 @@ def test_runtime_frontend_uses_same_origin_api_urls_and_runtime_config_ui():
     index_html = (SKILLS / "styles" / "index.html").read_text(encoding="utf-8")
     assert "http://localhost:8765" not in index_html
     assert "Runtime Config" in index_html
-    assert "/api/runtime/config" in index_html
-    assert "/api/sessions" in index_html
+    assert "/v1/session/runtime/config" in index_html
+    assert "/v1/session/sessions" in index_html
     assert "/v1/session/events/stream" in index_html
     assert 'id="session-select"' in index_html
     assert 'id="sidebar-toggle"' in index_html
@@ -417,8 +417,8 @@ def test_runtime_frontend_has_stream_preview_provider_controls_and_agent_trace()
     assert 'id="provider-api-key"' in index_html
     assert 'id="provider-base-url"' in index_html
     assert 'id="provider-model-select"' in index_html
-    assert "/api/provider/models" in index_html
-    assert "/api/provider/config" in index_html
+    assert "/v1/session/provider/models" in index_html
+    assert "/v1/session/provider/config" in index_html
     assert "model_call.started" in index_html
     assert "tool_run.started" in index_html
     assert "renderAgentTrace" in index_html
@@ -650,6 +650,26 @@ def test_api_openings_and_settings_served_from_styles(tmp_path):
         status, settings = _http("GET", f"{server.base_url}/api/settings")
         assert status == 200
         assert settings["style"] == "北棱特调"
+
+
+def test_v1_session_compat_paths_are_the_frontend_transport_seam(tmp_path):
+    styles = tmp_path / "styles"
+    styles.mkdir()
+    card = tmp_path / "card"
+    _write_card(card)
+    runtime = SessionTurnRuntime(
+        database_path=tmp_path / "r.sqlite3",
+        card_folder=card,
+        projection_root=styles,
+        executor=_scripted_director(),
+    )
+    with SessionRuntimeServer(runtime, static_root=styles) as server:
+        status, snapshot = _http("GET", f"{server.base_url}/v1/session/status")
+        assert status == 200
+        assert "snapshot" in snapshot
+        status, openings = _http("GET", f"{server.base_url}/v1/session/openings")
+        assert status == 200
+        assert isinstance(openings, list)
 
 
 def test_api_runtime_config_crud_is_file_backed_and_validated(tmp_path):

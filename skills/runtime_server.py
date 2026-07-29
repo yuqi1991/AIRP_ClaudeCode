@@ -73,20 +73,20 @@ if str(SRC_ROOT) not in sys.path:
 
 from airp.workspace import Workspace
 from airp.application import Application
-from engine.agent_definitions import AgentDefinitionError
-from engine.commands import SessionCommandService
-from engine.graph_definitions import GraphDefinitionError
-from engine.graph_runtime import ExecutionPlanCompiler, GraphRuntime
-from engine.node_runner import ProviderNodeRunner
-from engine.provider import runtime_provider_api_key, set_runtime_provider_override
-from engine.provider_profiles import ProviderConnectionError
-from engine.project_library import ProjectLibraryError
-from engine.runtime import RuntimeEvent, SessionTurnRuntime
-from engine.runtime_config import CONFIG_ID_RE, RuntimeConfigError
-from engine.session_manager import SessionManager, SessionManagerError
-from engine.studio_library import ProviderProfileError
-from engine.studio_migration import bootstrap_legacy_runtime_library
-from engine.worldbook_library import WorldbookLibraryError
+from airp.engine.agent_definitions import AgentDefinitionError
+from airp.engine.commands import SessionCommandService
+from airp.engine.graph_definitions import GraphDefinitionError
+from airp.engine.graph_runtime import ExecutionPlanCompiler, GraphRuntime
+from airp.engine.node_runner import ProviderNodeRunner
+from airp.engine.provider import runtime_provider_api_key, set_runtime_provider_override
+from airp.engine.provider_profiles import ProviderConnectionError
+from airp.engine.project_library import ProjectLibraryError
+from airp.engine.runtime import RuntimeEvent, SessionTurnRuntime
+from airp.engine.runtime_config import CONFIG_ID_RE, RuntimeConfigError
+from airp.engine.session_manager import SessionManager, SessionManagerError
+from airp.engine.studio_library import ProviderProfileError
+from airp.engine.studio_migration import bootstrap_legacy_runtime_library
+from airp.engine.worldbook_library import WorldbookLibraryError
 
 SSE_HEARTBEAT_SECONDS = 15.0
 SSE_POLL_INTERVAL_SECONDS = 0.05
@@ -105,6 +105,18 @@ STUDIO_GRAPH_RUN_PATHS = ("/v1/studio/graph-runs",)
 STUDIO_NODE_RUN_PATHS = ("/v1/studio/node-runs",)
 STUDIO_DEBUG_REPLAY_PATHS = ("/v1/studio/debug-replays",)
 AGENT_TRACE_DETAIL_PATH = "/v1/session/agent-traces"
+_CANONICAL_COMPAT_PATHS = {
+    "/v1/session/sessions": "/api/sessions",
+    "/v1/session/sessions/switch": "/api/sessions/switch",
+    "/v1/session/sessions/rename": "/api/sessions/rename",
+    "/v1/session/openings": "/api/openings",
+    "/v1/session/openings/switch": "/api/switch_opening",
+    "/v1/session/turns/delete": "/api/delete_turns",
+    "/v1/session/status": "/api/session_status",
+    "/v1/session/runtime/config": "/api/runtime/config",
+    "/v1/session/provider/config": "/api/provider/config",
+    "/v1/session/provider/models": "/api/provider/models",
+}
 
 
 def _event_to_dict(event: RuntimeEvent) -> dict:
@@ -227,6 +239,22 @@ class SessionRuntimeServer:
     @property
     def base_url(self) -> str:
         return f"http://{self.host}:{self.port}"
+
+    @staticmethod
+    def _canonical_compat_path(path: str) -> str:
+        """Route transitional session paths through one internal adapter.
+
+        ``/v1`` is the maintained transport seam. The old handlers remain
+        behind this map for card-local compatibility, so the frontend and new
+        clients do not need to know the legacy URL vocabulary.
+        """
+        mapped = _CANONICAL_COMPAT_PATHS.get(path)
+        if mapped is not None:
+            return mapped
+        prefix = "/v1/session/sessions/"
+        if path.startswith(prefix):
+            return "/api/sessions/" + path[len(prefix):]
+        return path
 
     def __enter__(self) -> "SessionRuntimeServer":
         return self.start()
@@ -1096,7 +1124,7 @@ class SessionRuntimeServer:
 
             def do_GET(self):  # noqa: N802
                 parsed = urlparse(self.path)
-                path = parsed.path.rstrip("/") or "/"
+                path = server_ref._canonical_compat_path(parsed.path.rstrip("/") or "/")
                 query = parse_qs(parsed.query)
 
                 for prefix in STUDIO_DEBUG_REPLAY_PATHS:
@@ -1356,7 +1384,7 @@ class SessionRuntimeServer:
 
             def do_POST(self):  # noqa: N802
                 parsed = urlparse(self.path)
-                path = parsed.path.rstrip("/") or "/"
+                path = server_ref._canonical_compat_path(parsed.path.rstrip("/") or "/")
                 body = self._read_json()
 
                 for prefix in STUDIO_GRAPH_RUN_PATHS:
@@ -1783,7 +1811,7 @@ class SessionRuntimeServer:
 
             def do_DELETE(self):  # noqa: N802
                 parsed = urlparse(self.path)
-                path = parsed.path.rstrip("/") or "/"
+                path = server_ref._canonical_compat_path(parsed.path.rstrip("/") or "/")
                 for prefix in STUDIO_AGENT_PATHS:
                     if path.startswith(prefix + "/"):
                         agent_id = path[len(prefix) + 1:]
@@ -1859,7 +1887,7 @@ class SessionRuntimeServer:
 
             def do_PUT(self):  # noqa: N802
                 parsed = urlparse(self.path)
-                path = parsed.path.rstrip("/") or "/"
+                path = server_ref._canonical_compat_path(parsed.path.rstrip("/") or "/")
                 body = self._read_json()
 
                 for prefix in STUDIO_AGENT_PATHS:
@@ -1936,7 +1964,7 @@ class SessionRuntimeServer:
 
             def do_PATCH(self):  # noqa: N802
                 parsed = urlparse(self.path)
-                path = parsed.path.rstrip("/") or "/"
+                path = server_ref._canonical_compat_path(parsed.path.rstrip("/") or "/")
                 body = self._read_json()
                 for prefix in STUDIO_AGENT_PATHS:
                     if path.startswith(prefix + "/"):

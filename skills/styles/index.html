@@ -1016,7 +1016,7 @@ body {
       <input id="provider-base-url" type="url">
       <input id="provider-api-key" type="password">
       <select id="provider-model-select"></select>
-      <script type="application/json">["/api/provider/models", "/api/provider/config"]</script>
+      <script type="application/json">["/v1/session/provider/models", "/v1/session/provider/config"]</script>
     </template>
     <div class="side-card" id="agent-trace-card">
       <h4>🧭 Agent Trace</h4>
@@ -1896,7 +1896,7 @@ function applySessionsPayload(data) {
 
 async function loadSessions() {
   try {
-    const response = await fetch(apiUrl('/api/sessions'), { cache: 'no-store' });
+    const response = await fetch(apiUrl('/v1/session/sessions'), { cache: 'no-store' });
     const data = await response.json();
     if (!response.ok || !data.ok) throw new Error(data.message || data.error || '读取失败');
     applySessionsPayload(data);
@@ -1927,12 +1927,12 @@ function activateSessionSnapshot(snapshot) {
 async function createSession() {
   const title = window.prompt('新存档名称', '新存档');
   if (title === null) return;
-  await mutateSession('/api/sessions', 'POST', { title: title }, '已创建新存档');
+  await mutateSession('/v1/session/sessions', 'POST', { title: title }, '已创建新存档');
 }
 
 async function switchSession(sessionId) {
   if (!sessionId || sessionId === sessionState.active_session_id) return;
-  await mutateSession('/api/sessions/switch', 'POST', { session_id: sessionId }, '已切换存档');
+  await mutateSession('/v1/session/sessions/switch', 'POST', { session_id: sessionId }, '已切换存档');
 }
 
 async function renameSession() {
@@ -1942,7 +1942,7 @@ async function renameSession() {
   if (!current) return;
   const title = window.prompt('存档名称', current.title);
   if (title === null) return;
-  await mutateSession('/api/sessions/rename', 'POST', {
+  await mutateSession('/v1/session/sessions/rename', 'POST', {
     session_id: current.id, title: title
   }, '存档已重命名', false);
 }
@@ -1953,7 +1953,7 @@ async function deleteSession() {
   });
   if (!current || sessionState.sessions.length <= 1) return;
   if (!window.confirm('删除存档“' + current.title + '”？此操作不可撤销。')) return;
-  await mutateSession('/api/sessions/' + encodeURIComponent(current.id), 'DELETE', null, '存档已删除');
+  await mutateSession('/v1/session/sessions/' + encodeURIComponent(current.id), 'DELETE', null, '存档已删除');
 }
 
 async function mutateSession(path, method, body, successMessage, activate = true) {
@@ -2145,7 +2145,17 @@ async function doReroll() {
   const btn = document.querySelector('.btn-reroll');
   if (btn) { btn.disabled = true; btn.textContent = '⏳'; }
   try {
-    const r = await fetch(apiUrl('/api/reroll'), { method: 'POST' });
+    const currentSession = sessionState.sessions.find(function(item) {
+      return item.id === sessionState.active_session_id;
+    });
+    const r = await fetch(apiUrl('/v1/session/commands/reroll'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        revision: Number((currentSession && currentSession.active_revision) || 0),
+        idempotency_key: 'reroll-' + Date.now() + '-' + Math.random().toString(16).slice(2)
+      })
+    });
     const data = await r.json();
     if (data.ok) {
       setRuntimeTaskStatus({
@@ -2177,7 +2187,7 @@ async function doReroll() {
 
 async function loadOpenings() {
   try {
-    const r = await fetch(apiUrl('/api/openings'))
+    const r = await fetch(apiUrl('/v1/session/openings'))
     if (!r.ok) return;
     const openings = await r.json();
     const sel = document.getElementById('set-opening');
@@ -2195,7 +2205,7 @@ async function doSwitchOpening() {
   const openingId = parseInt(sel.value);
   if (isNaN(openingId)) return;
   try {
-    const r = await fetch(apiUrl('/api/switch_opening'), {
+    const r = await fetch(apiUrl('/v1/session/openings/switch'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ opening_id: openingId })
@@ -2214,7 +2224,7 @@ async function doSwitchOpening() {
 
 async function doDeleteFrom(index) {
   try {
-    const r = await fetch(apiUrl('/api/delete_turns'), {
+    const r = await fetch(apiUrl('/v1/session/turns/delete'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ from_index: index })
@@ -2233,7 +2243,7 @@ async function doDeleteFrom(index) {
 
 async function checkBridge() {
   try {
-    const r = await fetch(apiUrl('/api/session_status'));
+    const r = await fetch(apiUrl('/v1/session/status'));
     if (!r.ok) throw new Error('offline');
     const data = await r.json();
     bridgeOk = true;
@@ -2264,7 +2274,7 @@ function setSelectOptions(selectId, items, selectedId, emptyLabel) {
 
 async function loadRuntimeConfigPanel() {
   try {
-    const r = await fetch(apiUrl('/api/runtime/config'));
+    const r = await fetch(apiUrl('/v1/session/runtime/config'));
     if (!r.ok) throw new Error('unavailable');
     const data = await r.json();
     runtimeConfigState = data;
@@ -2280,7 +2290,7 @@ async function loadRuntimeConfigPanel() {
 async function applyRuntimeConfigSelection() {
   const graphId = document.getElementById('runtime-graph-select').value || null;
   try {
-    const r = await fetch(apiUrl('/api/runtime/config'), {
+    const r = await fetch(apiUrl('/v1/session/runtime/config'), {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ graph_id: graphId })
@@ -2306,10 +2316,14 @@ async function doSubmit() {
   btn.disabled = true; btn.textContent = '...';
 
   try {
-    const r = await fetch(apiUrl('/api/submit'), {
+    const r = await fetch(apiUrl('/v1/session/commands/submit'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text: input, charName: charName })
+      body: JSON.stringify({
+        text: input,
+        charName: charName,
+        idempotency_key: 'submit-' + Date.now() + '-' + Math.random().toString(16).slice(2)
+      })
     });
     const data = await r.json();
     if (data.ok) {
@@ -2339,7 +2353,7 @@ function refreshSubmittedTurn(taskId) {
   const timer = setInterval(async function() {
     attempts += 1;
     try {
-      const response = await fetch(apiUrl('/api/session_snapshot'), { cache: 'no-store' });
+      const response = await fetch(apiUrl('/v1/session/snapshot'), { cache: 'no-store' });
       const snapshot = await response.json();
       if (!response.ok) return;
       const task = snapshot.current_task || null;

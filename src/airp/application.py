@@ -49,14 +49,14 @@ class Application:
                 data_workspace.ensure()
             return cls(workspace=data_workspace)
 
-        from engine.agent_definitions import AgentDefinitionService, AgentDefinitionStore
-        from engine.graph_definitions import GraphDefinitionService, GraphDefinitionStore
-        from engine.provider_profiles import ProviderProfileService
-        from engine.runtime_config import RuntimeConfigStore
-        from engine.secret_store import LocalSecretStore
-        from engine.studio_library import ProviderProfileStore
-        from engine.worldbook_library import WorldbookLibrary
-        from engine.project_library import ProjectLibrary
+        from airp.engine.agent_definitions import AgentDefinitionService, AgentDefinitionStore
+        from airp.engine.graph_definitions import GraphDefinitionService, GraphDefinitionStore
+        from airp.engine.provider_profiles import ProviderProfileService
+        from airp.engine.runtime_config import RuntimeConfigStore
+        from airp.engine.secret_store import LocalSecretStore
+        from airp.engine.studio_library import ProviderProfileStore
+        from airp.engine.worldbook_library import WorldbookLibrary
+        from airp.engine.project_library import ProjectLibrary
 
         root = Path(static_root).resolve()
         data_workspace = None
