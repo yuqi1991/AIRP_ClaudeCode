@@ -61,6 +61,13 @@ node_modules/
 !skills/styles/presets/*.json
 !skills/styles/graphs/
 !skills/styles/graphs/*.json
+
+# Formal production package. Runtime/user data remains outside the source tree.
+!src/
+!src/airp/
+!src/airp/**
+src/airp/**/__pycache__/
+src/airp/**/*.pyc
 !skills/styles/prompt_fragments/
 !skills/styles/prompt_fragments/*.md
 !skills/sidecar/

@@ -44,7 +44,6 @@ def test_new_agent_is_instruction_only_and_expands_nested_runtime_macros(tmp_pat
         "project_input",
         "handoff",
         "tool_protocol",
-        "output_contract",
     ]
     assert preview["messages"][0]["content"] == (
         '风格=冷峻; 卡片=刻晴; 输入=玩家走进大厅; '

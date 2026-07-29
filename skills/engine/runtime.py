@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 import handler
+from engine.agent_framework import AdaptedGraphExecutor, AgentFrameworkExecutor
 from engine.context_compiler import (
     CompiledContext,
     ContextCompileRequest,
@@ -27,7 +28,6 @@ from engine.graph_runtime import (
     ExecutionPlanCompiler,
     GraphExecutionError,
     GraphRuntime,
-    GraphRuntimeExecutor,
     NodeResult,
 )
 from engine.mvu import execute_commands, extract_commands, generate_schema, validate_command_strict
@@ -35,7 +35,7 @@ from engine.provider import AbortSignal, ProviderAborted, ProviderError
 from engine.quality import DefaultQualityGate, QualityContext, QualityGate, QualityPolicy
 from engine.runtime_config import prompt_preset_from_snapshot, runtime_config_manifest
 from engine.tools import ToolResult, ToolRegistry, validate_draft_dict
-from engine.turn_parser import parse_turn_text
+from engine.rp_turn_adapter import RPTurnAdapter
 from engine.worldbook import load_worldbook_entry_from_texts
 
 
@@ -614,6 +614,7 @@ class SessionTurnRuntime:
         bootstrap_legacy_history: bool = True,
         worldbook_snapshot_provider=None,
         project_id=None,
+        turn_adapter=None,
     ):
         self.database_path = Path(database_path)
         self.card_folder = Path(card_folder)
@@ -628,6 +629,7 @@ class SessionTurnRuntime:
         self.bootstrap_legacy_history = bool(bootstrap_legacy_history)
         self.worldbook_snapshot_provider = worldbook_snapshot_provider
         self.project_id = project_id or self.card_folder.name
+        self.turn_adapter = turn_adapter or RPTurnAdapter()
         self.quality_policy = quality_policy or QualityPolicy()
         self.quality_gate = quality_gate or DefaultQualityGate(self.quality_policy)
         self.max_commit_validation_retries = max(1, int(max_commit_validation_retries))
@@ -2063,7 +2065,8 @@ class SessionTurnRuntime:
                 plan,
                 retry_of=snapshot.get("graph_retry_of"),
             )
-            return GraphRuntimeExecutor(self.graph_runtime, plan, observer=observer)
+            framework = AgentFrameworkExecutor(self.graph_runtime, plan, observer=observer)
+            return AdaptedGraphExecutor(framework, self.turn_adapter)
         if self.executor_factory is None:
             return self.executor
         return self.executor_factory(snapshot.get("runtime_config"))
@@ -2436,7 +2439,11 @@ class SessionTurnRuntime:
                 # inside ScriptedDirector wait_for_aborted). Do not invent content.
                 break
 
-            draft = parse_turn_text(final_text, fallback_input=text)
+            draft = self.turn_adapter.interpret(
+                AgentArtifact.text(final_text),
+                player_input=text,
+                context={"task_id": task["id"]},
+            )
             commit_result = self._commit_parsed_draft(task, draft)
             if commit_result.ok:
                 # Authoritative commit landed (or was reused). Project and return.
@@ -3362,7 +3369,11 @@ class SessionTurnRuntime:
         for turn in legacy_log:
             if not isinstance(turn, dict) or not (turn.get("user") or "").strip():
                 continue
-            draft = parse_turn_text(turn.get("ai", ""), fallback_input=turn.get("user", ""))
+            draft = self.turn_adapter.interpret(
+                AgentArtifact.text(turn.get("ai", "")),
+                player_input=turn.get("user", ""),
+                context={"legacy_import": True},
+            )
             if not draft.summary and turn.get("summary"):
                 draft = TurnDraft(
                     content=draft.content,

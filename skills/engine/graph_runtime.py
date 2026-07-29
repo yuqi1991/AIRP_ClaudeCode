@@ -87,7 +87,7 @@ class AgentArtifact:
         cls,
         content: str,
         *,
-        kind: str = "narrative_draft",
+        kind: str = "text",
         content_type: str = "text/plain",
         metadata: Mapping[str, Any] | None = None,
     ) -> "AgentArtifact":
@@ -103,7 +103,7 @@ class AgentArtifact:
     def from_dict(cls, payload: Mapping[str, Any]) -> "AgentArtifact":
         content = _copy(payload.get("content"))
         return cls(
-            kind=str(payload.get("kind") or "narrative_draft"),
+            kind=str(payload.get("kind") or "text"),
             content_type=str(payload.get("content_type") or "text/plain"),
             content=content,
             content_hash=str(payload.get("content_hash") or _hash(content)),
@@ -586,8 +586,7 @@ class ExecutionPlanCompiler:
                     {
                         "project_input": player_input,
                         "context": _copy(context or {}),
-                        "output_contract": {"kind": "narrative_draft", "content_type": "text/plain"},
-                    },
+                },
                 )
                 if isinstance(preview, Mapping) and isinstance(preview.get("preview"), Mapping):
                     preview = preview["preview"]
@@ -715,7 +714,12 @@ class GraphExecutionError(RuntimeError):
 
 
 class GraphRuntimeExecutor:
-    """Adapter that feeds a Graph output Artifact into the legacy TurnDraft seam."""
+    """Compatibility executor that delegates output interpretation to an adapter.
+
+    New callers should compose :class:`AgentFrameworkExecutor` with a selected
+    adapter directly. This name remains for legacy executor-factory callers,
+    but Graph Runtime itself no longer knows about RP parsing or output tags.
+    """
 
     def __init__(self, graph_runtime: GraphRuntime, plan: ExecutionPlan, *, observer: Any = None):
         self.graph_runtime = graph_runtime
@@ -724,16 +728,10 @@ class GraphRuntimeExecutor:
 
     def run(self, text: str, compiled_context=None):
         del compiled_context
-        result = self.graph_runtime.run(
-            self.plan,
-            AgentArtifact.input(text),
-            observer=self.observer,
-        )
-        if not result.ok or result.output_artifact is None:
-            raise GraphExecutionError(result)
-        content = result.output_artifact.content
-        if not isinstance(content, str):
-            content = json.dumps(content, ensure_ascii=False)
-        from engine.turn_parser import parse_turn_text
+        from engine.agent_framework import AdaptedGraphExecutor, AgentFrameworkExecutor
+        from engine.rp_turn_adapter import RPTurnAdapter
 
-        return parse_turn_text(content, fallback_input=text)
+        return AdaptedGraphExecutor(
+            AgentFrameworkExecutor(self.graph_runtime, self.plan, observer=self.observer),
+            RPTurnAdapter(),
+        ).run(text)

@@ -44,9 +44,12 @@ AIRP 是面向玩家的本地独立角色扮演引擎：玩家可导入和游玩
 | **世界书条目** | 卡片内按主题组织的设定正文；导入后正文存于 `memory/reference.md`。 |
 | **catalog** | 世界书条目的轻量清单；每条提供标题和 usage，供叙事 agent 决定是否加载。 |
 | **usage** | 一句“讲什么 + 何时读”的条目说明，类似 skill description。 |
-| **MVU** | 卡作者变量更新格式；叙事中输出命令，转换为变量状态和审计差分。 |
+| **MVU** | 卡作者可选的变量更新协议；由 RP Turn Adapter 从 Artifact 中解释并转换为变量状态和审计差分。 |
 | **回合** | 用户输入 → 上下文准备 → 叙事生成 → MVU 执行 → 前端交付 → 记忆更新。 |
 | **runtime/harness** | 调度 agent、工具、上下文和用户输入的执行环境。当前为 Claude Code；目标是独立实现。 |
+| **Agent Framework** | 调度用户定义的 Agent 团队、模型调用、工具、Artifact、Graph Run 和 Trace 的通用框架；不规定故事内容或模型输出格式。 |
+| **Artifact** | Agent 节点产生的可传递结果；它是 Graph Run 的交接事实，不代表特定故事内容或文本协议。 |
+| **RP Turn Adapter** | 将 Agent Framework 的 Artifact 按用户选择的角色扮演协议解释为回合、变量变化和前端投影的可选适配层。 |
 
 ## 阅读顺序
 

@@ -14,6 +14,9 @@
 用法:
   python skills/start_runtime.py <card_folder> <ROOT>
   python skills/start_runtime.py <card_folder> <ROOT> --mock   # FakeProvider，不调真实模型
+
+``skills/`` 目前只作为过渡入口。生产包入口是 ``airp-runtime``；直接执行
+本文件仍受支持，方便旧脚本和开发环境迁移。
 """
 from __future__ import annotations
 
@@ -26,7 +29,15 @@ import time
 from pathlib import Path
 
 SKILLS = Path(__file__).resolve().parent
-sys.path.insert(0, str(SKILLS))
+REPO_ROOT = SKILLS.parent
+SRC_ROOT = REPO_ROOT / "src"
+if str(SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(SRC_ROOT))
+
+from airp.bootstrap import bootstrap_legacy_runtime  # noqa: E402
+
+_LAYOUT = bootstrap_legacy_runtime(REPO_ROOT)
+SKILLS = _LAYOUT.skills
 
 PORT = 8765
 MAX_WAIT = 15.0
@@ -178,7 +189,7 @@ def _deliver_opening(
         RealProviderAdapter,
         UsageRecord,
     )
-    from engine.turn_parser import parse_turn_text
+    from engine.agent_framework import AgentArtifact
 
     config = runtime_config
     if not isinstance(config, dict):
@@ -188,15 +199,17 @@ def _deliver_opening(
         config = store.freeze().data
     graph = config.get("graph") or {}
     nodes = [node for node in graph.get("nodes", []) if node.get("enabled", True)]
-    if not nodes or nodes[-1].get("role") != "narrative_director":
-        raise ValueError("generated opening requires a final narrative_director node")
+    if not nodes:
+        raise ValueError("generated opening requires at least one enabled graph node")
     node = nodes[-1]
-    instruction = (
-        "请根据角色设定生成一段自然的中文开场叙事。不要虚构玩家已经做出的行动。"
-        "输出 <content>、<summary> 和 <options>；如需初始化变量，可输出 <UpdateVariable>。"
-    )
-    if node.get("instruction"):
-        instruction += "\n本次写作节点指令：" + node["instruction"]
+    turn_adapter = getattr(runtime, "turn_adapter", None)
+    validate_opening_plan = getattr(turn_adapter, "validate_opening_plan", None)
+    if callable(validate_opening_plan):
+        validate_opening_plan(config)
+    opening_instruction = getattr(turn_adapter, "opening_instruction", None)
+    if not callable(opening_instruction):
+        raise TypeError("selected TurnAdapter does not support generated openings")
+    instruction = opening_instruction(node.get("instruction") or "")
     compiled = runtime.compile_opening_context(instruction)
     adapter = provider or RealProviderAdapter(
         mock=False,
@@ -235,7 +248,12 @@ def _deliver_opening(
                 raise
     if not raw_text:
         raise RuntimeError("opening provider returned empty content")
-    draft = parse_turn_text(raw_text)
+    if turn_adapter is None or not callable(getattr(turn_adapter, "interpret", None)):
+        raise TypeError("generated opening requires a TurnAdapter")
+    draft = turn_adapter.interpret(
+        AgentArtifact.text(raw_text),
+        context={"phase": "opening", "graph_id": config.get("graph_id")},
+    )
     if not draft.content.strip():
         raise RuntimeError("opening provider returned no visible content")
     tokens = {
@@ -268,7 +286,7 @@ def _wait_server_ready(url: str, timeout: float = MAX_WAIT) -> bool:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         try:
-            subprocess.run(["curl", "-sf", "--max-time", "2", f"{url}/api/pending"],
+            subprocess.run(["curl", "-sf", "--max-time", "2", f"{url}/v1/session/snapshot"],
                            check=True, capture_output=True, timeout=3)
             return True
         except Exception:
@@ -292,6 +310,10 @@ def main() -> None:
     if not card_folder.is_dir():
         _die(f"卡片文件夹不存在: {card_folder}")
 
+    from engine.workspace import Workspace
+
+    workspace = Workspace.default().ensure()
+
     # 2. Clean :8765 + stale processes
     killed = _kill_port(PORT)
     _kill_legacy_skills_processes()
@@ -309,8 +331,8 @@ def main() -> None:
         if r.returncode != 0:
             _die(f"import_prepare 失败: {r.stderr[:500]}")
 
-    # 4. Construct runtime. Each task resolves its executor from the graph frozen
-    # in its source snapshot, so config edits affect only later tasks.
+    # 4. Construct the runtime. Normal turns resolve their graph from the
+    # Workspace-backed Studio Project; legacy config is opening compatibility.
     from engine.context_compiler import ContextPolicy
     from engine.executor_factory import RuntimeExecutorFactory
     from engine.provider_profiles import ProviderProfileService
@@ -322,14 +344,13 @@ def main() -> None:
 
     config_store = RuntimeConfigStore(styles)
     frozen_config = config_store.freeze().data
-    graph = frozen_config["graph"]
-    manifest_policy = ContextPolicy(
-        version=f"runtime-v1:{frozen_config['preset_id']}",
-        token_budget=frozen_config["preset"]["token_budget"],
-    )
+    # Workspace-backed Studio definitions are authoritative for normal turns.
+    # Keep the legacy config only for the one-time opening compatibility path;
+    # turn snapshots must not freeze presets/settings from the shipped tree.
+    manifest_policy = ContextPolicy(version="runtime-v1", token_budget=8000)
     provider_profile_service = ProviderProfileService(
-        ProviderProfileStore(styles),
-        LocalSecretStore(styles / "studio" / "secrets.json"),
+        ProviderProfileStore(styles, workspace=workspace),
+        LocalSecretStore(workspace.secrets_path),
     )
     executor_factory = RuntimeExecutorFactory(
         mock=mock,
@@ -347,11 +368,11 @@ def main() -> None:
             # callers and legacy test helpers that inspect or swap runtime.executor.
             executor=MultiTurnFakeExecutor(),
             session_id=session_id,
-            session_settings=frozen_config["settings"],
+            session_settings={},
             manifest_policy=manifest_policy,
-            runtime_config_store=config_store,
+            runtime_config_store=None,
             executor_factory=executor_factory,
-            max_commit_validation_retries=graph["commit_validation_retries"],
+            max_commit_validation_retries=3,
             bootstrap_legacy_history=bootstrap_legacy_history,
         )
 
@@ -398,6 +419,7 @@ def main() -> None:
         preset_root=config_store.preset_root,
         graph_root=config_store.graph_root,
         session_manager=session_manager,
+        workspace=workspace,
     )
     server.start()
     url = f"http://localhost:{PORT}"

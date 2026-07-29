@@ -58,15 +58,23 @@ class ProviderProfileStore:
     no Agent model is imported here.
     """
 
-    def __init__(self, static_root: str | Path, *, library_root: str | Path | None = None):
+    def __init__(
+        self,
+        static_root: str | Path,
+        *,
+        library_root: str | Path | None = None,
+        workspace=None,
+    ):
         self.static_root = Path(static_root).resolve()
+        workspace_providers_root = getattr(workspace, "providers_root", None)
+        workspace_agents_root = getattr(workspace, "agents_root", None)
         self.library_root = (
             Path(library_root).resolve()
             if library_root is not None
-            else self.static_root / "studio" / "providers"
+            else (Path(workspace_providers_root).resolve() if workspace_providers_root else self.static_root / "studio" / "providers")
         )
         self._agent_roots = (
-            self.static_root / "studio" / "agents",
+            (Path(workspace_agents_root).resolve() if workspace_agents_root else self.static_root / "studio" / "agents"),
             self.static_root / "agents",
         )
         self._lock = threading.RLock()

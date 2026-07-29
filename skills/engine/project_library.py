@@ -56,14 +56,16 @@ class ProjectLibrary:
         *,
         project_root: str | Path | None = None,
         worldbooks: WorldbookLibrary | None = None,
+        workspace=None,
     ) -> None:
         self.static_root = Path(static_root).resolve()
+        workspace_projects_root = getattr(workspace, "projects_root", None)
         self.project_root = (
             Path(project_root).resolve()
             if project_root is not None
-            else self.static_root / "studio" / "projects"
+            else (Path(workspace_projects_root).resolve() if workspace_projects_root else self.static_root / "studio" / "projects")
         )
-        self.worldbooks = worldbooks or WorldbookLibrary(self.static_root)
+        self.worldbooks = worldbooks or WorldbookLibrary(self.static_root, workspace=workspace)
         self._lock = threading.RLock()
 
     def list_projects(self) -> list[dict[str, Any]]:

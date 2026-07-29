@@ -47,11 +47,17 @@ class WorldbookLibraryError(ValueError):
 class WorldbookLibrary:
     """Own reusable Worldbook Definitions and Project binding records."""
 
-    def __init__(self, static_root: str | Path, *, library_root: str | Path | None = None):
+    def __init__(self, static_root: str | Path, *, library_root: str | Path | None = None, workspace=None):
         self.static_root = Path(static_root).resolve()
         studio_root = self.static_root / "studio"
-        self.library_root = Path(library_root).resolve() if library_root else studio_root / "worldbooks"
-        self.project_root = studio_root / "projects"
+        workspace_worldbooks_root = getattr(workspace, "worldbooks_root", None)
+        workspace_projects_root = getattr(workspace, "projects_root", None)
+        self.library_root = (
+            Path(library_root).resolve()
+            if library_root
+            else (Path(workspace_worldbooks_root).resolve() if workspace_worldbooks_root else studio_root / "worldbooks")
+        )
+        self.project_root = Path(workspace_projects_root).resolve() if workspace_projects_root else studio_root / "projects"
         self._lock = threading.RLock()
 
     def list_worldbooks(self) -> list[dict[str, Any]]:

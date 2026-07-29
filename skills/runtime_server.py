@@ -58,6 +58,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -66,21 +67,26 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 from urllib.request import Request, urlopen
 
-from engine.agent_definitions import AgentDefinitionError, AgentDefinitionService, AgentDefinitionStore
+SRC_ROOT = Path(__file__).resolve().parents[1] / "src"
+if str(SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(SRC_ROOT))
+
+from airp.workspace import Workspace
+from airp.application import Application
+from engine.agent_definitions import AgentDefinitionError
 from engine.commands import SessionCommandService
-from engine.graph_definitions import GraphDefinitionError, GraphDefinitionService, GraphDefinitionStore
+from engine.graph_definitions import GraphDefinitionError
 from engine.graph_runtime import ExecutionPlanCompiler, GraphRuntime
 from engine.node_runner import ProviderNodeRunner
 from engine.provider import runtime_provider_api_key, set_runtime_provider_override
-from engine.provider_profiles import ProviderConnectionError, ProviderProfileService
-from engine.project_library import ProjectLibrary, ProjectLibraryError
+from engine.provider_profiles import ProviderConnectionError
+from engine.project_library import ProjectLibraryError
 from engine.runtime import RuntimeEvent, SessionTurnRuntime
-from engine.runtime_config import CONFIG_ID_RE, RuntimeConfigError, RuntimeConfigStore
+from engine.runtime_config import CONFIG_ID_RE, RuntimeConfigError
 from engine.session_manager import SessionManager, SessionManagerError
-from engine.secret_store import LocalSecretStore
-from engine.studio_library import ProviderProfileError, ProviderProfileStore
+from engine.studio_library import ProviderProfileError
 from engine.studio_migration import bootstrap_legacy_runtime_library
-from engine.worldbook_library import WorldbookLibrary, WorldbookLibraryError
+from engine.worldbook_library import WorldbookLibraryError
 
 SSE_HEARTBEAT_SECONDS = 15.0
 SSE_POLL_INTERVAL_SECONDS = 0.05
@@ -88,21 +94,16 @@ SUBMIT_ACCEPT_WAIT_SECONDS = 2.0
 RUNNING_TASK_STATUSES = frozenset({"queued", "leased", "running", "projection_pending"})
 DEFAULT_PROVIDER_BASE_URL = "https://api.deepseek.com"
 MODEL_DISCOVERY_TIMEOUT_SECONDS = 10
-STUDIO_PROVIDER_PATHS = ("/v1/studio/providers", "/api/studio/providers")
-STUDIO_AGENT_PATHS = (
-    "/v1/studio/agents",
-    "/api/studio/agents",
-    "/v1/studio/agent-definitions",
-    "/api/studio/agent-definitions",
-)
-STUDIO_PROMPT_PRESET_PATHS = ("/v1/studio/prompt-presets", "/api/studio/prompt-presets")
-STUDIO_GRAPH_PATHS = ("/v1/studio/graphs", "/api/studio/graphs")
-STUDIO_WORLDBOOK_PATHS = ("/v1/studio/worldbooks", "/api/studio/worldbooks")
-STUDIO_PROJECT_PATHS = ("/v1/studio/projects", "/api/studio/projects")
-STUDIO_PROJECT_CONTEXT_PATHS = ("/v1/studio/project-context", "/api/studio/project-context")
-STUDIO_GRAPH_RUN_PATHS = ("/v1/studio/graph-runs", "/api/studio/graph-runs")
-STUDIO_NODE_RUN_PATHS = ("/v1/studio/node-runs", "/api/studio/node-runs")
-STUDIO_DEBUG_REPLAY_PATHS = ("/v1/studio/debug-replays", "/api/studio/debug-replays")
+STUDIO_PROVIDER_PATHS = ("/v1/studio/providers",)
+STUDIO_AGENT_PATHS = ("/v1/studio/agents", "/v1/studio/agent-definitions")
+STUDIO_PROMPT_PRESET_PATHS = ("/v1/studio/prompt-presets",)
+STUDIO_GRAPH_PATHS = ("/v1/studio/graphs",)
+STUDIO_WORLDBOOK_PATHS = ("/v1/studio/worldbooks",)
+STUDIO_PROJECT_PATHS = ("/v1/studio/projects",)
+STUDIO_PROJECT_CONTEXT_PATHS = ("/v1/studio/project-context",)
+STUDIO_GRAPH_RUN_PATHS = ("/v1/studio/graph-runs",)
+STUDIO_NODE_RUN_PATHS = ("/v1/studio/node-runs",)
+STUDIO_DEBUG_REPLAY_PATHS = ("/v1/studio/debug-replays",)
 AGENT_TRACE_DETAIL_PATH = "/v1/session/agent-traces"
 
 
@@ -140,6 +141,7 @@ class SessionRuntimeServer:
         preset_root: str | None = None,
         graph_root: str | None = None,
         session_manager: SessionManager | None = None,
+        workspace: Workspace | str | Path | None = None,
     ):
         self.runtime = runtime
         self.service = command_service or SessionCommandService(runtime)
@@ -148,53 +150,37 @@ class SessionRuntimeServer:
         self.port = port
         self.heartbeat_seconds = heartbeat_seconds
         self.poll_interval_seconds = poll_interval_seconds
+        if workspace is None:
+            self.workspace = None
+        elif isinstance(workspace, Workspace):
+            self.workspace = workspace.ensure()
+        else:
+            self.workspace = Workspace.from_root(workspace).ensure()
         # Frontend compat: serve static files (index.html/content.js/state.js/...)
         # from styles dir, and adapt the legacy /api/* calls onto the runtime.
         self.static_root = Path(static_root).resolve() if static_root else None
         repo_root = Path(__file__).resolve().parents[1]
         self.preset_root = Path(preset_root).resolve() if preset_root else ((self.static_root / "presets").resolve() if self.static_root else None)
         self.graph_root = Path(graph_root).resolve() if graph_root else ((self.static_root / "graphs").resolve() if self.static_root else (repo_root / "graphs").resolve())
-        self.provider_profile_store = ProviderProfileStore(self.static_root) if self.static_root else None
-        self.provider_secret_store = LocalSecretStore(self.static_root / "studio" / "secrets.json") if self.static_root else None
-        self.provider_profiles = (
-            ProviderProfileService(
-                self.provider_profile_store,
-                self.provider_secret_store,
-                discovery_timeout=MODEL_DISCOVERY_TIMEOUT_SECONDS,
-            )
-            if self.provider_profile_store is not None and self.provider_secret_store is not None
-            else None
+        self.application = Application.assemble(
+            static_root=self.static_root,
+            workspace=self.workspace,
+            preset_root=self.preset_root,
+            graph_root=self.graph_root,
         )
-        self.agent_store = (
-            AgentDefinitionStore(
-                self.static_root,
-                graph_root=self.graph_root,
-                preset_root=self.preset_root,
-            )
-            if self.static_root
-            else None
-        )
-        self.agent_definitions = AgentDefinitionService(self.agent_store) if self.agent_store else None
+        self.provider_profile_store = self.application.provider_profile_store
+        self.provider_secret_store = self.application.provider_secret_store
+        self.provider_profiles = self.application.provider_profiles
+        self.agent_store = self.application.agent_store
+        self.agent_definitions = self.application.agent_definitions
         # Short alias for callers that use the Studio object name directly.
         self.agents = self.agent_definitions
-        self.graph_store = GraphDefinitionStore(self.static_root, agent_store=self.agent_store) if self.static_root else None
-        self.graph_definitions = GraphDefinitionService(self.graph_store) if self.graph_store else None
+        self.graph_store = self.application.graph_store
+        self.graph_definitions = self.application.graph_definitions
         self.graphs = self.graph_definitions
-        self.worldbooks = WorldbookLibrary(self.static_root) if self.static_root else None
-        self.projects = (
-            ProjectLibrary(self.static_root, worldbooks=self.worldbooks)
-            if self.static_root and self.worldbooks is not None
-            else None
-        )
-        self.config_store = (
-            RuntimeConfigStore(
-                self.static_root,
-                preset_root=self.preset_root,
-                graph_root=self.graph_root,
-            )
-            if self.static_root
-            else None
-        )
+        self.worldbooks = self.application.worldbooks
+        self.projects = self.application.projects
+        self.config_store = self.application.config_store
         self._bootstrap_legacy_studio_library()
         self._studio_graph_configured = False
         self._configure_runtime_worldbooks()
@@ -445,6 +431,12 @@ class SessionRuntimeServer:
             self._submit_results.clear()
 
     def _runtime_selection(self) -> dict[str, str | None]:
+        if self.workspace is not None and self.projects is not None:
+            try:
+                project = self.projects.get_project(self.runtime.project_id)
+            except ProjectLibraryError:
+                return {"preset_id": None, "graph_id": None}
+            return {"preset_id": None, "graph_id": project.get("graph_id")}
         if self.config_store is None:
             return {"preset_id": None, "graph_id": None}
         try:
@@ -521,6 +513,38 @@ class SessionRuntimeServer:
 
     def _active_narrative_node(self) -> tuple[dict | None, str | None]:
         """Return the selected graph final narrative node and graph id."""
+        if self.workspace is not None and self.graph_definitions is not None:
+            graph_id = self._runtime_selection().get("graph_id")
+            if not graph_id:
+                return None, None
+            try:
+                graph = self.graph_definitions.get_graph(graph_id)
+            except GraphDefinitionError:
+                return None, graph_id
+            nodes = [node for node in graph.get("nodes", []) if node.get("enabled", True)]
+            if not nodes:
+                return None, graph_id
+            output_id = graph.get("output_node_id") or nodes[-1].get("node_id")
+            node = next((item for item in nodes if item.get("node_id") == output_id), nodes[-1])
+            agent = {}
+            if self.agent_store is not None:
+                try:
+                    agent = self.agent_store.get_agent(node.get("agent_id"))
+                except (AgentDefinitionError, TypeError):
+                    agent = {}
+            profile = {}
+            profile_id = node.get("provider_profile_id") or agent.get("provider_profile_id")
+            if profile_id and self.provider_profile_store is not None:
+                try:
+                    profile = self.provider_profile_store.get_profile(profile_id)
+                except ProviderProfileError:
+                    profile = {}
+            return {
+                "id": node.get("node_id"),
+                "provider": profile.get("provider") or profile.get("name") or "deepseek",
+                "model": node.get("model_id") or agent.get("model_id"),
+                "provider_profile_id": profile_id,
+            }, graph_id
         if self.config_store is None:
             return None, None
         try:
@@ -818,6 +842,10 @@ class SessionRuntimeServer:
         is only a compatibility bridge for ``start_runtime.py`` which freezes
         one legacy graph before constructing the HTTP server.
         """
+        if self.workspace is not None:
+            # Workspace-backed runs execute directly from Studio definitions.
+            # Legacy projection remains available only for the old launcher.
+            return
         if self.config_store is None or self.graph_definitions is None or self.agent_store is None:
             return
         try:
@@ -2143,6 +2171,26 @@ class SessionRuntimeServer:
     def _write_runtime_selection(self, body: dict) -> tuple[dict[str, Any], int]:
         if not isinstance(body, dict):
             return {"ok": False, "error": "invalid_payload"}, 400
+        if self.workspace is not None:
+            if self.projects is None or self.graph_definitions is None:
+                return {"ok": False, "error": "studio_library_unavailable"}, 501
+            current = self._runtime_selection()
+            graph_id = body.get("graph_id", current.get("graph_id"))
+            if not isinstance(graph_id, str) or not graph_id.strip():
+                return {"ok": False, "error": "graph_id_required"}, 400
+            try:
+                self.graph_definitions.get_graph(graph_id)
+                self.projects.update_project(self.runtime.project_id, {"graph_id": graph_id})
+            except GraphDefinitionError as exc:
+                return {"ok": False, **exc.to_dict()}, exc.status
+            except ProjectLibraryError as exc:
+                return {"ok": False, **exc.to_dict()}, exc.status
+            self._configure_runtime_studio_graph()
+            return {
+                "ok": True,
+                "runtime": {"preset_id": None, "graph_id": graph_id},
+                "snapshot": self._snapshot_payload(),
+            }, 200
         if self.config_store is None:
             return {"ok": False, "error": "config_root_unavailable"}, 400
         current = self._runtime_selection()

@@ -2,7 +2,9 @@
 
 ## 当前架构
 
-当前系统由浏览器前端、本地 HTTP bridge、CLI 编排脚本和 `skills/engine/` 深模块组成。独立 runtime 已有可玩的 card-local 多 Session 黄金路径；原 Claude Code loop 仍保留为 legacy 路径。
+当前系统仍由浏览器前端、本地 HTTP bridge、CLI 编排脚本和 `skills/engine/` 深模块组成；迁移目标是将生产实现收敛到 `src/airp`，把 `skills/` 降为过渡期工具入口。独立 runtime 已有可玩的 card-local 多 Session 黄金路径；原 Claude Code loop 仍保留为 legacy 路径。
+
+ADR-0018 确定后续架构方向：Agent Framework 只负责内容中立的 Agent/Graph 运作，RP 回合解析与 `<content>` 等格式规则属于 Project 选择的 RP Turn Adapter。Studio 定义是正常运行的唯一来源，旧配置仅用于迁移和回放；用户可变数据统一进入 Workspace，HTTP 正式入口统一为 `/v1/*`。
 
 ```text
 Browser ── HTTP commands / SSE ──► runtime_server.py
@@ -28,7 +30,7 @@ Browser ── HTTP commands / SSE ──► runtime_server.py
 
 ```text
 Browser
-  │ POST /api/submit
+  │ POST /v1/session/commands/submit
   ▼
 server.py ── input.txt/.pending ──► runtime loop (Claude Code 当前实现)
                                       │
@@ -77,8 +79,8 @@ server.py ── input.txt/.pending ──► runtime loop (Claude Code 当前�
 
 独立 runtime 的回合流程：
 
-1. 浏览器 `POST /api/submit`，runtime 建立带幂等键的持久 task；
-2. runtime 在 task 的 base revision 冻结 card/settings/preset/graph，编译 Context Manifest；
+1. 浏览器 `POST /v1/session/commands/submit`，runtime 建立带幂等键的持久 task；
+2. runtime 在 task 的 base revision 冻结 card、Project、Studio Graph 和相关世界书输入，编译 Context Manifest；legacy settings/preset 只在兼容回放路径出现；
 3. provider 流式产生 preview 与最终叙事文本，SSE 向浏览器发布任务状态；
 4. harness 解析文本、执行质量与 MVU 门禁，原子写入 commit/revision/state；
 5. active lineage 重建兼容 `chat_log.json`、`state.js` 与 `content.js` 投影。
@@ -87,13 +89,13 @@ server.py ── input.txt/.pending ──► runtime loop (Claude Code 当前�
 
 `narrative.preview.delta` 是 durable event 的临时浏览器投影：前端按 task id 累积 delta 为一个“生成中”的 AI 回合；成功、失败、取消、开场或存档切换时清除它，正式 `turn.committed` 投影仍是唯一历史事实。这使 SSE 中断时的 snapshot/content 轮询恢复不会把半成品写进 `chat_log.json`。
 
-Provider 面板通过 `/api/provider/config` 读取或更新当前活动图最后一个 `narrative_director` 节点的 model，并将非敏感 `base_url` 保存至 `settings.json.provider`，供下一 task 的冻结配置使用。`/api/provider/models` 调用 OpenAI-compatible `{base_url}/models` 获取模型列表。网页输入的 key 只保存在 Python 进程内存，并仅复制到每次 Node sidecar 子进程的 `DEEPSEEK_API_KEY` 环境；它不进入 settings、graph、IPC body、事件、manifest、SQLite、projection 或响应。
+Provider 面板通过 `/v1/studio/providers` 管理 Provider Profile，并将非敏感连接资料保存到 Workspace。网页输入的 key 只进入本地 Secret Store；它不进入 Graph、Execution Plan、事件、manifest、SQLite、projection 或响应。
 
 顺序 graph 无论有一个还是多个节点，均通过 `SequentialAgentGraph` 执行。runtime 发布 `agent_node.started/finished`、`model_call.started/finished` 与 `tool_run.*` durable events；前端 Agent Trace 以此显示当前节点、模型耗时/token 和工具结果。graph 仍是受限的线性 writing-role pipeline，不是通用工作流 DSL。
 
 存档切换不复制 JSON 文件：`SessionManager` 选择目标 session 的 runtime，并由其 active lineage 原地重建共享 projection。生成 lease 活动时，创建、切换和删除返回冲突，避免浏览器在 provider 调用中途换掉 active runtime。
 
-开场是独立的 provider 阶段：卡片已有 `first_mes` 时直接交付；没有时使用当前 preset 和最终 `narrative_director` 节点生成。生成结果写成 AI-only 的 revision 0 opening，不创建玩家 task/commit/revision；opening 中经校验的初始变量成为 revision 0 状态，usage 和 `session.opening_generated` 事件随 opening 保存。这样玩家第一条输入始终对应 revision 1。
+开场是 RP Turn Adapter 的独立阶段：卡片已有 `first_mes` 时直接交付；没有时由所选 Project Adapter 生成或解释。生成结果写成 AI-only 的 revision 0 opening，不创建玩家 task/commit/revision；opening 中经 Adapter 解释的初始变量成为 revision 0 状态，usage 和 `session.opening_generated` 事件随 opening 保存。这样玩家第一条输入始终对应 revision 1。
 
 Legacy Claude Code 回合流程：
 

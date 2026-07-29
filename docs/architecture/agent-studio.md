@@ -132,7 +132,7 @@ primary_artifact:
 diagnostics_ref
 ```
 
-第一阶段主要使用文本 Artifact，但 `kind` 可区分 `plan`、`review`、`narrative_draft` 等产物。Graph Runtime 只读取状态和 Artifact，不解析模型原始响应。只有 `output_node_id` 的 Artifact 才交给回合 harness 解析、校验并提交故事状态。
+第一阶段主要使用文本 Artifact，但 `kind` 由用户定义的 Graph 或所选 Adapter 约定，例如 `plan`、`review` 或 RP 适配器自己的回合产物。Agent Framework 只读取状态和 Artifact，不解析模型原始响应，也不默认注入 `narrative_draft` 输出契约。只有 `output_node_id` 的 Artifact 才交给所选 Adapter 解释；RP Adapter 再决定是否校验并提交故事状态。
 
 ## 失败与重试
 

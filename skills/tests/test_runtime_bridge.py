@@ -32,7 +32,7 @@ from engine.agent_graph import SequentialAgentGraph, SequentialGraphNode  # noqa
 from engine.director import ProviderDrivenDirector, ScriptedDirector  # noqa: E402
 from engine.commands import SessionCommandService  # noqa: E402
 from engine.provider import FakeProvider  # noqa: E402
-from engine.runtime import SessionTurnRuntime  # noqa: E402
+from engine.runtime import SessionTurnRuntime, TurnDraft  # noqa: E402
 from engine.runtime_config import RuntimeConfigStore  # noqa: E402
 from runtime_server import SessionRuntimeServer  # noqa: E402
 import runtime_server  # noqa: E402
@@ -255,6 +255,69 @@ def test_generated_opening_is_ai_only_revision_zero_and_uses_selected_config(tmp
     serialized_messages = json.dumps(request.messages, ensure_ascii=False)
     assert "OPENING_PRESET_MARKER" in serialized_messages
     assert "OPENING_GRAPH_MARKER" in serialized_messages
+
+
+def test_generated_opening_delegates_semantics_to_selected_turn_adapter(tmp_path):
+    styles = tmp_path / "styles"
+    styles.mkdir()
+    _write_runtime_config(styles)
+    card = tmp_path / "card"
+    _write_card(card)
+
+    class NeutralOpeningAdapter:
+        adapter_id = "test-neutral"
+
+        def __init__(self):
+            self.validated_config = None
+            self.artifact = None
+
+        def validate_opening_plan(self, config):
+            self.validated_config = config
+
+        def opening_instruction(self, node_instruction=""):
+            return "ADAPTER_OPENING_INSTRUCTION\n" + node_instruction
+
+        def interpret(self, artifact, *, player_input="", context=None):
+            del player_input, context
+            self.artifact = artifact
+            return TurnDraft(content=artifact.content, summary="adapter summary")
+
+    turn_adapter = NeutralOpeningAdapter()
+    runtime = SessionTurnRuntime(
+        database_path=tmp_path / "r.sqlite3",
+        card_folder=card,
+        projection_root=styles,
+        executor=_scripted_director(),
+        runtime_config_store=RuntimeConfigStore(styles),
+        turn_adapter=turn_adapter,
+    )
+    provider = FakeProvider(
+        [[
+            {"type": "text", "text": "RAW_OPENING"},
+            {"type": "final", "usage": {"prompt_tokens": 1, "completion_tokens": 2, "total_tokens": 3}},
+        ]],
+        model="opening-model",
+    )
+
+    origin = _deliver_opening(
+        card,
+        styles,
+        runtime,
+        mock=False,
+        runtime_config=RuntimeConfigStore(styles).freeze().data,
+        provider=provider,
+    )
+
+    assert origin == "generated"
+    assert turn_adapter.validated_config is not None
+    assert turn_adapter.artifact is not None
+    assert turn_adapter.artifact.content == "RAW_OPENING"
+    assert json.dumps(provider.requests[-1].messages, ensure_ascii=False).find(
+        "ADAPTER_OPENING_INSTRUCTION"
+    ) >= 0
+    log = json.loads((card / "chat_log.json").read_text(encoding="utf-8"))
+    assert log[0]["ai"].startswith("RAW_OPENING")
+    assert log[0]["summary"] == "adapter summary"
 
 
 # ════════════════════════════════════════════════════════════════════

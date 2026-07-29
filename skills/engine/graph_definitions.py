@@ -60,18 +60,21 @@ class GraphDefinitionStore:
         library_root: str | Path | None = None,
         agent_store=None,
         project_root: str | Path | None = None,
+        workspace=None,
     ) -> None:
         self.static_root = Path(static_root).resolve()
+        workspace_graphs_root = getattr(workspace, "graphs_root", None)
+        workspace_projects_root = getattr(workspace, "projects_root", None)
         self.library_root = (
             Path(library_root).resolve()
             if library_root is not None
-            else self.static_root / "studio" / "graphs"
+            else (Path(workspace_graphs_root).resolve() if workspace_graphs_root else self.static_root / "studio" / "graphs")
         )
         self.agent_store = agent_store
         self.project_root = (
             Path(project_root).resolve()
             if project_root is not None
-            else self.static_root / "studio" / "projects"
+            else (Path(workspace_projects_root).resolve() if workspace_projects_root else self.static_root / "studio" / "projects")
         )
         self._lock = threading.RLock()
 

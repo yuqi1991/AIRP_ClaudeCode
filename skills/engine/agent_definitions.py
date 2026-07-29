@@ -103,15 +103,19 @@ class AgentDefinitionStore:
         library_root: str | Path | None = None,
         graph_root: str | Path | None = None,
         preset_root: str | Path | None = None,
+        workspace=None,
     ) -> None:
         self.static_root = Path(static_root).resolve()
+        workspace_agents_root = getattr(workspace, "agents_root", None)
+        workspace_graphs_root = getattr(workspace, "graphs_root", None)
         self.library_root = (
             Path(library_root).resolve()
             if library_root is not None
-            else self.static_root / "studio" / "agents"
+            else (Path(workspace_agents_root).resolve() if workspace_agents_root else self.static_root / "studio" / "agents")
         )
         graph_roots = [
             Path(graph_root).resolve() if graph_root is not None else None,
+            Path(workspace_graphs_root).resolve() if workspace_graphs_root else None,
             self.static_root / "studio" / "graphs",
             self.static_root / "graphs",
         ]
@@ -499,8 +503,6 @@ class AgentDefinitionStore:
         )
         handoff = request.get("handoff", request.get("upstream_artifact"))
         output_contract = request.get("output_contract")
-        if output_contract is None:
-            output_contract = {"kind": "narrative_draft", "content_type": "text/plain"}
 
         tool_protocol = self._tool_protocol(agent["tool_allowlist"])
         runtime_context = request.get("context") if isinstance(request.get("context"), dict) else {}
@@ -527,8 +529,11 @@ class AgentDefinitionStore:
             ("project_input", "Project input", "user", project_input, project_input is not None),
             ("handoff", "Agent handoff", "user", handoff, handoff is not None),
             ("tool_protocol", "Tool protocol", "system", tool_protocol, True),
-            ("output_contract", "Output contract", "system", output_contract, True),
         ]
+        if output_contract is not None:
+            source_specs.append(
+                ("output_contract", "Output contract", "system", output_contract, True)
+            )
         if preset is not None:
             source_specs.insert(
                 1,
