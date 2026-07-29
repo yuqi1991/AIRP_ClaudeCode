@@ -209,6 +209,29 @@ class ProjectLibrary:
 
         worldbook_ids = self._worldbook_ids(payload, facts)
         self._validate_worldbooks(worldbook_ids)
+        turn_adapter = payload.get("turn_adapter", facts.get("turn_adapter"))
+        if turn_adapter is None:
+            turn_adapter = {
+                "id": "rp",
+                "config": {
+                    "opening_instruction": "{{node_instruction}}",
+                    "required_final_node_role": None,
+                },
+            }
+        if not isinstance(turn_adapter, dict):
+            raise ProjectLibraryError("invalid_project", "turn_adapter must be an object")
+        adapter_id = turn_adapter.get("id") or "rp"
+        adapter_config = turn_adapter.get("config") or {}
+        if not isinstance(adapter_id, str) or not adapter_id.strip():
+            raise ProjectLibraryError("invalid_project", "turn_adapter.id must be a string")
+        if not isinstance(adapter_config, dict):
+            raise ProjectLibraryError("invalid_project", "turn_adapter.config must be an object")
+        opening_instruction = adapter_config.get("opening_instruction", "")
+        required_role = adapter_config.get("required_final_node_role")
+        if not isinstance(opening_instruction, str):
+            raise ProjectLibraryError("invalid_project", "turn_adapter opening_instruction must be a string")
+        if required_role is not None and not isinstance(required_role, str):
+            raise ProjectLibraryError("invalid_project", "turn_adapter required_final_node_role must be a string or null")
         return {
             "id": project_id,
             "name": name.strip(),
@@ -219,6 +242,14 @@ class ProjectLibrary:
             "assets": copy.deepcopy(assets),
             "graph_id": graph_id.strip() if isinstance(graph_id, str) else None,
             "worldbook_ids": worldbook_ids,
+            "turn_adapter": {
+                "id": adapter_id.strip(),
+                "config": {
+                    **copy.deepcopy(adapter_config),
+                    "opening_instruction": opening_instruction,
+                    "required_final_node_role": required_role,
+                },
+            },
             "created_at": self._timestamp(payload.get("created_at")),
             "updated_at": self._timestamp(payload.get("updated_at")),
         }

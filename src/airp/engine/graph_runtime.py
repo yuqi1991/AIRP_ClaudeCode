@@ -721,17 +721,26 @@ class GraphRuntimeExecutor:
     but Graph Runtime itself no longer knows about RP parsing or output tags.
     """
 
-    def __init__(self, graph_runtime: GraphRuntime, plan: ExecutionPlan, *, observer: Any = None):
+    def __init__(
+        self,
+        graph_runtime: GraphRuntime,
+        plan: ExecutionPlan,
+        *,
+        adapter=None,
+        observer: Any = None,
+    ):
+        if adapter is None or not callable(getattr(adapter, "interpret", None)):
+            raise TypeError("GraphRuntimeExecutor requires an explicit TurnAdapter")
         self.graph_runtime = graph_runtime
         self.plan = plan
+        self.adapter = adapter
         self.observer = observer
 
     def run(self, text: str, compiled_context=None):
         del compiled_context
         from airp.engine.agent_framework import AdaptedGraphExecutor, AgentFrameworkExecutor
-        from airp.engine.rp_turn_adapter import RPTurnAdapter
 
         return AdaptedGraphExecutor(
             AgentFrameworkExecutor(self.graph_runtime, self.plan, observer=self.observer),
-            RPTurnAdapter(),
+            self.adapter,
         ).run(text)

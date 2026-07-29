@@ -70,6 +70,7 @@ def test_compiler_builds_deterministic_catalog_only_payload():
     assert all(section["source"]["hash"] for section in first.manifest["sections"])
     payload_text = json.dumps(first.payload, ensure_ascii=False)
     assert "海港风俗" in payload_text
+    assert "你是 AIRP 的叙事导演" not in payload_text
     assert "海港正文不应自动进入" not in payload_text
     assert "任意旧文件" not in payload_text
 
@@ -455,8 +456,8 @@ def test_runtime_limits_worldbook_loads_per_call(tmp_path):
 # --- Manifest slotization / macros (pi-rp borrowing note §1) ---
 
 
-def test_default_preset_is_byte_identical_to_legacy_inline_behavior():
-    """Regression lock: DEFAULT_PRESET must not silently change payload bytes/hashes."""
+def test_default_preset_is_deterministic_without_engine_writing_policy():
+    """The default context stays deterministic and contains no hidden writing policy."""
     request = ContextCompileRequest(
         session_id="session-1",
         task_id="task-1",
@@ -466,8 +467,8 @@ def test_default_preset_is_byte_identical_to_legacy_inline_behavior():
         policy=ContextPolicy(version="test-v1", token_budget=4000),
     )
     compiled = compile_context(request)
-    assert compiled.payload_hash == "1f4239fd3b5a285e6525f0ce9bf6cd24d0fb89981fc62bef928fb7606eb932d7"
-    assert compiled.stable_payload_hash == "79f991ccf7bf98d150ab36e8deeb035b038edd4a2e64db1c095e3c811469e55f"
+    assert compiled.payload_hash == "1811931442368eb62de89e29ad754b36cd612f4196b9f7885e576d64640dcf24"
+    assert compiled.stable_payload_hash == "49e5c33ae950c29400ff62934d3c4362122e861a10db94e85c7b1df813b28e1b"
     assert compiled.manifest["preset_id"] == "default"
     assert compiled.manifest["macros_version"] == "macros-v1"
     # Extra metadata must not leak into the hashed payload shape.
@@ -520,7 +521,7 @@ def test_compile_time_macros_expand_before_hash_and_are_deterministic():
     from engine.context_compiler import ManifestSlot, PromptPreset, MACROS_VERSION
 
     def resolve_policy(request):
-        return "风格：{{style}}；人称：{{person}}；NSFW：{{nsfw}}；角色：{{charName}}；玩家：{{user}}", {
+        return "风格：{{settings.style}}；人称：{{settings.person}}；NSFW：{{settings.nsfw}}；角色：{{charName}}；玩家：{{user}}", {
             "id": "policy",
             "version": "macro-src",
         }
@@ -561,7 +562,8 @@ def test_compile_time_macros_expand_before_hash_and_are_deterministic():
     assert MACROS_VERSION in section["source"]["version"]
     assert first.manifest["macros_version"] == MACROS_VERSION
 
-    # Missing settings → empty string, never error, still deterministic.
+    # Missing settings leave user-authored paths visible for debugging rather
+    # than silently inventing legacy shorthand values.
     bare = ContextCompileRequest(
         session_id="s",
         task_id="t",
@@ -572,7 +574,7 @@ def test_compile_time_macros_expand_before_hash_and_are_deterministic():
         preset=preset,
     )
     empty = compile_context(bare)
-    assert empty.manifest["sections"][0]["content"] == "风格：；人称：；NSFW：；角色：；玩家："
+    assert empty.manifest["sections"][0]["content"] == "风格：{{settings.style}}；人称：{{settings.person}}；NSFW：{{settings.nsfw}}；角色：；玩家："
     assert compile_context(bare).payload_hash == empty.payload_hash
 
     # Two presets differing only by macro template produce different hashes.
@@ -614,7 +616,7 @@ def test_modular_directive_knobs_via_compose_preset_without_compiler_changes():
                 "style_directive",
                 "stable",
                 "style module",
-                "文风：{{style}}",
+                    "文风：{{settings.style}}",
                 source_id="style_module",
                 expand_macros=True,
             ),

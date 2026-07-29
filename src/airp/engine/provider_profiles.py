@@ -27,10 +27,18 @@ class ProviderConnectionError(RuntimeError):
 class ProviderProfileService:
     """Deep module for safe Provider Profile persistence and execution setup."""
 
-    def __init__(self, profile_store, secret_store, *, discovery_timeout: float = 10.0):
+    def __init__(
+        self,
+        profile_store,
+        secret_store,
+        *,
+        discovery_timeout: float = 10.0,
+        request_timeout: float = 120.0,
+    ):
         self._profiles = profile_store
         self._secrets = secret_store
         self._discovery_timeout = discovery_timeout
+        self._request_timeout = request_timeout
 
     def list_profiles(self) -> list[dict[str, Any]]:
         return [self._safe(profile) for profile in self._profiles.list_profiles()]
@@ -51,14 +59,14 @@ class ProviderProfileService:
     def test_connection(self, profile_id: str) -> list[str]:
         profile = self._profiles.get_profile(profile_id)
         try:
-            return self._adapter(profile).test_connection()
+            return self._adapter(profile, timeout=self._discovery_timeout).test_connection()
         except ProviderError as exc:
             raise ProviderConnectionError(exc, self._secrets) from exc
 
     def refresh_models(self, profile_id: str) -> dict[str, Any]:
         profile = self._profiles.get_profile(profile_id)
         try:
-            models = self._adapter(profile).discover_models()
+            models = self._adapter(profile, timeout=self._discovery_timeout).discover_models()
         except ProviderError as exc:
             raise ProviderConnectionError(exc, self._secrets) from exc
         return self._safe(self._profiles.update_profile(profile_id, {"model_ids": models}))
@@ -72,7 +80,7 @@ class ProviderProfileService:
         profile = self._profiles.get_profile(profile_id)
         if not profile.get("enabled", True):
             raise ValueError(f"Provider Profile {profile_id!r} is disabled")
-        return self._adapter(profile, model=model)
+        return self._adapter(profile, model=model, timeout=self._request_timeout)
 
     def _save(self, payload: dict, persist: Callable[[dict], dict]) -> dict[str, Any]:
         clean, api_key = self._split_secret(payload)
@@ -80,7 +88,7 @@ class ProviderProfileService:
         if api_key is not None:
             self._secrets.set(profile["id"], api_key)
         try:
-            models = self._adapter(profile).discover_models()
+            models = self._adapter(profile, timeout=self._discovery_timeout).discover_models()
         except ProviderError as exc:
             discovery = ProviderConnectionError(exc, self._secrets).to_dict()
         else:
@@ -102,7 +110,13 @@ class ProviderProfileService:
     def _safe(self, profile: dict) -> dict[str, Any]:
         return {**profile, "key_configured": self._secrets.has(profile["id"])}
 
-    def _adapter(self, profile: dict, *, model: str | None = None) -> OpenAICompatibleProviderAdapter:
+    def _adapter(
+        self,
+        profile: dict,
+        *,
+        model: str | None = None,
+        timeout: float | None = None,
+    ) -> OpenAICompatibleProviderAdapter:
         api_key = self._secrets.get(profile["id"])
         if not api_key:
             raise ProviderError("API key is not configured", "provider_rejected", False)
@@ -111,5 +125,5 @@ class ProviderProfileService:
             api_key=api_key,
             api_format=profile["api_format"],
             model=model or (profile.get("model_ids") or [""])[0],
-            timeout=self._discovery_timeout,
+            timeout=self._discovery_timeout if timeout is None else timeout,
         )

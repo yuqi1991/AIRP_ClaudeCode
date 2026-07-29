@@ -183,16 +183,8 @@ def test_generated_opening_is_ai_only_revision_zero_and_uses_selected_config(tmp
         runtime_config_store=config_store,
     )
     provider = FakeProvider(
-        [
             [
-                {
-                    "type": "error",
-                    "category": "provider_unavailable",
-                    "retryable": True,
-                    "message": "retry once",
-                }
-            ],
-            [
+                [
                 {
                     "type": "text",
                     "text": (
@@ -225,7 +217,7 @@ def test_generated_opening_is_ai_only_revision_zero_and_uses_selected_config(tmp
     runtime.resume_projection()
 
     assert origin == "generated"
-    assert provider.call_count == 2
+    assert provider.call_count == 1
     assert runtime.active_revision() == 0
     assert SessionCommandService(runtime).snapshot().current_task is None
     log = json.loads((card / "chat_log.json").read_text(encoding="utf-8"))
@@ -255,6 +247,26 @@ def test_generated_opening_is_ai_only_revision_zero_and_uses_selected_config(tmp
     serialized_messages = json.dumps(request.messages, ensure_ascii=False)
     assert "OPENING_PRESET_MARKER" in serialized_messages
     assert "OPENING_GRAPH_MARKER" in serialized_messages
+
+
+def test_default_rp_adapter_does_not_invent_opening_instruction(tmp_path):
+    styles = tmp_path / "styles"
+    styles.mkdir()
+    _write_runtime_config(styles)
+    card = tmp_path / "card"
+    _write_card(card)
+    runtime = SessionTurnRuntime(
+        database_path=tmp_path / "r.sqlite3",
+        card_folder=card,
+        projection_root=styles,
+        executor=_scripted_director(),
+        runtime_config_store=RuntimeConfigStore(styles),
+    )
+
+    compiled = runtime.compile_opening_context("")
+
+    assert runtime.turn_adapter.opening_instruction() == ""
+    assert all("AIRP" not in json.dumps(item, ensure_ascii=False) for item in compiled.payload)
 
 
 def test_generated_opening_delegates_semantics_to_selected_turn_adapter(tmp_path):
@@ -318,6 +330,50 @@ def test_generated_opening_delegates_semantics_to_selected_turn_adapter(tmp_path
     log = json.loads((card / "chat_log.json").read_text(encoding="utf-8"))
     assert log[0]["ai"].startswith("RAW_OPENING")
     assert log[0]["summary"] == "adapter summary"
+
+
+def test_rp_turn_adapter_uses_project_instruction_and_does_not_require_role():
+    from engine.rp_turn_adapter import RPTurnAdapter
+
+    adapter = RPTurnAdapter.from_project(
+        {
+            "turn_adapter": {
+                "id": "rp",
+                "config": {
+                    "opening_instruction": "OPEN {{node_instruction}}",
+                    "required_final_node_role": None,
+                },
+            }
+        }
+    )
+
+    adapter.validate_opening_plan({"graph": {"nodes": [{"role": "writer"}]}})
+    assert adapter.opening_instruction("write freely") == "OPEN write freely"
+
+
+def test_rp_turn_adapter_can_configure_tag_patterns():
+    from engine.rp_turn_adapter import RPTurnAdapter
+    from engine.graph_runtime import AgentArtifact
+
+    adapter = RPTurnAdapter.from_project(
+        {
+            "turn_adapter": {
+                "id": "rp",
+                "config": {
+                    "tag_patterns": {
+                        "content": r"\[body\](.*?)\[/body\]",
+                        "summary": r"\[brief\](.*?)\[/brief\]",
+                        "options": r"\[choices\](.*?)\[/choices\]",
+                    }
+                },
+            }
+        }
+    )
+
+    draft = adapter.interpret(
+        AgentArtifact.text("[body]scene[/body][brief]short[/brief][choices]go[/choices]")
+    )
+    assert (draft.content, draft.summary, draft.options) == ("scene", "short", "go")
 
 
 # ════════════════════════════════════════════════════════════════════

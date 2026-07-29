@@ -78,6 +78,7 @@ from airp.engine.provider_profiles import ProviderConnectionError
 from airp.engine.project_library import ProjectLibraryError
 from airp.engine.runtime import RuntimeEvent, SessionTurnRuntime
 from airp.engine.runtime_config import CONFIG_ID_RE, RuntimeConfigError
+from airp.engine.rp_turn_adapter import RPTurnAdapter
 from airp.engine.session_manager import SessionManager, SessionManagerError
 from airp.engine.studio_library import ProviderProfileError
 from airp.engine.studio_migration import bootstrap_legacy_runtime_library
@@ -579,7 +580,7 @@ class SessionRuntimeServer:
         except (RuntimeConfigError, OSError):
             return None, None
         nodes = [node for node in graph.get("nodes", []) if node.get("enabled", True)]
-        if not nodes or nodes[-1].get("role") != "narrative_director":
+        if not nodes:
             return None, graph_id
         return nodes[-1], graph_id
 
@@ -883,13 +884,11 @@ class SessionRuntimeServer:
 
     def _legacy_graph_from_studio(self, graph: dict[str, Any]) -> dict[str, Any]:
         nodes = []
-        enabled_nodes = [node for node in graph.get("nodes", []) if node.get("enabled", True)]
-        final_node_id = graph.get("output_node_id") or (enabled_nodes[-1]["node_id"] if enabled_nodes else None)
         for index, node in enumerate(graph.get("nodes", [])):
             agent = self.agent_store.get_agent(node["agent_id"])
             provider_profile_id = node.get("provider_profile_id") or agent.get("provider_profile_id")
-            model = node.get("model_id") or agent.get("model_id") or "deepseek-v4-flash"
-            role = "narrative_director" if node["node_id"] == final_node_id else f"studio_{node['agent_id']}"
+            model = node.get("model_id") or agent.get("model_id") or ""
+            role = str(node.get("role") or node["node_id"])
             nodes.append(
                 {
                     "id": node["node_id"],
@@ -900,15 +899,15 @@ class SessionRuntimeServer:
                     "provider_profile_id": provider_profile_id,
                     "model": model,
                     "max_tool_rounds": 8,
-                    "max_retries": 2,
                     "instruction": agent.get("instruction", ""),
+                    "generation": agent.get("generation") or {},
+                    "advanced": agent.get("advanced") or {},
                 }
             )
         return {
             "id": graph["id"],
             "version": str(graph.get("version") or "1"),
             "mode": "sequential",
-            "commit_validation_retries": 3,
             "nodes": nodes,
         }
 
@@ -934,6 +933,12 @@ class SessionRuntimeServer:
                 self.runtime.configure_execution_graph(None, None)
                 self._studio_graph_configured = False
             return
+        try:
+            self.runtime.configure_turn_adapter(RPTurnAdapter.from_project(project))
+        except (TypeError, ValueError):
+            # Keep the runtime's compatibility adapter if an old Project has no
+            # usable adapter selection; Studio can repair the Project later.
+            pass
         if not project.get("graph_id"):
             if self._studio_graph_configured:
                 self.runtime.configure_execution_graph(None, None)

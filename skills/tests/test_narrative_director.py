@@ -320,14 +320,13 @@ def test_quality_retry_exhaustion_fails_without_commit_or_projection(tmp_path):
 
 
 
-def test_invalid_mvu_schema_path_rejected_until_corrected_commit(tmp_path):
+def test_invalid_mvu_schema_path_fails_without_hidden_regeneration(tmp_path):
     card_folder = tmp_path / "card"
     card_folder.mkdir()
     write_card_fixture(card_folder)
 
-    # First final text carries an illegal MVU path → harness rejects
-    # (mvu_validation_failed) → re-enters director → second final text with a
-    # legal MVU path → commits once.
+    # An illegal MVU path fails this graph run. The second scripted response is
+    # intentionally unused; correction requires a user-requested graph retry.
     director = ScriptedDirector([
         ("final", final_text(
             content="<p>浪头扑上来，碎沫打湿了鞋尖。</p>",
@@ -348,15 +347,16 @@ def test_invalid_mvu_schema_path_rejected_until_corrected_commit(tmp_path):
 
     result = runtime.submit(text="我走向海边", idempotency_key="submit-1")
 
-    assert result.status == "succeeded"
-    assert result.revision == 1
-    assert len(director.final_texts) == 2  # rejected once, committed on retry
-    assert runtime.active_revision() == 1
+    assert result.status == "mvu_validation_failed"
+    assert result.commit_id is None
+    assert result.revision == 0
+    assert len(director.final_texts) == 1
+    assert runtime.active_revision() == 0
     types = event_types(runtime)
     assert "task.mvu_validation_failed" in types
-    assert types.count("turn.committed") == 1
+    assert "turn.committed" not in types
     log = json.loads((card_folder / "chat_log.json").read_text(encoding="utf-8"))
-    assert len(log) == 1
+    assert log == []
 
 
 
@@ -966,7 +966,7 @@ def test_multi_round_tool_loop_replays_assistant_tool_calls_with_ids(tmp_path):
     assert {m["tool_call_id"] for m in tool_msgs} == {"c1", "c2"}
 
 
-def test_retryable_provider_error_recovers_and_commits(tmp_path):
+def test_retryable_provider_error_fails_until_user_retries_graph(tmp_path):
     card_folder = tmp_path / "card"
     card_folder.mkdir()
     write_card_fixture(card_folder)
@@ -990,12 +990,11 @@ def test_retryable_provider_error_recovers_and_commits(tmp_path):
 
     result = runtime.submit(text="我走向海边", idempotency_key="submit-1")
 
-    assert result.status == "succeeded"
-    assert provider.call_count == 2  # first errored, second succeeded
-    # one model_call.finished recorded (the retry succeeded within the same call ordinal)
+    assert result.status == "failed_retryable"
+    assert provider.call_count == 1
+    # No second model call is hidden inside the failed graph run.
     calls = runtime.model_calls_for_task(result.task_id)
-    assert len(calls) == 1
-    assert calls[0]["stop_reason"] == "stop"
+    assert calls == []
 
 
 def test_terminal_provider_error_fails_without_commit(tmp_path):

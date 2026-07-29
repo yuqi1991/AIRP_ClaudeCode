@@ -28,7 +28,7 @@ import subprocess
 import threading
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterator
 from urllib.error import HTTPError, URLError
@@ -117,12 +117,18 @@ class ProviderError(Exception):
 
 @dataclass(frozen=True)
 class ProviderRequest:
-    """A single model call. ``metadata`` carries correlation ids only — no secrets."""
+    """A single model call.
+
+    ``parameters`` contains user-owned model controls and provider-specific JSON
+    that may be forwarded at the request top level. ``metadata`` remains for
+    correlation ids only and must never carry secrets.
+    """
 
     messages: list
     tools: list
     model: str
     metadata: dict
+    parameters: dict = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -294,6 +300,31 @@ class OpenAICompatibleProviderAdapter(ProviderAdapter):
             "model": request.model or self._model,
             "stream": True,
         }
+        # The adapter owns the transport envelope. Advanced user parameters are
+        # forwarded verbatim except for fields that could replace that envelope
+        # or smuggle credentials into a model request.
+        protected = {
+            "model",
+            "messages",
+            "input",
+            "prompt",
+            "tools",
+            "stream",
+            "stream_options",
+            "api_key",
+            "apikey",
+            "secret",
+            "authorization",
+            "auth",
+            "credentials",
+            "headers",
+            "base_url",
+            "metadata",
+        }
+        for key, value in (request.parameters or {}).items():
+            if isinstance(key, str) and key.casefold() in protected:
+                continue
+            common[key] = value
         if self._api_format == "responses":
             common["input"] = self._responses_input(request.messages or [])
             if request.tools:

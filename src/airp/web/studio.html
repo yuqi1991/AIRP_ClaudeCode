@@ -173,7 +173,7 @@
             <div class="actions"><button class="button primary" type="submit">Save Agent</button><button class="button" type="button" id="preview-agent" hidden>Prompt preview</button><button class="button" type="button" id="copy-agent" hidden>Copy</button><button class="button danger" type="button" id="delete-agent" hidden>Delete</button></div>
           </form>
           <div class="notice" id="agent-notice" role="status" aria-live="polite"></div>
-          <section class="catalog" aria-labelledby="preview-title"><span class="catalog-title" id="preview-title">Prompt preview</span><div class="field"><label for="preview-project-input">Project input</label><textarea id="preview-project-input" placeholder="Preview runtime input"></textarea></div><div class="field"><label for="preview-context">Runtime context JSON</label><textarea id="preview-context" placeholder='{"settings":{"style":"..."},"card_facts":{"name":"..."},"current_state":{}}'></textarea></div><div class="field"><label for="preview-handoff">Handoff JSON</label><textarea id="preview-handoff" placeholder='{"source_node_id":"planner","artifact":"..."}'></textarea></div><div class="field"><label for="preview-output-contract">Output contract JSON</label><textarea id="preview-output-contract" placeholder='{"kind":"narrative_draft"}'></textarea></div><div class="preview-list" id="agent-preview-output"></div></section>
+          <section class="catalog" aria-labelledby="preview-title"><span class="catalog-title" id="preview-title">Prompt preview</span><div class="field"><label for="preview-project-input">Project input</label><textarea id="preview-project-input" placeholder="Preview runtime input"></textarea></div><div class="field"><label for="preview-context">Runtime context JSON</label><textarea id="preview-context" placeholder='{"settings":{},"card_facts":{"name":"..."},"current_state":{}}'></textarea></div><div class="field"><label for="preview-handoff">Handoff JSON</label><textarea id="preview-handoff" placeholder='{"source_node_id":"planner","artifact":"..."}'></textarea></div><div class="field"><label for="preview-output-contract">Output contract JSON</label><textarea id="preview-output-contract" placeholder='{"kind":"narrative_draft"}'></textarea></div><div class="preview-list" id="agent-preview-output"></div></section>
         </section>
       </section>
       <section class="workspace" id="graphs-view" aria-label="Graph Definition management" hidden>
@@ -238,6 +238,8 @@
             <div class="field"><label for="project-variables">Variables</label><textarea id="project-variables" placeholder='{"state":{}}'></textarea></div>
             <div class="field"><label for="project-assets">Assets</label><textarea id="project-assets" placeholder='[{"id":"portrait","path":"assets/portrait.png"}]'></textarea></div>
             <div class="field"><label for="project-graph">Selected Graph</label><select id="project-graph"><option value="">No Graph selected</option></select></div>
+            <div class="field"><label for="project-adapter-id">Turn Adapter</label><select id="project-adapter-id"><option value="rp">RP adapter</option></select></div>
+            <div class="field"><label for="project-adapter-config">Turn Adapter config</label><textarea id="project-adapter-config" placeholder='{"opening_instruction":"{{node_instruction}}","required_final_node_role":null}'></textarea><span class="hint">The framework does not invent a writing prompt; configure the selected adapter here.</span></div>
             <div class="actions"><button class="button primary" type="submit">Save project</button><button class="button" id="copy-project" type="button" hidden>Copy</button></div>
           </form>
           <section class="catalog" aria-labelledby="project-binding-title"><h2 id="project-binding-title">Bound Worldbooks</h2><div class="binding-list" id="project-worldbooks"></div><div class="actions"><button class="button" id="save-project-bindings" type="button">Save bindings</button></div></section>
@@ -499,6 +501,7 @@
       const projectFromForm = () => {
         const variables = readProjectJson("project-variables", {}); if (variables === null) return null;
         const assets = readProjectJson("project-assets", []); if (assets === null) return null;
+        const adapterConfig = readProjectJson("project-adapter-config", {}); if (adapterConfig === null) return null;
         const payload = {
           name: $("project-name").value.trim(), avatar: $("project-avatar").value.trim(), description: $("project-description").value,
           personality: $("project-personality").value, scenario: $("project-scenario").value,
@@ -510,12 +513,13 @@
           }),
           variables, assets, graph_id: $("project-graph").value.trim() || null,
           worldbook_ids: [...$("project-worldbooks").querySelectorAll("input:checked")].map((input) => input.value),
+          turn_adapter: { id: $("project-adapter-id").value || "rp", config: adapterConfig },
         };
         const id = $("project-id").value.trim(); if (id) payload.id = id; return payload;
       };
       const resetProject = () => {
         state.selectedProjectId = null; $("project-form").reset(); $("project-id").value = state.runtimeProjectId || "local"; $("project-editor-title").textContent = "New AIRP Project";
-        $("project-openings").replaceChildren(projectOpeningEditor()); $("project-variables").value = "{}"; $("project-assets").value = "[]";
+        $("project-openings").replaceChildren(projectOpeningEditor()); $("project-variables").value = "{}"; $("project-assets").value = "[]"; $("project-adapter-id").value = "rp"; $("project-adapter-config").value = JSON.stringify({ opening_instruction: "{{node_instruction}}", required_final_node_role: null }, null, 2);
         $("copy-project").hidden = true; renderProjects(); renderBindings(); renderGraphOptions(); setNotice("project-notice", "");
       };
       const fillProject = (project) => {
@@ -523,7 +527,7 @@
         $("project-name").value = project.name; $("project-avatar").value = project.avatar || ""; $("project-description").value = project.description || "";
         $("project-personality").value = project.personality || ""; $("project-scenario").value = project.scenario || "";
         const prompt = project.card_prompt || {}; $("project-card-system").value = prompt.system || ""; $("project-card-post-history").value = prompt.post_history || "";
-        $("project-openings").replaceChildren(...(project.openings || []).map(projectOpeningEditor)); $("project-variables").value = JSON.stringify(project.variables || {}, null, 2); $("project-assets").value = JSON.stringify(project.assets || [], null, 2); renderGraphOptions(project.graph_id || "");
+        $("project-openings").replaceChildren(...(project.openings || []).map(projectOpeningEditor)); $("project-variables").value = JSON.stringify(project.variables || {}, null, 2); $("project-assets").value = JSON.stringify(project.assets || [], null, 2); renderGraphOptions(project.graph_id || ""); const adapter = project.turn_adapter || {}; $("project-adapter-id").value = adapter.id || "rp"; $("project-adapter-config").value = JSON.stringify(adapter.config || {}, null, 2);
         $("copy-project").hidden = false; renderProjects(); renderBindings(project.worldbook_ids || []); setNotice("project-notice", "");
       };
       const renderProjects = () => {

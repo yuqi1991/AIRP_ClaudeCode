@@ -235,7 +235,8 @@ class ProviderDrivenDirector(NarrativeDirector):
     2. consumes the provider stream, emitting preview deltas as they arrive;
     3. dispatches each provider tool_call through the (schema-validating)
        tool registry and feeds the result back into the message history;
-    4. retries retryable :class:`ProviderError` up to ``max_retries`` times;
+    4. reports retryable :class:`ProviderError` to the harness; a new graph run
+       is created only when the user explicitly requests a retry;
     5. terminates on abort (``ProviderAborted``), terminal provider error, or a
        final response with **no further tool calls** — at which point the
        accumulated assistant text is stored on the handle for harness commit.
@@ -248,36 +249,25 @@ class ProviderDrivenDirector(NarrativeDirector):
         self,
         provider,
         max_tool_rounds: int = 8,
-        max_retries: int = 3,
+        max_retries: int = 0,
         *,
         role: str = "narrative_director",
         model: str | None = None,
         instruction: str = "",
+        parameters: dict | None = None,
     ):
+        # ``max_retries`` remains accepted for compatibility with embedders;
+        # provider calls are intentionally single-attempt now.
         self._provider = provider
         self._max_tool_rounds = max_tool_rounds
-        self._max_retries = max_retries
         self._role = role
         self._model = model
         self._instruction = instruction
+        self._parameters = dict(parameters or {})
         self.last_final_text: str | None = None
 
     def direct(self, handle: DirectorHandle, compiled) -> None:
         messages = list(compiled.payload)
-        # If the harness is re-entering after a rejected draft, surface the
-        # rejection so a cooperative model (or FakeProvider script) can correct.
-        if handle.commit_feedback:
-            feedback = handle.commit_feedback
-            messages.append(
-                {
-                    "role": "user",
-                    "content": (
-                        f"[harness] previous draft rejected: {feedback.get('error')}. "
-                        "Produce a corrected narrative turn (content/summary/options; "
-                        "inline MVU tags if needed). Do not call write tools."
-                    ),
-                }
-            )
         tools = handle.tool_schemas()
         graph = ((compiled.manifest.get("runtime_config") or {}).get("graph_nodes") or [])
         active_node = graph[0] if graph else None
@@ -363,6 +353,7 @@ class ProviderDrivenDirector(NarrativeDirector):
                 "call_ordinal": call_ordinal,
                 "manifest_id": manifest_id,
             },
+            parameters=dict(self._parameters),
         )
         handle.report_model_call_started(
             {
@@ -377,7 +368,9 @@ class ProviderDrivenDirector(NarrativeDirector):
         deltas: list[ProviderDelta] = []
         usage = UsageRecord()
         stop_reason = "stop"
-        for attempt in range(self._max_retries + 1):
+        # Provider failures are terminal for this node. The public graph retry
+        # command replays the whole graph instead of retrying a hidden call.
+        for _attempt in range(1):
             if handle.aborted:
                 raise ProviderAborted("aborted before stream")
             deltas = []
@@ -392,10 +385,8 @@ class ProviderDrivenDirector(NarrativeDirector):
                         stop_reason = item.stop_reason
                         rates = item.cost_estimate
                 break
-            except ProviderError as exc:
-                if not exc.retryable or attempt >= self._max_retries:
-                    raise
-                continue
+            except ProviderError:
+                raise
         latency_ms = int((time.monotonic() - started) * 1000)
         handle.report_model_call_finished(
             {

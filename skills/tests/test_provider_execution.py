@@ -231,6 +231,33 @@ def test_openai_compatible_adapters_translate_follow_up_tool_messages(api_format
         assert body["tools"][0]["name"] == "lookup"
 
 
+@pytest.mark.parametrize("api_format", ["chat_completions", "responses"])
+def test_openai_compatible_adapter_forwards_request_parameters(api_format):
+    request = ProviderRequest(
+        messages=[{"role": "user", "content": "hello"}],
+        tools=[],
+        model="deepseek-chat",
+        parameters={
+            "temperature": 0.4,
+            "max_output_tokens": 123,
+            "response_format": {"type": "json_object"},
+        },
+        metadata={},
+    )
+    with _Upstream() as upstream:
+        adapter = OpenAICompatibleProviderAdapter(
+            base_url=upstream.base_url,
+            api_key="secret",
+            api_format=api_format,
+        )
+        list(adapter.stream(request, AbortSignal()))
+        body = upstream.requests[0]["body"]
+
+    assert body["temperature"] == 0.4
+    assert body["max_output_tokens"] == 123
+    assert body["response_format"] == {"type": "json_object"}
+
+
 def test_adapter_discovers_models_and_classifies_redacted_provider_errors():
     with _Upstream() as upstream:
         adapter = OpenAICompatibleProviderAdapter(
@@ -324,6 +351,32 @@ def test_runtime_factory_resolves_profile_protocol_and_secret_without_freezing_k
     assert adapter._api_format == "chat_completions"
     assert adapter._api_key == "runtime-secret"
     assert "runtime-secret" not in json.dumps(frozen)
+
+
+def test_provider_profile_execution_uses_request_timeout_not_discovery_timeout(tmp_path):
+    styles = tmp_path / "styles"
+    profiles = ProviderProfileStore(styles)
+    profile = profiles.create_profile(
+        {
+            "id": "slow-provider",
+            "name": "Slow Provider",
+            "base_url": "https://example.test/v1",
+            "api_format": "chat_completions",
+            "model_ids": ["writer"],
+        }
+    )
+    secrets = LocalSecretStore(styles / "studio" / "secrets.json")
+    secrets.set(profile["id"], "runtime-secret")
+    service = ProviderProfileService(
+        profiles,
+        secrets,
+        discovery_timeout=3.0,
+        request_timeout=77.0,
+    )
+
+    adapter = service.execution_adapter(profile["id"], "writer")
+
+    assert adapter._timeout == 77.0
 
 
 def test_runtime_factory_keeps_fake_provider_regression_path_without_secret_store():

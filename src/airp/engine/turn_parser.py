@@ -51,14 +51,19 @@ def _first(pattern: re.Pattern, text: str) -> str:
     return match.group(0).strip()
 
 
-def _strip_known_tags(text: str) -> str:
+def _strip_known_tags(text: str, patterns: dict[str, re.Pattern]) -> str:
     stripped = text or ""
     for key in ("polished_input", "content", "summary", "options", "update_variable", "tokens"):
-        stripped = _TAG_RE[key].sub("", stripped)
+        stripped = patterns[key].sub("", stripped)
     return stripped.strip()
 
 
-def parse_turn_text(text: str, *, fallback_input: str = "") -> "TurnDraft":
+def parse_turn_text(
+    text: str,
+    *,
+    fallback_input: str = "",
+    tag_patterns: dict[str, str] | None = None,
+) -> "TurnDraft":
     """Parse model narrative text into a :class:`TurnDraft`.
 
     Never raises for missing/malformed tags. Empty or whitespace-only input
@@ -70,18 +75,25 @@ def parse_turn_text(text: str, *, fallback_input: str = "") -> "TurnDraft":
     from airp.engine.runtime import TurnDraft
 
     raw = text if isinstance(text, str) else ""
-    polished = _first(_TAG_RE["polished_input"], raw)
-    content = _first(_TAG_RE["content"], raw)
-    summary = _first(_TAG_RE["summary"], raw)
-    options = _first(_TAG_RE["options"], raw)
+    patterns = dict(_TAG_RE)
+    for key, pattern in (tag_patterns or {}).items():
+        if key not in patterns:
+            continue
+        if not isinstance(pattern, str) or not pattern:
+            raise ValueError(f"invalid tag pattern for {key}")
+        patterns[key] = re.compile(pattern, re.DOTALL | re.IGNORECASE)
+    polished = _first(patterns["polished_input"], raw)
+    content = _first(patterns["content"], raw)
+    summary = _first(patterns["summary"], raw)
+    options = _first(patterns["options"], raw)
     # Capture the full UpdateVariable block (including tags) so extract_commands
     # can see JSONPatch / _.set inside it — same source shape the live pipeline uses.
-    mvu_match = _TAG_RE["update_variable"].search(raw)
+    mvu_match = patterns["update_variable"].search(raw)
     mvu_commands = mvu_match.group(0).strip() if mvu_match else ""
 
     if not content:
         # No <content> tag: treat residual prose (minus other known tags) as content.
-        residual = _strip_known_tags(raw)
+        residual = _strip_known_tags(raw, patterns)
         content = residual
 
     if not polished and fallback_input:

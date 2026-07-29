@@ -15,7 +15,9 @@ MACROS_VERSION = "macros-v1"
 class ContextPolicy:
     version: str
     token_budget: int
-    narrative_policy: str = "你是 AIRP 的叙事导演。"
+    # The engine owns context assembly only. Writing instructions belong to
+    # the selected Agent/Project and must never be synthesized here.
+    narrative_policy: str = ""
     max_worldbook_loads: int = 3
 
 
@@ -224,11 +226,9 @@ def macro_context(request):
         if value is None:
             return ""
         if isinstance(value, (dict, list)):
-            # settings.style may be nested ({"name": ...}); keep deterministic string form
             return _canonical_json(value)
         return str(value)
 
-    style = settings.get("style", "")
     macro_snapshot = {
         key: value
         for key, value in snapshot.items()
@@ -238,10 +238,10 @@ def macro_context(request):
         "player_input": request.player_input,
         "user": settings.get("user") or snapshot.get("user") or "",
     })
+    # Keep generic card/player aliases for migrated instructions. Legacy
+    # style/nsfw/person controls are deliberately not synthesized by the
+    # compiler; users can express those requirements in Agent instructions.
     context.update({
-        "style": _as_str(style if not isinstance(style, dict) else style.get("name", style)),
-        "nsfw": _as_str(settings.get("nsfw", "")),
-        "person": _as_str(settings.get("person", "")),
         "charName": _as_str(settings.get("charName") or card_facts.get("name") or ""),
         "user": _as_str(settings.get("user") or snapshot.get("user") or ""),
     })

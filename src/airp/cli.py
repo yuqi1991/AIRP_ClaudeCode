@@ -110,11 +110,11 @@ def _ensure_runtime_defaults(styles: Path) -> None:
                     "nodes": [
                         {
                             "id": "director",
-                            "role": "narrative_director",
+                            "role": "default",
                             "enabled": True,
                             "order": 0,
                             "provider": "deepseek",
-                            "model": "deepseek-v4-flash",
+                            "model": "",
                         }
                     ],
                 },
@@ -311,10 +311,16 @@ def _deliver_opening(
             "phase": "opening",
             "payload_hash": compiled.payload_hash,
         },
+        parameters={
+            **(node.get("generation") or {}),
+            **(node.get("advanced") or {}),
+        },
     )
     usage = UsageRecord()
     raw_text = ""
-    for attempt in range(node["max_retries"] + 1):
+    # A provider error fails the opening phase; retries are explicit graph/run
+    # commands and must never be hidden inside a model call.
+    for _attempt in range(1):
         chunks = []
         usage = UsageRecord()
         try:
@@ -328,9 +334,8 @@ def _deliver_opening(
                     usage = item.usage
             raw_text = "".join(chunks).strip()
             break
-        except ProviderError as exc:
-            if not exc.retryable or attempt >= node["max_retries"]:
-                raise
+        except ProviderError:
+            raise
     if not raw_text:
         raise RuntimeError("opening provider returned empty content")
     if turn_adapter is None or not callable(getattr(turn_adapter, "interpret", None)):
@@ -459,7 +464,6 @@ def main() -> None:
             manifest_policy=manifest_policy,
             runtime_config_store=None,
             executor_factory=executor_factory,
-            max_commit_validation_retries=3,
             bootstrap_legacy_history=bootstrap_legacy_history,
         )
 
@@ -469,34 +473,14 @@ def main() -> None:
         bootstrap_legacy_history=active_session_id == "local",
     )
 
-    # 5. Deliver opening (only if chat_log is empty — no turn 0 yet) OR rebuild
-    # projection from an existing save so the browser reflects the save instead
-    # of import_prepare's placeholder content.js.
-    if runtime.opening_turn() is None and runtime.active_revision() == 0:
-        origin = _deliver_opening(
-            card_folder,
-            styles,
-            runtime,
-            mock=mock,
-            runtime_config=frozen_config,
-        )
-        runtime.resume_projection()
-        print(f"[start_runtime] 开场已交付（来源: {origin}）", file=sys.stderr)
-    else:
-        runtime.resume_projection()
-        print(
-            f"[start_runtime] 已恢复存档 {runtime.session_id} "
-            f"（revision {runtime.active_revision()}），projection 已重建",
-            file=sys.stderr,
-        )
-
     session_manager = SessionManager(
         runtime,
         build_runtime,
         default_opening=runtime.opening_turn(),
     )
 
-    # 6. Start unified server on :8765
+    # Construct the server before generated opening delivery so its Studio
+    # project selection can configure the Turn Adapter and execution graph.
     from airp.server import SessionRuntimeServer
     server = SessionRuntimeServer(
         runtime,
@@ -508,6 +492,59 @@ def main() -> None:
         session_manager=session_manager,
         workspace=workspace,
     )
+
+    opening_config = frozen_config
+    try:
+        selected_graph_id = server._runtime_selection().get("graph_id")
+        if selected_graph_id and server.graph_definitions is not None:
+            selected_graph = server.graph_definitions.get_graph(selected_graph_id)
+            opening_config = {
+                **frozen_config,
+                "graph_id": selected_graph_id,
+                "graph": server._legacy_graph_from_studio(selected_graph),
+            }
+    except Exception:
+        # Legacy config remains a valid opening fallback when no Studio Graph
+        # is selected or an old project references a removed Graph.
+        opening_config = frozen_config
+
+    opening_provider = None
+    if not mock:
+        opening_nodes = [
+            node for node in (opening_config.get("graph") or {}).get("nodes", [])
+            if node.get("enabled", True)
+        ]
+        opening_node = opening_nodes[-1] if opening_nodes else {}
+        profile_id = opening_node.get("provider_profile_id")
+        if profile_id:
+            opening_provider = provider_profile_service.execution_adapter(
+                profile_id,
+                opening_node.get("model", ""),
+            )
+
+    # 5. Deliver opening (only if chat_log is empty — no turn 0 yet) OR rebuild
+    # projection from an existing save so the browser reflects the save instead
+    # of import_prepare's placeholder content.js.
+    if runtime.opening_turn() is None and runtime.active_revision() == 0:
+        origin = _deliver_opening(
+            card_folder,
+            styles,
+            runtime,
+            mock=mock,
+            runtime_config=opening_config,
+            provider=opening_provider,
+        )
+        runtime.resume_projection()
+        print(f"[start_runtime] 开场已交付（来源: {origin}）", file=sys.stderr)
+    else:
+        runtime.resume_projection()
+        print(
+            f"[start_runtime] 已恢复存档 {runtime.session_id} "
+            f"（revision {runtime.active_revision()}），projection 已重建",
+            file=sys.stderr,
+        )
+
+    # 6. Start unified server on :8765
     server.start()
     url = f"http://localhost:{PORT}"
     if not _wait_server_ready(url):

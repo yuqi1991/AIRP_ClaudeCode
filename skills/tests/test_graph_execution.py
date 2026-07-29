@@ -231,6 +231,41 @@ def test_provider_node_runner_maps_provider_output_to_artifact_boundary():
     assert provider.requests[0].messages[-1]["content"] == "hello"
 
 
+def test_provider_node_runner_forwards_agent_generation_and_advanced_parameters():
+    plan = ExecutionPlanCompiler().compile(
+        project={"id": "project", "graph_id": "writing"},
+        graph={
+            "id": "writing",
+            "nodes": [{"node_id": "writer-node", "agent_id": "writer"}],
+            "output_node_id": "writer-node",
+        },
+        agents={
+            "writer": {
+                **_agent("writer"),
+                "generation": {"temperature": 0.7, "max_output_tokens": 321},
+                "advanced": {"response_format": {"type": "json_object"}},
+            }
+        },
+        worldbooks=[],
+        player_input="hello",
+    )
+    provider = FakeProvider(
+        [{"type": "text", "text": "model output"}, {"type": "final"}],
+        model="writer-model",
+    )
+
+    result = ProviderNodeRunner(lambda _node: provider).run(
+        plan.graph.nodes[0], AgentArtifact.input("hello")
+    )
+
+    assert result.ok
+    assert provider.requests[0].parameters == {
+        "temperature": 0.7,
+        "max_output_tokens": 321,
+        "response_format": {"type": "json_object"},
+    }
+
+
 def _json_request(method: str, url: str, body: dict | None = None) -> tuple[int, dict]:
     data = None if body is None else json.dumps(body).encode("utf-8")
     request = Request(

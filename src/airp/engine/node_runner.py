@@ -8,6 +8,7 @@ boundary consumed by Graph Runtime.
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from typing import Any, Callable
 
 from airp.engine.graph_runtime import AgentArtifact, GraphNodePlan, NodeResult
@@ -69,6 +70,7 @@ class ProviderNodeRunner:
             messages.append({"role": "user", "content": self._content(input_artifact.content)})
             tools = self._tools(node)
             model = node.model_id or node.agent.model_id or provider.model_id(node.agent.agent_id)
+            parameters = self._parameters(node)
             signal = self.signal_factory()
 
             for call_ordinal in range(1, self.max_tool_rounds + 1):
@@ -77,6 +79,7 @@ class ProviderNodeRunner:
                     tools=tools,
                     model=model,
                     metadata={"node_id": node.node_id, "agent_id": node.agent_id},
+                    parameters=parameters,
                 )
                 self._notify(observer, "model_call_started", node, call_ordinal, request)
                 text, tool_calls, provider_result = self._stream(
@@ -177,6 +180,21 @@ class ProviderNodeRunner:
         if isinstance(tools, list):
             return [dict(tool) for tool in tools if isinstance(tool, dict)]
         return [{"name": name} for name in node.agent.tool_allowlist]
+
+    @staticmethod
+    def _parameters(node: GraphNodePlan) -> dict[str, Any]:
+        """Merge the resolved Agent controls with node-local overrides.
+
+        ``GraphRuntime`` resolves Agent and node definitions before this seam,
+        so the Agent carries the complete effective configuration. Keeping the
+        merge here makes the provider request inspectable without coupling the
+        provider module to Agent Definition storage.
+        """
+        parameters: dict[str, Any] = {}
+        for source in (node.agent.generation, node.agent.advanced):
+            if isinstance(source, Mapping):
+                parameters.update(source)
+        return parameters
 
     @staticmethod
     def _content(value: Any) -> str:

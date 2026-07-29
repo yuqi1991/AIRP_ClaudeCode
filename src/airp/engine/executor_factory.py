@@ -63,10 +63,13 @@ class RuntimeExecutorFactory:
             director = ProviderDrivenDirector(
                 adapter,
                 max_tool_rounds=node.get("max_tool_rounds", 8),
-                max_retries=node.get("max_retries", 2),
                 role=node["role"],
                 model=node["model"],
                 instruction=node.get("instruction", ""),
+                parameters={
+                    **(node.get("generation") or {}),
+                    **(node.get("advanced") or {}),
+                },
             )
         return SequentialGraphNode(node["id"], node["role"], director)
 

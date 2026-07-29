@@ -555,7 +555,7 @@ class SessionTurnRuntime:
         session_settings=None,
         quality_gate: QualityGate | None = None,
         quality_policy: QualityPolicy | None = None,
-        max_commit_validation_retries: int = 3,
+        max_commit_validation_retries: int = 1,
         runtime_config_store=None,
         executor_factory=None,
         execution_plan_compiler: ExecutionPlanCompiler | None = None,
@@ -581,7 +581,10 @@ class SessionTurnRuntime:
         self.turn_adapter = turn_adapter or RPTurnAdapter()
         self.quality_policy = quality_policy or QualityPolicy()
         self.quality_gate = quality_gate or DefaultQualityGate(self.quality_policy)
-        self.max_commit_validation_retries = max(1, int(max_commit_validation_retries))
+        # Commit validation is terminal for this task. A user retry creates a
+        # fresh graph run, so there is no in-task regeneration budget.
+        # Kept as an ignored constructor argument for old embedders. A failed
+        # validation is terminal for this graph run; the user retries the run.
         self.projection = LegacyProjectionAdapter(card_folder, projection_root)
         self._lock = threading.RLock()
         self._abort_signals: dict[str, AbortSignal] = {}
@@ -592,6 +595,12 @@ class SessionTurnRuntime:
         self.worldbook_snapshot_provider = snapshot_provider
         if project_id is not None:
             self.project_id = project_id
+
+    def configure_turn_adapter(self, adapter) -> None:
+        """Select the host Turn Adapter for future graph and legacy turns."""
+        if adapter is None or not callable(getattr(adapter, "interpret", None)):
+            raise TypeError("configure_turn_adapter requires a Turn Adapter")
+        self.turn_adapter = adapter
 
     def configure_execution_graph(
         self,
@@ -620,8 +629,8 @@ class SessionTurnRuntime:
         not allocate a task, commit, or revision. The returned context still
         uses the same frozen card/settings/preset sources as normal turns.
         """
-        if not isinstance(instruction, str) or not instruction.strip():
-            raise ValueError("empty opening instruction")
+        if not isinstance(instruction, str):
+            raise ValueError("opening instruction must be text")
         snapshot = self._source_snapshot(0)
         runtime_config = snapshot.get("runtime_config")
         return compile_context(
@@ -2156,7 +2165,7 @@ class SessionTurnRuntime:
             (task["id"],),
         ).fetchone()
         failures = ((row["validation_failures"] if row else 0) or 0) + 1
-        exhausted = failures >= self.max_commit_validation_retries
+        exhausted = True
         terminal_code = code
         if exhausted and code == "quality_gate_failed":
             terminal_code = "quality_exhausted"
@@ -2355,13 +2364,10 @@ class SessionTurnRuntime:
         tools = ToolRegistry(self, task, self.manifest_policy)
         handle = DirectorHandle(task["id"], text, tools, signal, self)
         terminal_status: str | None = None
-        # Harness-owned commit (ADR-0011): the director produces narrative text;
-        # this loop parses → validates → commits. Bounded re-entry on quality/MVU
-        # rejection so a bad first draft can be corrected within the same task.
-        snapshot = json.loads(task["source_snapshot"]) if task["source_snapshot"] else {}
-        graph = ((snapshot.get("runtime_config") or {}).get("graph") or {})
-        max_attempts = max(1, int(graph.get("commit_validation_retries") or self.max_commit_validation_retries))
-        for attempt in range(max_attempts):
+        # Harness-owned commit (ADR-0011): the director produces one narrative
+        # result; this task parses, validates and either commits or fails. A
+        # retry is a new user-requested Graph Run, never hidden regeneration.
+        for _attempt in range(1):
             if signal.cancelled or self._task_status(task["id"]) == "cancelled":
                 return self._finalize_cancelled(task["id"])
             # A prior attempt may have already committed (idempotent) — stop.
@@ -2410,13 +2416,7 @@ class SessionTurnRuntime:
             if error in ("stale_revision", "generation_lease_lost", "quality_exhausted", "commit_failed"):
                 break
             if error in ("quality_gate_failed", "mvu_validation_failed"):
-                # Feed rejection back; re-enter director for a corrected draft.
-                handle.set_commit_feedback(error, (commit_result.value or {}))
-                # Re-check exhaustion flag set by _reject_precommit.
-                status_now = self._task_status(task["id"])
-                if status_now == "quality_exhausted":
-                    break
-                continue
+                break
             # Unknown non-ok: stop retrying.
             break
 

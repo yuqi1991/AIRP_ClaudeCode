@@ -280,14 +280,15 @@ class RuntimeConfigStore:
             normalized.append(
                 {
                     "id": node_id,
-                    "role": str(node.get("role") or "narrative_director"),
+                    "role": str(node.get("role") or node_id),
                     "enabled": enabled,
                     "order": node.get("order", index),
                     "provider": provider,
-                    "model": str(node.get("model") or "deepseek-v4-flash"),
+                    "model": str(node.get("model") or ""),
                     "max_tool_rounds": _positive_int(node.get("max_tool_rounds"), 8, "max_tool_rounds"),
-                    "max_retries": _nonnegative_int(node.get("max_retries"), 2, "max_retries"),
                     "instruction": str(node.get("instruction") or ""),
+                    "generation": copy.deepcopy(node.get("generation") or {}),
+                    "advanced": copy.deepcopy(node.get("advanced") or {}),
                     **(
                         {"provider_profile_id": node["provider_profile_id"]}
                         if isinstance(node.get("provider_profile_id"), str)
@@ -302,19 +303,10 @@ class RuntimeConfigStore:
         normalized.sort(key=lambda node: (node["order"], node["declaration_index"]))
         if not any(node["enabled"] for node in normalized):
             raise RuntimeConfigError("graph must have at least one enabled node")
-        enabled = [node for node in normalized if node["enabled"]]
-        roles = [node["role"] for node in enabled]
-        if len(roles) != len(set(roles)):
-            raise RuntimeConfigError("enabled graph node roles must be unique")
-        if enabled[-1]["role"] != "narrative_director":
-            raise RuntimeConfigError("the final enabled graph node must be narrative_director")
         return {
             "id": graph_id,
             "version": str(raw.get("version") or "1"),
             "mode": "sequential",
-            "commit_validation_retries": _positive_int(
-                raw.get("commit_validation_retries"), 3, "commit_validation_retries"
-            ),
             "nodes": normalized,
         }
 
@@ -554,7 +546,7 @@ def _placeholder_value(name: str, request):
         ]
     elif root == "variable_baseline":
         value = snapshot.get("initvar", {})
-    elif root in {"style", "nsfw", "person", "charName", "user"}:
+    elif root in {"charName", "user"}:
         value = macro_context(request).get(root, "")
     else:
         value = snapshot.get(root, _default_placeholder_value(root))
@@ -579,9 +571,6 @@ def _placeholder_roots() -> frozenset[str]:
             "recent_turns",
             "worldbook_entries",
             "player_input",
-            "style",
-            "nsfw",
-            "person",
             "charName",
             "user",
         }
@@ -601,14 +590,6 @@ def _positive_int(value, default: int, label: str) -> int:
         return default
     if not isinstance(value, int) or value <= 0:
         raise RuntimeConfigError(f"{label} must be a positive integer")
-    return value
-
-
-def _nonnegative_int(value, default: int, label: str) -> int:
-    if value is None:
-        return default
-    if not isinstance(value, int) or value < 0:
-        raise RuntimeConfigError(f"{label} must be a non-negative integer")
     return value
 
 
