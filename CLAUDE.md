@@ -20,7 +20,7 @@ This repository uses a single-context layout: root `CONTEXT.md` and `docs/adr/`.
 
 > **两种运行模式**
 > - **Claude Code 直驱（本文档主体）**：legacy，由 Claude Code session + ScheduleWakeup 驱动。
-> - **独立 Pi-runtime（新）**：`python skills/start_runtime.py <卡文件夹> <ROOT>`，新 runtime 独占 :8765，真实 DeepSeek 经 Node sidecar，harness 自动 commit（ADR-0011）。加 `--mock` 走 FakeProvider 不调真实模型。详见 `docs/adr/0011`、`docs/status/feature-status.md`。
+> - **独立 AIRP runtime（当前）**：`python skills/start_runtime.py <卡文件夹> <ROOT>`，runtime 由 AIRP 自有 `GraphRuntime`、`ProviderNodeRunner` 和 OpenAI-compatible provider adapter 驱动，默认监听 :8765。加 `--mock` 走 `FakeProvider` 不调真实模型；生产配置由 Studio 的 Provider、Agent、Graph 和 Project 管理。
 
 ## 权限预授权
 
