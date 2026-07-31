@@ -35,5 +35,5 @@ Ticket 01–05 的 commit 模型是**线性**的：`revision = active_revision +
 
 - Ticket 04 预留的 `not_implemented` / `501` 被真实 reroll/rollback 替换；SSE 线格式不变，`turn.committed` 增加 `parent_revision`。
 - 线性 happy path 行为兼容：连续 submit 仍 `parent=i-1`、`active` 每次 +1（数值上等于 max+1）。
-- 本 ADR 落地时尚无 crash recovery / generation lease；后续 runtime 已实现持久 lease、attempt/recovery 与快照竞态加固，相关回归见 `test_session_turn_runtime.py`、`test_session_event_stream.py` 和 `test_revision_branch.py`。
+- 本 ADR 落地时尚无 crash recovery / generation lease；后续 runtime 已实现持久 lease、attempt/recovery 与快照竞态加固，相关回归集中在 `skills/tests/test_graph_execution.py`。
 - 本 ADR 落地时是单 Session tracer bullet；ADR-0012 已扩展为 card-local 多 Session。兼容投影仍是单活动 lineage 的 rebuildable 文件面，不是多 branch 并存 UI。

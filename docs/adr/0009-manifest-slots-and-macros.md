@@ -17,7 +17,7 @@ Ticket 02 的 Context Manifest 以固定 11 个 section 硬编码在 `context_co
 1. **`ManifestSlot` + `PromptPreset`**
    - `ManifestSlot`：`kind` / `stability` / `inclusion_reason` / `resolve(request) → (content, source_meta)` / `enabled` / 可选 `include_when` / 可选 `expand_macros`。
    - `PromptPreset`：有序 `slots` + `id` / `version`。
-   - 内置 `DEFAULT_PRESET` 精确复现既有 11 section（顺序、kind、stability、source、inclusion_reason、条件 `worldbook_entries`）。这是兼容基线；既有 `test_context_manifest.py` 契约锁定它。
+   - 内置 `DEFAULT_CONTEXT_LAYOUT` 精确复现既有 section 顺序、稳定性、来源和条件 worldbook entries。这是内部兼容基线；现行 Graph 回归集中在 `skills/tests/test_graph_execution.py`。
 
 2. **`compile_context` 消费 preset**
    - 从 `ContextCompileRequest.preset`（对象）或 `preset_id`（仅识别 `default`）解析 preset；缺省 → `DEFAULT_PRESET`。
