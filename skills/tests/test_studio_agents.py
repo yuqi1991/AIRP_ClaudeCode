@@ -6,7 +6,7 @@ from pathlib import Path
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
-from engine.runtime import FakeNarrativeExecutor, SessionTurnRuntime
+from engine.runtime import SessionTurnRuntime
 from runtime_server import SessionRuntimeServer
 
 
@@ -31,7 +31,6 @@ def _server(tmp_path: Path) -> SessionRuntimeServer:
         database_path=tmp_path / "runtime.sqlite3",
         card_folder=card,
         projection_root=styles,
-        executor=FakeNarrativeExecutor(content="<p>ok</p>"),
     )
     return SessionRuntimeServer(runtime, static_root=styles)
 

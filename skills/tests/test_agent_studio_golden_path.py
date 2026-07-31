@@ -23,7 +23,7 @@ except ImportError:  # Optional dependency for the local Chrome acceptance slice
 SKILLS = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SKILLS))
 
-from engine.runtime import FakeNarrativeExecutor, SessionTurnRuntime
+from engine.runtime import SessionTurnRuntime
 from runtime_server import SessionRuntimeServer
 
 
@@ -249,7 +249,6 @@ def test_studio_to_game_golden_path_drives_saved_configuration_live_trace_and_re
         database_path=tmp_path / "runtime.sqlite3",
         card_folder=card,
         projection_root=styles,
-        executor=FakeNarrativeExecutor("unused"),
         bootstrap_legacy_history=False,
     )
 
@@ -408,7 +407,6 @@ def test_browser_game_exposes_studio_link_and_trace_fallback_detail(tmp_path: Pa
         database_path=tmp_path / "runtime.sqlite3",
         card_folder=card,
         projection_root=styles,
-        executor=FakeNarrativeExecutor("unused"),
         bootstrap_legacy_history=False,
     )
 
@@ -461,7 +459,6 @@ def test_browser_studio_to_game_golden_path_renders_trace_detail_and_retry(tmp_p
         database_path=tmp_path / "runtime.sqlite3",
         card_folder=card,
         projection_root=styles,
-        executor=FakeNarrativeExecutor("unused"),
         bootstrap_legacy_history=False,
     )
 

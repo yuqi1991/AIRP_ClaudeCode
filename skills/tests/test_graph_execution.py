@@ -27,7 +27,7 @@ from engine.graph_runtime import (  # noqa: E402
 )
 from engine.node_runner import ProviderNodeRunner  # noqa: E402
 from engine.provider import AbortSignal, FakeProvider, ProviderDelta, ProviderResult  # noqa: E402
-from engine.runtime import FakeNarrativeExecutor, SessionTurnRuntime  # noqa: E402
+from engine.runtime import SessionTurnRuntime  # noqa: E402
 from runtime_server import SessionRuntimeServer  # noqa: E402
 
 
@@ -380,7 +380,6 @@ def test_session_graph_binds_host_tool_registry_for_worldbook_and_memory_tools(t
         database_path=tmp_path / "runtime.sqlite3",
         card_folder=card,
         projection_root=styles,
-        executor=FakeNarrativeExecutor("unused"),
         execution_plan_compiler=compiler,
         graph_runtime=GraphRuntime(ProviderNodeRunner(lambda _node: provider)),
         project_id="project",
@@ -477,7 +476,6 @@ def test_graph_http_api_can_create_and_reorder_agent_nodes(tmp_path):
         database_path=tmp_path / "runtime.sqlite3",
         card_folder=card,
         projection_root=styles,
-        executor=FakeNarrativeExecutor("<content>ok</content>"),
         bootstrap_legacy_history=False,
     )
     with SessionRuntimeServer(runtime, static_root=styles) as server:
@@ -632,7 +630,6 @@ def test_graph_output_artifact_uses_existing_runtime_draft_commit_path(tmp_path)
         database_path=tmp_path / "runtime.sqlite3",
         card_folder=card,
         projection_root=styles,
-        executor=FakeNarrativeExecutor("unused"),
         execution_plan_compiler=compiler,
         graph_runtime=GraphRuntime(_CommitRunner()),
         project_id="project",
@@ -677,7 +674,6 @@ def test_graph_node_failure_aborts_session_task_without_story_commit(tmp_path):
         database_path=tmp_path / "runtime.sqlite3",
         card_folder=card,
         projection_root=styles,
-        executor=FakeNarrativeExecutor("unused"),
         execution_plan_compiler=compiler,
         graph_runtime=GraphRuntime(runner),
         project_id="project",
@@ -723,7 +719,6 @@ def test_graph_retry_recompiles_current_definitions_and_links_failed_run(tmp_pat
         database_path=tmp_path / "runtime.sqlite3",
         card_folder=card,
         projection_root=styles,
-        executor=FakeNarrativeExecutor("unused"),
         execution_plan_compiler=compiler,
         graph_runtime=GraphRuntime(runner),
         project_id="project",
@@ -785,7 +780,6 @@ def test_debug_replay_runs_one_node_with_current_agent_and_frozen_input(tmp_path
         database_path=tmp_path / "runtime.sqlite3",
         card_folder=card,
         projection_root=styles,
-        executor=FakeNarrativeExecutor("unused"),
         execution_plan_compiler=compiler,
         graph_runtime=GraphRuntime(runner),
         project_id="project",
@@ -862,7 +856,6 @@ def test_graph_trace_survives_restart_and_prunes_older_terminal_runs(tmp_path):
         database_path=tmp_path / "runtime.sqlite3",
         card_folder=card,
         projection_root=styles,
-        executor=FakeNarrativeExecutor("unused"),
         execution_plan_compiler=compiler,
         graph_runtime=GraphRuntime(runner),
         project_id="project",
@@ -876,7 +869,6 @@ def test_graph_trace_survives_restart_and_prunes_older_terminal_runs(tmp_path):
         database_path=tmp_path / "runtime.sqlite3",
         card_folder=card,
         projection_root=styles,
-        executor=FakeNarrativeExecutor("unused"),
         execution_plan_compiler=compiler,
         graph_runtime=GraphRuntime(runner),
         project_id="project",
@@ -926,7 +918,6 @@ def test_restart_marks_in_flight_graph_run_interrupted(tmp_path):
         database_path=tmp_path / "runtime.sqlite3",
         card_folder=card,
         projection_root=styles,
-        executor=FakeNarrativeExecutor("unused"),
         execution_plan_compiler=compiler,
         graph_runtime=GraphRuntime(runner),
         project_id="project",
@@ -941,7 +932,6 @@ def test_restart_marks_in_flight_graph_run_interrupted(tmp_path):
         database_path=tmp_path / "runtime.sqlite3",
         card_folder=card,
         projection_root=styles,
-        executor=FakeNarrativeExecutor("unused"),
         execution_plan_compiler=compiler,
         graph_runtime=GraphRuntime(_RetentionRunner()),
         project_id="project",
@@ -1030,7 +1020,6 @@ def test_session_graph_events_and_node_detail_are_live_and_persisted(tmp_path):
         database_path=tmp_path / "runtime.sqlite3",
         card_folder=card,
         projection_root=styles,
-        executor=FakeNarrativeExecutor("unused"),
         execution_plan_compiler=compiler,
         graph_runtime=GraphRuntime(ProviderNodeRunner(lambda _node: provider)),
         project_id="project",
@@ -1116,7 +1105,6 @@ def test_studio_http_exposes_graph_retry_and_isolated_node_replay(tmp_path):
         database_path=tmp_path / "runtime.sqlite3",
         card_folder=card,
         projection_root=styles,
-        executor=FakeNarrativeExecutor("unused"),
         execution_plan_compiler=compiler,
         graph_runtime=GraphRuntime(runner),
         project_id="project",

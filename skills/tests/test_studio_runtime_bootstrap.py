@@ -8,7 +8,7 @@ from urllib.request import Request, urlopen
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from engine.runtime import FakeNarrativeExecutor, SessionTurnRuntime
+from engine.runtime import SessionTurnRuntime
 from airp.engine.active_graph import ActiveGraphSelectionStore
 from airp.workspace import Workspace
 from runtime_server import SessionRuntimeServer
@@ -81,7 +81,6 @@ def test_server_bootstraps_legacy_runtime_into_studio_and_binds_project(tmp_path
         database_path=tmp_path / "runtime.sqlite3",
         card_folder=card,
         projection_root=styles,
-        executor=FakeNarrativeExecutor(content="ok"),
     )
 
     with SessionRuntimeServer(runtime, static_root=styles, workspace=tmp_path / "workspace") as server:

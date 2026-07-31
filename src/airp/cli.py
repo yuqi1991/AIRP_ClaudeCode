@@ -12,7 +12,7 @@
 
 用法:
   python skills/start_runtime.py <card_folder> <ROOT>
-  python skills/start_runtime.py <card_folder> <ROOT> --mock   # FakeProvider，不调真实模型
+  python skills/start_runtime.py <card_folder> <ROOT>
 
 ``skills/`` 目前只作为过渡入口。生产包入口是 ``airp-runtime``；直接执行
 旧脚本仍受支持，方便旧脚本和开发环境迁移。
@@ -164,8 +164,6 @@ def _deliver_opening(
     card_folder: Path,
     styles: Path,
     runtime,
-    *,
-    mock: bool,
 ) -> str:
     """Write the opening turn (index 0, AI-only). Card first_mes preferred;
     otherwise generate via the real provider. Returns 'first_mes' | 'generated'."""
@@ -192,20 +190,6 @@ def _deliver_opening(
         )
         runtime.capture_opening_from_chat_log()
         return "first_mes"
-    if mock:
-        # FakeProvider path has no real model; write a placeholder opening.
-        handler.append_turn(
-            str(card_folder),
-            content="<p>（无 first_mes 且 mock 模式——占位开场。）</p>",
-            summary="占位开场",
-            options="",
-            is_opening=True,
-            full_text="<p>占位开场</p>",
-            projection_root=styles,
-        )
-        runtime.capture_opening_from_chat_log()
-        return "placeholder"
-
     draft = runtime.generate_opening_draft()
     if not draft.content.strip():
         raise RuntimeError("opening provider returned no visible content")
@@ -240,11 +224,10 @@ def _wait_server_ready(url: str, timeout: float = MAX_WAIT) -> bool:
 
 
 def main() -> None:
-    if len(sys.argv) < 3:
-        _die("Usage: python skills/start_runtime.py <card_folder> <ROOT> [--mock]")
+    if len(sys.argv) != 3:
+        _die("Usage: python skills/start_runtime.py <card_folder> <ROOT>")
     card_folder = Path(sys.argv[1]).resolve()
     root = Path(sys.argv[2]).resolve()
-    mock = "--mock" in sys.argv
     from airp.workspace import Workspace
 
     workspace = Workspace.default().ensure()
@@ -277,22 +260,17 @@ def main() -> None:
 
     # 4. Construct the runtime. Studio owns all executable configuration.
     from airp.engine.context_compiler import ContextPolicy
-    from airp.host.rp.session_runtime import MultiTurnFakeExecutor, SessionTurnRuntime
+    from airp.host.rp.session_runtime import SessionTurnRuntime
     from airp.host.rp.session_manager import SessionManager
 
     manifest_policy = ContextPolicy(version="runtime-v1", token_budget=8000)
     database_path = card_folder / ".runtime.sqlite3"
-
-    class GraphSelectionRequiredExecutor:
-        def run(self, _text, _compiled_context=None):
-            raise RuntimeError("select an active Studio Graph before starting a run")
 
     def build_runtime(session_id, *, bootstrap_legacy_history=False):
         return SessionTurnRuntime(
             database_path=database_path,
             card_folder=str(card_folder),
             projection_root=styles,
-            executor=MultiTurnFakeExecutor() if mock else GraphSelectionRequiredExecutor(),
             session_id=session_id,
             session_settings={},
             manifest_policy=manifest_policy,
@@ -326,14 +304,11 @@ def main() -> None:
     # 5. Deliver opening (only if chat_log is empty — no turn 0 yet) OR rebuild
     # projection from an existing save so the browser reflects the save instead
     # of import_prepare's placeholder content.js.
-    if runtime.opening_turn() is None and runtime.active_revision() == 0 and (
-        mock or runtime.execution_graph_id
-    ):
+    if runtime.opening_turn() is None and runtime.active_revision() == 0 and runtime.execution_graph_id:
         origin = _deliver_opening(
             card_folder,
             styles,
             runtime,
-            mock=mock,
         )
         runtime.resume_projection()
         print(f"[start_runtime] 开场已交付（来源: {origin}）", file=sys.stderr)
@@ -352,7 +327,7 @@ def main() -> None:
     url = f"http://localhost:{PORT}"
     if not _wait_server_ready(url):
         _die(f"服务器未在 {url} 就绪")
-    print(json.dumps({"ok": True, "url": url, "mock": mock,
+    print(json.dumps({"ok": True, "url": url,
                       "card": str(card_folder),
                       "session_id": session_manager.active_session_id}, ensure_ascii=False))
     try:

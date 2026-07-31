@@ -19,7 +19,7 @@ from airp.engine.regex_collections import (  # noqa: E402
     RegexCollectionLibrary,
 )
 from airp.workspace import Workspace  # noqa: E402
-from engine.runtime import FakeNarrativeExecutor, SessionTurnRuntime  # noqa: E402
+from engine.runtime import SessionTurnRuntime  # noqa: E402
 from runtime_server import SessionRuntimeServer  # noqa: E402
 
 
@@ -41,7 +41,6 @@ def _server(tmp_path: Path) -> SessionRuntimeServer:
         database_path=tmp_path / "runtime.sqlite3",
         card_folder=card,
         projection_root=styles,
-        executor=FakeNarrativeExecutor(content="ok"),
         bootstrap_legacy_history=False,
     )
     return SessionRuntimeServer(runtime, static_root=styles, workspace=tmp_path / "workspace")

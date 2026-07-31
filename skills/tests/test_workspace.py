@@ -12,7 +12,7 @@ sys.path.insert(0, str(SRC))
 sys.path.insert(0, str(SKILLS))
 
 from airp.workspace import Workspace  # noqa: E402
-from engine.runtime import FakeNarrativeExecutor, SessionTurnRuntime  # noqa: E402
+from engine.runtime import SessionTurnRuntime  # noqa: E402
 from runtime_server import SessionRuntimeServer  # noqa: E402
 
 
@@ -57,7 +57,6 @@ def test_runtime_server_writes_studio_library_to_workspace(tmp_path):
         database_path=tmp_path / "runtime.sqlite3",
         card_folder=card,
         projection_root=styles,
-        executor=FakeNarrativeExecutor("<content>ok</content>"),
         bootstrap_legacy_history=False,
     )
     workspace = Workspace.from_root(tmp_path / "workspace")

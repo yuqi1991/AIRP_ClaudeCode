@@ -557,40 +557,12 @@ class CommitLineage:
     text: str = ""
 
 
-class FakeNarrativeExecutor:
-    def __init__(self, content, summary="", options=""):
-        self._draft = TurnDraft(content=content, summary=summary, options=options)
-
-    def run(self, text, compiled_context=None):
-        return self._draft
-
-
-class MultiTurnFakeExecutor:
-    """Reusable deterministic fake executor for mock/runtime smoke flows."""
-
-    def __init__(self):
-        self._turn = 0
-
-    def run(self, text, compiled_context=None):
-        self._turn += 1
-        hour = min(23, 9 + self._turn)
-        polished = (text or '').strip() or f'玩家行动 {self._turn}'
-        return TurnDraft(
-            polished_input=polished,
-            content=f'<p>Mock 回合 {self._turn}：{polished}</p>',
-            summary=f'Mock 回合 {self._turn}',
-            options='<font color="#5a7a5a">继续行动</font>',
-            mvu_commands=f"_.set('世界.时间', '1月1日 {hour:02d}:00');",
-        )
-
-
 class SessionTurnRuntime:
     def __init__(
         self,
         database_path,
         card_folder,
         projection_root,
-        executor,
         session_id="local",
         manifest_policy=None,
         session_settings=None,
@@ -606,7 +578,6 @@ class SessionTurnRuntime:
     ):
         self.database_path = Path(database_path)
         self.card_folder = Path(card_folder)
-        self.executor = executor
         self.session_id = session_id
         self.manifest_policy = manifest_policy or ContextPolicy(version="runtime-v1", token_budget=8000)
         self.session_settings = json.loads(self._canonical(session_settings or {}))
@@ -691,7 +662,27 @@ class SessionTurnRuntime:
         if not plan_data or self.graph_runtime is None:
             raise ValueError("generated opening requires an active Studio Graph")
         plan = ExecutionPlan.from_dict(plan_data)
-        result = self.graph_runtime.run(plan, AgentArtifact.input(""))
+        # An opening has no durable task or Graph Run trace, but it must expose
+        # exactly the same frozen, read-only host capabilities as a player turn.
+        opening_task = {
+            "id": None,
+            "status": "opening",
+            "base_revision": 0,
+            "source_snapshot": self._canonical(snapshot),
+        }
+        opening_context = NodeExecutionContext(
+            tool_registry=ToolRegistry(
+                self,
+                opening_task,
+                self.manifest_policy,
+                snapshot=self._graph_tool_snapshot(plan, opening_task),
+            )
+        )
+        result = self.graph_runtime.run(
+            plan,
+            AgentArtifact.input(""),
+            execution_context=opening_context,
+        )
         if not result.ok or result.output_artifact is None:
             raise GraphExecutionError(result)
         return turn_draft_from_artifact(result.output_artifact)
@@ -702,7 +693,7 @@ class SessionTurnRuntime:
         A session owns one durable generation lease. The owner drains FIFO work;
         all other callers merely observe their durable task row. This deliberately
         keeps HTTP's background submit contract intact while making direct library
-        calls safe during a blocked executor run.
+        calls safe during a blocked Graph Run.
         """
         result = self._result(task)
         if result.commit_id:
@@ -731,15 +722,15 @@ class SessionTurnRuntime:
     def _run_leased_task(self, task):
         signal = AbortSignal()
         self._abort_signals[task["id"]] = signal
-        executor = self._executor_for_task(task, signal)
         try:
             compiled = self._compile_and_persist(task)
             if compiled is None:
                 return self.task(task["id"]) or self._result(task)
             try:
-                if self._is_legacy_direct_executor(executor):
-                    return self._run_director(task, task["text"], compiled, signal, executor)
-                draft = self._execute(executor, task["text"], compiled)
+                executor = self._graph_turn_executor_for_task(task, signal)
+                if executor is None:
+                    return self._fail_graph_configuration(task)
+                draft = executor.run(task["text"], compiled)
                 return self._project(self._commit_draft(task, draft))
             except GraphExecutionError as exc:
                 return self._fail_graph_run(task, exc)
@@ -1008,15 +999,15 @@ class SessionTurnRuntime:
 
             signal = AbortSignal()
             self._abort_signals[task["id"]] = signal
-            executor = self._executor_for_task(task, signal)
         try:
             compiled = self._compile_and_persist(task)
             if compiled is None:
                 return self.task(task["id"]) or self._result(task)
             try:
-                if self._is_legacy_direct_executor(executor):
-                    return self._run_director(task, text, compiled, signal, executor)
-                draft = self._execute(executor, text, compiled)
+                executor = self._graph_turn_executor_for_task(task, signal)
+                if executor is None:
+                    return self._fail_graph_configuration(task)
+                draft = executor.run(text, compiled)
                 result = self._commit_draft(task, draft)
                 return self._project(result)
             except GraphExecutionError as exc:
@@ -2047,7 +2038,7 @@ class SessionTurnRuntime:
                 self._event(connection, "task.running", payload)
         return compiled
 
-    def _executor_for_task(self, task, signal=None):
+    def _graph_turn_executor_for_task(self, task, signal=None):
         snapshot = json.loads(task["source_snapshot"]) if task["source_snapshot"] else {}
         plan_data = snapshot.get("execution_plan")
         if plan_data and self.graph_runtime is not None:
@@ -2066,16 +2057,7 @@ class SessionTurnRuntime:
                     abort_signal=signal,
                 ),
             )
-        return self.executor
-
-    @staticmethod
-    def _is_legacy_direct_executor(executor) -> bool:
-        """Recognize the retired direct protocol without importing its classes."""
-        return callable(getattr(executor, "direct", None))
-
-    @staticmethod
-    def _execute(executor, text, compiled):
-        return executor.run(text, compiled)
+        return None
 
     def _commit_draft(self, task, draft):
         stale = False
@@ -2139,6 +2121,30 @@ class SessionTurnRuntime:
             "task_id": task["id"],
             "plan_id": getattr(graph_result, "plan_id", None),
             "failed_node_id": getattr(graph_result, "failed_node_id", None),
+        }
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT commit_id, revision, status FROM tasks WHERE id = ?",
+                (task["id"],),
+            ).fetchone()
+            if row and not row["commit_id"] and self._lease_is_authoritative(connection, task):
+                connection.execute(
+                    "UPDATE tasks SET status = ? WHERE id = ? AND commit_id IS NULL",
+                    ("failed_terminal", task["id"]),
+                )
+                self._event(connection, "graph.run.failed", payload)
+                self._event(connection, "task.failed_terminal", payload)
+                return RuntimeResult(task["id"], None, row["revision"] or task["base_revision"], "failed_terminal")
+            if row:
+                return RuntimeResult(task["id"], row["commit_id"], row["revision"], row["status"])
+        return RuntimeResult(task["id"], None, task["base_revision"], "failed_terminal")
+
+    def _fail_graph_configuration(self, task):
+        """Fail a leased task when no active Studio Graph was frozen into it."""
+        payload = {
+            "task_id": task["id"],
+            "error": {"code": "active_graph_required", "message": "select an active Studio Graph before starting a run"},
         }
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")

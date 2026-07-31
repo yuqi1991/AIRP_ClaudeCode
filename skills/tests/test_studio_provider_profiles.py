@@ -12,7 +12,7 @@ from urllib.request import Request, urlopen
 SKILLS = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SKILLS))
 
-from engine.runtime import FakeNarrativeExecutor, SessionTurnRuntime  # noqa: E402
+from engine.runtime import SessionTurnRuntime  # noqa: E402
 from runtime_server import SessionRuntimeServer  # noqa: E402
 
 
@@ -32,7 +32,6 @@ def _server(tmp_path: Path) -> SessionRuntimeServer:
         database_path=tmp_path / "runtime.sqlite3",
         card_folder=card,
         projection_root=styles,
-        executor=FakeNarrativeExecutor(content="<p>ok</p>"),
     )
     return SessionRuntimeServer(runtime, static_root=styles)
 
@@ -168,7 +167,6 @@ def test_studio_providers_view_is_served_from_runtime_and_uses_profile_seam(tmp_
         database_path=tmp_path / "runtime.sqlite3",
         card_folder=card,
         projection_root=styles,
-        executor=FakeNarrativeExecutor(content="<p>ok</p>"),
     )
     with SessionRuntimeServer(runtime, static_root=styles) as server:
         with urlopen(f"{server.base_url}/studio", timeout=5) as response:

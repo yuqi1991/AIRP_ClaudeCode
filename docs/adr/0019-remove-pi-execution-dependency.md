@@ -17,4 +17,4 @@ Pi 之前验证过 Agent loop、工具和 provider 的形态，但没有提供 A
 - 世界书不是隐式 prompt 解析器：Context Manifest 只提供 catalog，Agent 需要显式调用按标题加载工具；整本世界书不会自动塞进上下文。
 - 所谓 skill-mode 是世界书的 catalog/on-demand 约定，不是扫描 `skills/` 目录的隐藏执行机制。未来其他 skill/capability 必须通过显式 Host registry 注入，不得进入 Graph Runtime。
 
-旧 `engine.director` / `SequentialAgentGraph` 仅作为兼容导入和旧测试的边界，生产 server 始终配置 `ExecutionPlanCompiler + GraphRuntime + ProviderNodeRunner`。兼容路径不参与新的 Studio Graph Run，也不再拥有 provider sidecar。
+旧 `engine.director` / `SequentialAgentGraph` 已删除。生产 server 始终配置 `ExecutionPlanCompiler + GraphRuntime + ProviderNodeRunner`；唯一保留的旧格式兼容代码是一次性卡片回合导入。

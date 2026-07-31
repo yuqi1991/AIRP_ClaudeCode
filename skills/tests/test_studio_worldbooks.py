@@ -12,11 +12,6 @@ from runtime_server import SessionRuntimeServer
 SKILLS = __import__("pathlib").Path(__file__).resolve().parents[1]
 
 
-class _NoopExecutor:
-    def run(self, context, tools):
-        raise AssertionError("executor is not used by these tests")
-
-
 def _runtime(tmp_path, styles, *, session_id="local"):
     card = tmp_path / "cards" / "jade-palace"
     (card / "memory").mkdir(parents=True, exist_ok=True)
@@ -24,7 +19,6 @@ def _runtime(tmp_path, styles, *, session_id="local"):
         database_path=tmp_path / "runtime.sqlite3",
         card_folder=card,
         projection_root=styles,
-        executor=_NoopExecutor(),
         session_id=session_id,
         bootstrap_legacy_history=False,
     )

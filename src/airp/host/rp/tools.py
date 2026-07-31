@@ -208,29 +208,34 @@ class ToolRegistry:
         args_dict = args if isinstance(args, dict) else {}
         args_hash = _hash_args(args_dict)
         redacted = _redact(args_dict)
-        self._runtime._emit_tool_started(self._task["id"], name, args_hash, redacted)
+        task_id = self._task.get("id") if isinstance(self._task, Mapping) else None
+        if task_id:
+            self._runtime._emit_tool_started(task_id, name, args_hash, redacted)
         validation_error = _validate_args(name, args_dict)
         if validation_error is not None:
             duration = time.monotonic() - started
-            self._runtime._emit_tool_finished(
-                self._task["id"], name, args_hash, redacted, ok=False,
-                error=validation_error, duration=duration,
-            )
+            if task_id:
+                self._runtime._emit_tool_finished(
+                    task_id, name, args_hash, redacted, ok=False,
+                    error=validation_error, duration=duration,
+                )
             return ToolResult(ok=False, error=validation_error)
         try:
             result = self._dispatch(name, args_dict)
         except _ToolError as exc:
             duration = time.monotonic() - started
-            self._runtime._emit_tool_finished(
-                self._task["id"], name, args_hash, redacted, ok=False,
-                error=exc.code, duration=duration,
-            )
+            if task_id:
+                self._runtime._emit_tool_finished(
+                    task_id, name, args_hash, redacted, ok=False,
+                    error=exc.code, duration=duration,
+                )
             return ToolResult(ok=False, error=exc.code)
         duration = time.monotonic() - started
-        self._runtime._emit_tool_finished(
-            self._task["id"], name, args_hash, redacted, ok=bool(result.ok),
-            error=result.error, duration=duration,
-        )
+        if task_id:
+            self._runtime._emit_tool_finished(
+                task_id, name, args_hash, redacted, ok=bool(result.ok),
+                error=result.error, duration=duration,
+            )
         return result
 
     def _dispatch(self, name: str, args: dict) -> ToolResult:
