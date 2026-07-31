@@ -6,9 +6,9 @@ from pathlib import Path
 SKILLS = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SKILLS))
 
-from engine.agent_framework import AdaptedGraphExecutor, AgentFrameworkExecutor  # noqa: E402
+from airp.host.graph_turn_commit import GraphTurnCommitExecutor  # noqa: E402
+from engine.agent_framework import AgentFrameworkExecutor  # noqa: E402
 from engine.graph_runtime import AgentArtifact, ExecutionPlanCompiler, GraphRuntime, NodeResult  # noqa: E402
-from engine.rp_turn_adapter import RPTurnAdapter  # noqa: E402
 
 
 def _agent() -> dict:
@@ -17,7 +17,7 @@ def _agent() -> dict:
 
 def _plan(output: str) -> object:
     plan = ExecutionPlanCompiler().compile(
-        project={"id": "project", "graph_id": "graph"},
+        project={"id": "project"},
         graph={
             "id": "graph",
             "nodes": [{"node_id": "writer", "agent_id": "writer"}],
@@ -45,13 +45,10 @@ def test_framework_executor_returns_opaque_graph_result_without_parsing_content(
     assert result.output_artifact.kind == "text"
 
 
-def test_rp_adapter_keeps_tag_rules_outside_framework():
+def test_host_commit_keeps_final_artifact_content_opaque():
     plan, runtime = _plan("<content>story</content><summary>brief</summary>")
 
-    draft = AdaptedGraphExecutor(
-        AgentFrameworkExecutor(runtime, plan),
-        RPTurnAdapter(),
-    ).run("hello")
+    draft = GraphTurnCommitExecutor(AgentFrameworkExecutor(runtime, plan)).run("hello")
 
-    assert draft.content == "story"
-    assert draft.summary == "brief"
+    assert draft.content == "<content>story</content><summary>brief</summary>"
+    assert draft.summary == ""

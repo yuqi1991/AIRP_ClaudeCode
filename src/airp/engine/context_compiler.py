@@ -31,8 +31,7 @@ class ContextCompileRequest:
     policy: ContextPolicy
     call_ordinal: int = 0
     worldbook_loads: tuple = ()
-    preset: Any = None  # Optional[PromptPreset]; default → DEFAULT_PRESET
-    preset_id: Optional[str] = None
+    layout: Any = None  # Optional[ContextLayout]; default → DEFAULT_CONTEXT_LAYOUT
 
 
 @dataclass(frozen=True)
@@ -70,8 +69,8 @@ class ManifestSlot:
 
 
 @dataclass(frozen=True)
-class PromptPreset:
-    """Ordered, versioned list of ManifestSlots."""
+class ContextLayout:
+    """Internal ordered layout for generic context data, never writing policy."""
 
     id: str
     version: str
@@ -146,7 +145,7 @@ def _resolve_player_input(request):
 
 
 def static_slot(kind, stability, inclusion_reason, content, source_id=None, source_version="static", enabled=True, expand_macros=False):
-    """Build a slot with fixed content (for modular directive knobs / custom presets)."""
+    """Build a fixed generic context slot for layout-level tests and extensions."""
 
     def resolve(_request):
         return content, {"id": source_id or kind, "version": source_version}
@@ -161,8 +160,8 @@ def static_slot(kind, stability, inclusion_reason, content, source_id=None, sour
     )
 
 
-DEFAULT_PRESET = PromptPreset(
-    id="default",
+DEFAULT_CONTEXT_LAYOUT = ContextLayout(
+    id="default-context-layout",
     version="context-manifest-v1",
     slots=(
         ManifestSlot("narrative_policy", "stable", "role baseline", _resolve_narrative_policy),
@@ -186,16 +185,12 @@ DEFAULT_PRESET = PromptPreset(
 )
 
 
-def resolve_preset(request):
-    if request.preset is not None:
-        return request.preset
-    if request.preset_id and request.preset_id != DEFAULT_PRESET.id:
-        raise ValueError(f"unknown preset_id: {request.preset_id}")
-    return DEFAULT_PRESET
+def resolve_layout(request):
+    return request.layout if request.layout is not None else DEFAULT_CONTEXT_LAYOUT
 
 
-def compose_preset(base, *, id, version, disable_kinds=(), slot_overrides=(), append_slots=()):
-    """Declarative modularity: enable/disable/swap slots without touching compile_context.
+def compose_layout(base, *, id, version, disable_kinds=(), slot_overrides=(), append_slots=()):
+    """Compose an internal generic context layout without touching compilation.
 
     - disable_kinds: kinds to flip enabled=False
     - slot_overrides: ManifestSlot instances that replace same-kind slots in place
@@ -213,7 +208,7 @@ def compose_preset(base, *, id, version, disable_kinds=(), slot_overrides=(), ap
             slots.append(slot)
     for slot in append_slots:
         slots.append(slot)
-    return PromptPreset(id=id, version=version, slots=tuple(slots))
+    return ContextLayout(id=id, version=version, slots=tuple(slots))
 
 
 def macro_context(request):
@@ -254,9 +249,9 @@ def expand_macros(value, request):
 
 
 def compile_context(request):
-    preset = resolve_preset(request)
+    layout = resolve_layout(request)
     sections = []
-    for slot in preset.slots:
+    for slot in layout.slots:
         if not slot.enabled:
             continue
         include_when = slot.include_when or _always
@@ -279,7 +274,7 @@ def compile_context(request):
             role=slot.role,
             prompt_entry=slot.prompt_entry,
         )
-    return _finalize_context(request, preset, sections)
+    return _finalize_context(request, layout, sections)
 
 
 def compile_sequential_handoff_context(request, parent_manifest, source_node, target_node, text):
@@ -289,7 +284,7 @@ def compile_sequential_handoff_context(request, parent_manifest, source_node, ta
     previous payload. Its provenance chains the receiving node to the exact
     parent manifest and prior handoff hash.
     """
-    preset = resolve_preset(request)
+    layout = resolve_layout(request)
     base = compile_context(request)
     sections = list(base.manifest["sections"])
     source = {"id": source_node.id, "role": source_node.role}
@@ -313,10 +308,10 @@ def compile_sequential_handoff_context(request, parent_manifest, source_node, ta
         "parent_handoff_hash": (parent_provenance.get("handoff") or {}).get("hash"),
         "handoff": {"hash": handoff_hash, "source": source, "target": target},
     }
-    return _finalize_context(request, preset, sections, graph_provenance=provenance)
+    return _finalize_context(request, layout, sections, graph_provenance=provenance)
 
 
-def _finalize_context(request, preset, sections, *, graph_provenance=None):
+def _finalize_context(request, layout, sections, *, graph_provenance=None):
     budget_decisions = _fit_budget(sections, request.policy.token_budget)
     _fit_payload_budget(sections, request.policy.token_budget, budget_decisions)
     payload = _payload(sections)
@@ -340,11 +335,8 @@ def _finalize_context(request, preset, sections, *, graph_provenance=None):
         "payload_hash": payload_hash,
         "stable_payload_hash": stable_payload_hash,
         "budget_decisions": budget_decisions,
-        # Optional metadata — does not alter default payload bytes.
-        "preset_id": preset.id,
-        "preset_version": preset.version,
+        "context_layout": {"id": layout.id, "version": layout.version},
         "macros_version": MACROS_VERSION,
-        "runtime_config": request.snapshot.get("runtime_config_manifest"),
     }
     if graph_provenance is not None:
         manifest["graph_provenance"] = graph_provenance

@@ -8,10 +8,10 @@ boundary consumed by Graph Runtime.
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from typing import Any, Callable
 
-from airp.engine.graph_runtime import AgentArtifact, GraphNodePlan, NodeResult
+from airp.engine.graph_runtime import AgentArtifact, GraphNodePlan, NodeExecutionContext, NodeResult
 from airp.engine.macros import build_context, expand_template
 from airp.engine.provider import (
     AbortSignal,
@@ -21,6 +21,7 @@ from airp.engine.provider import (
     ProviderRequest,
     ProviderResult,
 )
+from airp.engine.regex_transformer import RegexTransformError, RegexTransformer
 
 
 class ProviderNodeRunner:
@@ -38,6 +39,7 @@ class ProviderNodeRunner:
         tool_handler: Callable[[str, dict[str, Any]], Any] | None = None,
         max_tool_rounds: int = 8,
         signal_factory: Callable[[], AbortSignal] = AbortSignal,
+        regex_transformer: RegexTransformer | Callable[[GraphNodePlan], Any] | Iterable[Mapping[str, Any]] | None = None,
     ) -> None:
         if not callable(provider_factory):
             raise TypeError("ProviderNodeRunner requires a provider factory")
@@ -45,6 +47,7 @@ class ProviderNodeRunner:
         self.tool_handler = tool_handler
         self.max_tool_rounds = max(1, int(max_tool_rounds))
         self.signal_factory = signal_factory
+        self.regex_transformer = regex_transformer
 
     def run(
         self,
@@ -52,14 +55,40 @@ class ProviderNodeRunner:
         input_artifact: AgentArtifact,
         *,
         observer: Any = None,
+        execution_context: NodeExecutionContext | None = None,
     ) -> NodeResult:
         try:
             provider = self.provider_factory(node)
+            regex_transformer = self._resolve_regex_transformer(node)
+            input_content = input_artifact.content
+            if regex_transformer is not None:
+                input_result = regex_transformer.transform(input_content, target="input")
+                self._notify(
+                    observer,
+                    "input_transformed",
+                    node,
+                    input_content,
+                    input_result,
+                )
+                input_content = input_result.text
+            context_artifact = input_artifact
+            if input_content != input_artifact.content and isinstance(input_content, str):
+                context_artifact = AgentArtifact.text(
+                    input_content,
+                    kind=input_artifact.kind,
+                    content_type=input_artifact.content_type,
+                    metadata=input_artifact.metadata,
+                )
             runtime_context = build_context(
                 {
-                    "handoff": input_artifact.content,
-                    "node_input": input_artifact.content,
-                    "input_artifact": input_artifact.to_dict(),
+                    "handoff": input_content,
+                    "node_input": input_content,
+                    "input_artifact": context_artifact.to_dict(),
+                    "skills": (
+                        execution_context.skill_catalog
+                        if execution_context is not None and execution_context.skill_catalog is not None
+                        else []
+                    ),
                 }
             )
             messages = expand_template(
@@ -67,11 +96,15 @@ class ProviderNodeRunner:
                 runtime_context,
                 preserve_unknown=True,
             )
-            messages.append({"role": "user", "content": self._content(input_artifact.content)})
-            tools = self._tools(node)
+            messages.append({"role": "user", "content": self._content(input_content)})
+            tools = self._tools(node, execution_context)
             model = node.model_id or node.agent.model_id or provider.model_id(node.agent.agent_id)
             parameters = self._parameters(node)
-            signal = self.signal_factory()
+            signal = (
+                execution_context.abort_signal
+                if execution_context is not None and execution_context.abort_signal is not None
+                else self.signal_factory()
+            )
 
             for call_ordinal in range(1, self.max_tool_rounds + 1):
                 request = ProviderRequest(
@@ -100,7 +133,8 @@ class ProviderNodeRunner:
                     provider_result,
                 )
                 if tool_calls:
-                    if self.tool_handler is None:
+                    tool_handler = self._tool_handler_for(node, execution_context)
+                    if tool_handler is None:
                         return NodeResult.failed(
                             {"code": "tool_handler_unavailable", "calls": tool_calls}
                         )
@@ -114,7 +148,7 @@ class ProviderNodeRunner:
                     for call in tool_calls:
                         self._notify(observer, "tool_call_started", node, call)
                         try:
-                            value = self.tool_handler(call["name"], call.get("args") or {})
+                            value = tool_handler(node, call["name"], call.get("args") or {})
                         except Exception as exc:
                             self._notify(observer, "tool_call_finished", node, call, None, exc)
                             raise
@@ -128,8 +162,22 @@ class ProviderNodeRunner:
                             }
                         )
                     continue
-                return NodeResult.succeeded(AgentArtifact.text(text))
+                output_content = text
+                if regex_transformer is not None:
+                    output_result = regex_transformer.transform(text, target="output")
+                    self._notify(
+                        observer,
+                        "output_transformed",
+                        node,
+                        text,
+                        output_result,
+                    )
+                    output_content = output_result.text
+                return NodeResult.succeeded(AgentArtifact.text(output_content))
             return NodeResult.failed("node tool-call round limit exceeded")
+        except RegexTransformError as exc:
+            self._notify(observer, "regex_transform_failed", node, exc)
+            return NodeResult.failed(exc.to_dict())
         except ProviderAborted as exc:
             return NodeResult.failed({"code": "aborted", "message": str(exc)})
         except ProviderError as exc:
@@ -175,7 +223,13 @@ class ProviderNodeRunner:
                 return
 
     @staticmethod
-    def _tools(node: GraphNodePlan) -> list[dict[str, Any]]:
+    def _tools(
+        node: GraphNodePlan,
+        execution_context: NodeExecutionContext | None = None,
+    ) -> list[dict[str, Any]]:
+        registry = execution_context.tool_registry if execution_context is not None else None
+        if registry is not None and callable(getattr(registry, "schemas", None)):
+            return [dict(tool) for tool in registry.schemas(node.tool_allowlist)]
         tools = node.agent.effective_config.get("tools") if isinstance(node.agent.effective_config, dict) else None
         if isinstance(tools, list):
             return [dict(tool) for tool in tools if isinstance(tool, dict)]
@@ -195,6 +249,60 @@ class ProviderNodeRunner:
             if isinstance(source, Mapping):
                 parameters.update(source)
         return parameters
+
+    def _resolve_regex_transformer(self, node: GraphNodePlan) -> RegexTransformer | None:
+        """Resolve an optional frozen Agent collection without owning persistence.
+
+        The explicit constructor seam is useful to runtimes that resolve the
+        collection outside Graph Runtime.  The effective-config fallback keeps
+        this runner compatible with plans that already embed a collection while
+        leaving Agent/Project stores unaware of regex execution.
+        """
+
+        candidate: Any = self.regex_transformer
+        if candidate is not None:
+            if isinstance(candidate, RegexTransformer):
+                return candidate
+            if callable(candidate):
+                candidate = candidate(node)
+            if isinstance(candidate, RegexTransformer):
+                return candidate
+            if isinstance(candidate, Mapping):
+                candidate = candidate.get("rules")
+            if isinstance(candidate, (list, tuple)):
+                return RegexTransformer(candidate)
+            if candidate is None:
+                return None
+            raise TypeError("regex_transformer must be a RegexTransformer, rules, or factory")
+
+        effective = getattr(node.agent, "effective_config", {})
+        if isinstance(effective, Mapping):
+            candidate = effective.get("regex_collection", effective.get("regex_rules"))
+        if candidate is None:
+            candidate = getattr(node.agent, "regex_collection", None)
+        if isinstance(candidate, Mapping):
+            candidate = candidate.get("rules")
+        if isinstance(candidate, (list, tuple)):
+            return RegexTransformer(candidate)
+        return None
+
+    def _tool_handler_for(
+        self,
+        node: GraphNodePlan,
+        execution_context: NodeExecutionContext | None,
+    ):
+        if execution_context is not None and execution_context.tool_handler is not None:
+            return execution_context.tool_handler
+        registry = execution_context.tool_registry if execution_context is not None else None
+        if registry is not None and callable(getattr(registry, "dispatch", None)):
+            return lambda current_node, name, args: registry.dispatch(
+                name,
+                args,
+                allowed=current_node.tool_allowlist,
+            )
+        if self.tool_handler is None:
+            return None
+        return lambda _node, name, args: self.tool_handler(name, args)
 
     @staticmethod
     def _content(value: Any) -> str:

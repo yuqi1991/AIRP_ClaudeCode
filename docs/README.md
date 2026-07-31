@@ -32,11 +32,11 @@
 
 ### 规格
 
-- [Pi Agent Core 独立回合 Runtime 规格](specs/pi-agent-core-runtime.md) — 本地规格，尚未发布到 issue tracker
+- [Pi Agent Core 独立回合 Runtime 规格](specs/pi-agent-core-runtime.md) — 历史候选规格，已由 ADR-0019 否决，不是当前实现
 
 ### 研究
 
-- [Pi Agent Execution Layer 可行性研究](research/pi-runtime-evaluation.md) — 技术选型前研究，尚非 Accepted 决策
+- [Pi Agent Execution Layer 可行性研究](research/pi-runtime-evaluation.md) — 历史技术选型研究，结论已由 ADR-0019 更新
 
 ### 开发
 

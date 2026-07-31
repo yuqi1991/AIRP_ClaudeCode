@@ -1,13 +1,6 @@
 {
   "name": "airp-claude-code",
   "private": true,
-  "description": "AIRP Node sidecar deps for RealProviderAdapter (Pi AI streaming to DeepSeek)",
-  "type": "module",
-  "engines": {
-    "node": ">=22.19.0"
-  },
-  "dependencies": {
-    "@earendil-works/pi-agent-core": "0.82.1",
-    "@earendil-works/pi-ai": "0.82.1"
-  }
+  "description": "AIRP provider protocol fixtures",
+  "type": "module"
 }

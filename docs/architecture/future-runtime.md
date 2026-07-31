@@ -21,7 +21,7 @@
 5. 记录 token、工具调用、资料来源和状态写入；
 6. 为玩家实时编辑和多卡并发预留 session 隔离。
 
-Pi 是候选 harness 示例，不是本 wiki 已确认的技术选型。任何具体 runtime 选型应新增 ADR。
+Pi 是已否决的历史 harness 候选。ADR-0019 已确认 AIRP 自有 Graph Runtime + OpenAI-compatible Provider Adapter，新的 runtime 设计不得重新引入 Pi 作为执行依赖。
 
 ## 未来一等 agent 职责
 

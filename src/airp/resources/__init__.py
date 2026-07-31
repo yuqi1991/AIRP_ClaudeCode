@@ -51,21 +51,9 @@ def projection_root(root: str | Path | None = None) -> Path:
         return base / ".airp" / "web"
 
 
-def sidecar_script() -> Path:
-    """Return the provider sidecar script, honoring explicit overrides."""
-    override = os.environ.get("AIRP_SIDECAR_SCRIPT")
-    if override:
-        return Path(override).expanduser().resolve()
-    packaged = Path(files("airp.resources")) / "sidecar" / "pi_provider_sidecar.mjs"
-    if packaged.exists():
-        return packaged
-    return repository_root() / "skills" / "sidecar" / "pi_provider_sidecar.mjs"
-
-
 __all__ = [
     "packaged_web_root",
     "projection_root",
     "repository_root",
-    "sidecar_script",
     "static_asset_root",
 ]

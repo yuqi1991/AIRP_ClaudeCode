@@ -1,10 +1,4 @@
-"""Application composition for the transitional AIRP runtime.
-
-The facade owns object-graph assembly. Transport code can consume these named
-objects without knowing where Studio files, secrets or compatibility config
-are stored. The lazy imports keep this package usable before the legacy engine
-has completed its move into ``src/airp``.
-"""
+"""Application composition for AIRP's Studio and host runtime."""
 
 from __future__ import annotations
 
@@ -26,8 +20,9 @@ class Application:
     graph_store: Any = None
     graph_definitions: Any = None
     worldbooks: Any = None
+    regex_collections: Any = None
     projects: Any = None
-    config_store: Any = None
+    active_graphs: Any = None
 
     @classmethod
     def assemble(
@@ -35,7 +30,6 @@ class Application:
         *,
         static_root: str | Path | None,
         workspace: Workspace | str | Path | None = None,
-        preset_root: str | Path | None = None,
         graph_root: str | Path | None = None,
     ) -> "Application":
         if static_root is None:
@@ -50,20 +44,21 @@ class Application:
             return cls(workspace=data_workspace)
 
         from airp.engine.agent_definitions import AgentDefinitionService, AgentDefinitionStore
+        from airp.engine.active_graph import ActiveGraphSelectionStore
         from airp.engine.graph_definitions import GraphDefinitionService, GraphDefinitionStore
         from airp.engine.provider_profiles import ProviderProfileService
-        from airp.engine.runtime_config import RuntimeConfigStore
+        from airp.engine.regex_collections import RegexCollectionLibrary
         from airp.engine.secret_store import LocalSecretStore
         from airp.engine.studio_library import ProviderProfileStore
         from airp.engine.worldbook_library import WorldbookLibrary
         from airp.engine.project_library import ProjectLibrary
+        from airp.host.rp.tools import TOOL_SCHEMAS
 
         root = Path(static_root).resolve()
         data_workspace = None
         if workspace is not None:
             data_workspace = workspace if isinstance(workspace, Workspace) else Workspace.from_root(workspace)
             data_workspace.ensure()
-        resolved_preset_root = Path(preset_root).resolve() if preset_root else root / "presets"
         resolved_graph_root = Path(graph_root).resolve() if graph_root else root / "graphs"
 
         provider_store = ProviderProfileStore(root, workspace=data_workspace)
@@ -73,17 +68,39 @@ class Application:
         agent_store = AgentDefinitionStore(
             root,
             graph_root=resolved_graph_root,
-            preset_root=resolved_preset_root,
             workspace=data_workspace,
+            tool_schema_provider=TOOL_SCHEMAS,
         )
         graph_store = GraphDefinitionStore(root, agent_store=agent_store, workspace=data_workspace)
         worldbooks = WorldbookLibrary(root, workspace=data_workspace)
-        projects = ProjectLibrary(root, worldbooks=worldbooks, workspace=data_workspace)
-        config_store = RuntimeConfigStore(
+        def regex_collection_references(collection_id: str) -> list[dict[str, str]]:
+            references: list[dict[str, str]] = []
+            try:
+                agents = agent_store.list_agents()
+            except Exception:
+                return references
+            for agent in agents:
+                if not isinstance(agent, dict) or agent.get("regex_collection_id") != collection_id:
+                    continue
+                agent_id = agent.get("agent_id") or agent.get("id")
+                if not isinstance(agent_id, str):
+                    continue
+                references.append(
+                    {
+                        "type": "agent",
+                        "id": agent_id,
+                        "name": str(agent.get("name") or agent_id),
+                    }
+                )
+            return references
+
+        regex_collections = RegexCollectionLibrary(
             root,
-            preset_root=resolved_preset_root,
-            graph_root=resolved_graph_root,
+            workspace=data_workspace,
+            reference_callback=regex_collection_references,
         )
+        projects = ProjectLibrary(root, worldbooks=worldbooks, workspace=data_workspace)
+        active_graphs = ActiveGraphSelectionStore(data_workspace)
         return cls(
             workspace=data_workspace,
             provider_profile_store=provider_store,
@@ -94,6 +111,7 @@ class Application:
             graph_store=graph_store,
             graph_definitions=GraphDefinitionService(graph_store),
             worldbooks=worldbooks,
+            regex_collections=regex_collections,
             projects=projects,
-            config_store=config_store,
+            active_graphs=active_graphs,
         )

@@ -19,9 +19,9 @@
 - 独立 token、日志和可观测性；
 - 消除对追加式 Claude transcript 的功能依赖。
 
-**候选研究**：[`Pi Agent Execution Layer 可行性研究`](../research/pi-runtime-evaluation.md)。Pi 当前仅是 agent loop/provider 层候选，不是已选定 runtime。
+**历史研究**：[`Pi Agent Execution Layer 可行性研究`](../research/pi-runtime-evaluation.md)。该候选已由 ADR-0019 否决，当前执行层是 AIRP 自有 Graph Runtime + OpenAI-compatible Provider Adapter。
 
-**原型门槛**：先以实验 ADR 授权候选验证并固定 agent 消息、proposal/commit 和状态权限边界，再验证单 session、单叙事 agent 和真实 DeepSeek 路径；证明无需 `ScheduleWakeup`/`wait_pending`、上下文可审计、usage 可直接记录、任务可取消和恢复后，再以正式选型 ADR 确认或否决 Pi。
+**已完成决策**：Graph/Provider/Tool/Worldbook 边界已在 AIRP 内部验证；真实 DeepSeek 路径通过 OpenAI-compatible adapter 接入，Pi sidecar、Pi package 和第二套 agent loop 已删除。
 
 **依赖**：原型前先定义实验范围与 agent 通信协议 ADR；原型通过后再作正式 runtime 选型决策。
 

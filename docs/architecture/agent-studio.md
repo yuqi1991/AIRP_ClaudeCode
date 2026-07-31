@@ -8,15 +8,16 @@ Agent Studio 是 AIRP 的独立宽屏配置工作区。它负责编辑可复用�
 
 ## 信息架构
 
-Studio 包含五个一级视图：
+Studio 包含六个一级视图：
 
 | View | 管理对象 | 主要能力 |
 |---|---|---|
 | Providers | `Provider Profile` | 新建、编辑、删除、启停、保存 Key、测试连接、获取模型列表 |
 | Agents | `Agent Definition` | 编辑名称、instruction 宏提示词、模型参数、高级参数和工具权限 |
 | Graphs | `Graph Definition` | 选择 Agent、增删节点、排序、启停节点、指定输出节点 |
-| Projects | `AIRP Project` | 编辑角色卡内容、Openings、变量与素材入口、选择 Graph、绑定世界书 |
+| Projects | `AIRP Project` | 编辑角色卡内容、Openings、变量与素材入口、绑定世界书 |
 | Worldbooks | `Worldbook Definition` | 导入、新建、复制、重命名、编辑条目和导出 AIRP JSON |
+| Regex Collections | `Regex Collection` | 编辑按顺序的 JavaScript 正则规则并绑定到 Agent 输入、输出或两者 |
 
 游戏视图不承载这些复杂表单。它的 Agent Graph 面板只展示当前或最近一次运行的节点状态、流转路径、总耗时/token、失败位置，以及进入节点详情的入口。
 
@@ -31,13 +32,13 @@ Studio 包含五个一级视图：
 - `Graph Definition`
 - `Worldbook Definition`
 
-引用关系不复制被引用对象。需要项目专用变体时，用户复制对象后再修改。删除规则保持简单且可预测：Provider 被 Agent 引用、Agent 被 Graph 引用、Graph 被 Project 使用、Worldbook 被 Project 绑定时，阻止删除并列出引用对象；不做级联删除。
+引用关系不复制被引用对象。需要项目专用变体时，用户复制对象后再修改。删除规则保持简单且可预测：Provider 被 Agent 引用、Agent 被 Graph 引用、Worldbook 被 Project 绑定时，阻止删除并列出引用对象；不做级联删除。游戏当前激活的 Graph 是独立运行时选择；删除它会清除选择而不改写 Project。
 
 ### AIRP Project 与 Session
 
-一个 `AIRP Project` 对应一张角色卡所代表的角色与故事框架。Project 拥有规范化角色卡数据、Openings、变量基线、素材、Graph 选择和 Worldbook Bindings。导入源只属于导入边界；导入完成后，AIRP 内部数据结构成为编辑与运行的事实源。
+一个 `AIRP Project` 对应一张角色卡所代表的角色与故事框架。Project 拥有规范化角色卡数据、Openings、变量基线、素材和 Worldbook Bindings，不拥有 Graph 选择或文本解析配置。导入源只属于导入边界；导入完成后，AIRP 内部数据结构成为编辑与运行的事实源。
 
-`Session` 是 Project 内的故事存档或分支。一个 Project 可以拥有多个 Session，但角色卡内容、Graph 选择和世界书绑定由 Project 共享，不提供 Session 级世界书覆盖。
+`Session` 是 Project 内的故事存档或分支。一个 Project 可以拥有多个 Session，但角色卡内容和世界书绑定由 Project 共享，不提供 Session 级世界书覆盖。游戏界面的激活 Graph 为当前 Project 的独立运行时状态，只决定下一次 Run。
 
 角色卡内嵌的世界书在导入时转换为独立 `Worldbook Definition` 并自动绑定到 Project。Project 还可以绑定任意多个全局世界书，例如角色专属设定、通用境界词汇、文风规则或资料库。
 
@@ -78,7 +79,7 @@ Agent 不再拥有 `role` 字段，Runtime 也不得根据名称或职责标签�
 
 用户只编辑 Agent `instruction` 模板；不再选择或维护 Prompt Preset。Runtime 在 Graph Run 开始时用只读运行时上下文展开模板，并追加玩家输入、上游 Agent Artifact、工具协议和输出契约。宏支持直接根字段和点路径，例如 `{{player_input}}`、`{{settings.style}}`、`{{card_facts.name}}`、`{{current_state.phase}}`、`{{recent_turns}}`、`{{worldbook_catalog}}` 和 `{{handoff}}`；缺失路径保留占位符，便于发现拼写错误。预览结果同时显示原始模板、展开后的 instruction、可用宏根和每段 provenance。
 
-Context Manifest 内部仍保留 `PromptPreset` 类型作为固定 section 编译兼容层，但它不是 Studio 对象、不是 Agent 字段，也不参与用户侧配置选择。
+Context Manifest 内部使用无写作含义的 `ContextLayout` 编译为固定 section。它不是 Studio 对象、不是 Agent 字段，也不参与用户侧配置选择。
 
 Studio 提供编译预览，展示最终发送给模型的完整 messages，并逐段标明来源和合并顺序。用户可以充分控制 Agent 行为与上下文选择，但不能用自由文本删除或伪造 Runtime 的输入、handoff、工具和输出契约。
 
@@ -132,7 +133,7 @@ primary_artifact:
 diagnostics_ref
 ```
 
-第一阶段主要使用文本 Artifact，但 `kind` 由用户定义的 Graph 或所选 Adapter 约定，例如 `plan`、`review` 或 RP 适配器自己的回合产物。Agent Framework 只读取状态和 Artifact，不解析模型原始响应，也不默认注入 `narrative_draft` 输出契约。只有 `output_node_id` 的 Artifact 才交给所选 Adapter 解释；RP Adapter 再决定是否校验并提交故事状态。
+第一阶段主要使用文本 Artifact，但 `kind` 由用户定义的 Graph 约定，例如 `plan` 或 `review`。Agent Framework 只读取状态和 Artifact，不解析模型原始响应，也不默认注入写作输出契约。最终 `output_node_id` 的 Artifact 经用户配置的 Agent Regex Collection 处理后，由 Host Commit 原样作为回合正文提交；不解析标签、摘要、选项或 MVU 语义。
 
 ## 失败与重试
 

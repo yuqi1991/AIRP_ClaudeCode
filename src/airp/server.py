@@ -1,4 +1,4 @@
-"""Thin stdlib HTTP + SSE server for the new Pi-runtime path (Ticket 04).
+"""Thin stdlib HTTP + SSE server for the AIRP Graph runtime.
 
 Parallel to the legacy Claude Code bridge in ``skills/server.py``. This module
 MUST NOT import or patch that bridge. It never writes ``input.txt`` / ``.pending``
@@ -57,29 +57,26 @@ Thread model
 from __future__ import annotations
 
 import json
-import os
+import re
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
-from urllib.request import Request, urlopen
 
 from airp.workspace import Workspace
 from airp.application import Application
 from airp.engine.agent_definitions import AgentDefinitionError
-from airp.engine.commands import SessionCommandService
+from airp.host.rp.commands import SessionCommandService
 from airp.engine.graph_definitions import GraphDefinitionError
 from airp.engine.graph_runtime import ExecutionPlanCompiler, GraphRuntime
 from airp.engine.node_runner import ProviderNodeRunner
-from airp.engine.provider import runtime_provider_api_key, set_runtime_provider_override
 from airp.engine.provider_profiles import ProviderConnectionError
 from airp.engine.project_library import ProjectLibraryError
-from airp.engine.runtime import RuntimeEvent, SessionTurnRuntime
-from airp.engine.runtime_config import CONFIG_ID_RE, RuntimeConfigError
-from airp.engine.rp_turn_adapter import RPTurnAdapter
-from airp.engine.session_manager import SessionManager, SessionManagerError
+from airp.engine.regex_collections import RegexCollectionError
+from airp.host.rp.session_runtime import RuntimeEvent, SessionTurnRuntime
+from airp.host.rp.session_manager import SessionManager, SessionManagerError
 from airp.engine.studio_library import ProviderProfileError
 from airp.engine.studio_migration import bootstrap_legacy_runtime_library
 from airp.engine.worldbook_library import WorldbookLibraryError
@@ -88,13 +85,12 @@ SSE_HEARTBEAT_SECONDS = 15.0
 SSE_POLL_INTERVAL_SECONDS = 0.05
 SUBMIT_ACCEPT_WAIT_SECONDS = 2.0
 RUNNING_TASK_STATUSES = frozenset({"queued", "leased", "running", "projection_pending"})
-DEFAULT_PROVIDER_BASE_URL = "https://api.deepseek.com"
-MODEL_DISCOVERY_TIMEOUT_SECONDS = 10
+SAFE_FILE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 STUDIO_PROVIDER_PATHS = ("/v1/studio/providers",)
 STUDIO_AGENT_PATHS = ("/v1/studio/agents", "/v1/studio/agent-definitions")
-STUDIO_PROMPT_PRESET_PATHS = ("/v1/studio/prompt-presets",)
 STUDIO_GRAPH_PATHS = ("/v1/studio/graphs",)
 STUDIO_WORLDBOOK_PATHS = ("/v1/studio/worldbooks",)
+STUDIO_REGEX_COLLECTION_PATHS = ("/v1/studio/regex-collections",)
 STUDIO_PROJECT_PATHS = ("/v1/studio/projects",)
 STUDIO_PROJECT_CONTEXT_PATHS = ("/v1/studio/project-context",)
 STUDIO_GRAPH_RUN_PATHS = ("/v1/studio/graph-runs",)
@@ -109,9 +105,7 @@ _CANONICAL_COMPAT_PATHS = {
     "/v1/session/openings/switch": "/api/switch_opening",
     "/v1/session/turns/delete": "/api/delete_turns",
     "/v1/session/status": "/api/session_status",
-    "/v1/session/runtime/config": "/api/runtime/config",
-    "/v1/session/provider/config": "/api/provider/config",
-    "/v1/session/provider/models": "/api/provider/models",
+    "/v1/session/runtime/graph": "/api/runtime/graph",
 }
 
 
@@ -146,7 +140,6 @@ class SessionRuntimeServer:
         heartbeat_seconds: float = SSE_HEARTBEAT_SECONDS,
         poll_interval_seconds: float = SSE_POLL_INTERVAL_SECONDS,
         static_root: str | None = None,
-        preset_root: str | None = None,
         graph_root: str | None = None,
         session_manager: SessionManager | None = None,
         workspace: Workspace | str | Path | None = None,
@@ -168,12 +161,10 @@ class SessionRuntimeServer:
         # from styles dir, and adapt the legacy /api/* calls onto the runtime.
         self.static_root = Path(static_root).resolve() if static_root else None
         repo_root = Path(__file__).resolve().parents[2]
-        self.preset_root = Path(preset_root).resolve() if preset_root else ((self.static_root / "presets").resolve() if self.static_root else None)
         self.graph_root = Path(graph_root).resolve() if graph_root else ((self.static_root / "graphs").resolve() if self.static_root else (repo_root / "graphs").resolve())
         self.application = Application.assemble(
             static_root=self.static_root,
             workspace=self.workspace,
-            preset_root=self.preset_root,
             graph_root=self.graph_root,
         )
         self.provider_profile_store = self.application.provider_profile_store
@@ -187,8 +178,9 @@ class SessionRuntimeServer:
         self.graph_definitions = self.application.graph_definitions
         self.graphs = self.graph_definitions
         self.worldbooks = self.application.worldbooks
+        self.regex_collections = self.application.regex_collections
         self.projects = self.application.projects
-        self.config_store = self.application.config_store
+        self.active_graphs = self.application.active_graphs
         self._bootstrap_legacy_studio_library()
         self._studio_graph_configured = False
         self._configure_runtime_worldbooks()
@@ -455,34 +447,17 @@ class SessionRuntimeServer:
             self._submit_results.clear()
 
     def _runtime_selection(self) -> dict[str, str | None]:
-        if self.workspace is not None and self.projects is not None:
-            try:
-                project = self.projects.get_project(self.runtime.project_id)
-            except ProjectLibraryError:
-                return {"preset_id": None, "graph_id": None}
-            return {"preset_id": None, "graph_id": project.get("graph_id")}
-        if self.config_store is None:
-            return {"preset_id": None, "graph_id": None}
+        if self.active_graphs is None:
+            return {"graph_id": None}
         try:
-            return self.config_store.selection()
-        except RuntimeConfigError:
-            return {"preset_id": None, "graph_id": None}
+            return {"graph_id": self.active_graphs.graph_id_for(self.runtime.project_id)}
+        except ValueError:
+            return {"graph_id": None}
 
-    def _config_collection_payload(self, kind: str) -> dict[str, Any]:
-        selection = self._runtime_selection()
-        selected_key = "preset_id" if kind == "preset" else "graph_id"
-        return {
-            "ok": True,
-            "kind": kind,
-            "selected_id": selection.get(selected_key),
-            "items": self._list_json_configs(kind),
-        }
-
-    def _runtime_config_payload(self) -> dict[str, Any]:
+    def _active_graph_payload(self) -> dict[str, Any]:
         return {
             "ok": True,
             "selected": self._runtime_selection(),
-            "presets": self._list_json_configs("preset"),
             "graphs": self._studio_graph_options(),
         }
 
@@ -502,7 +477,7 @@ class SessionRuntimeServer:
                     return options
             except GraphDefinitionError:
                 pass
-        return self._list_json_configs("graph")
+        return []
 
     def _bootstrap_legacy_studio_library(self) -> None:
         """Make the active card's legacy files visible in Studio on first boot."""
@@ -528,140 +503,20 @@ class SessionRuntimeServer:
                 project_id=self.runtime.project_id,
                 card_facts=self.runtime.card_facts(),
             )
+            selection = self._runtime_selection().get("graph_id")
+            graphs = self.graph_definitions.list_graphs() if self.graph_definitions else []
+            if not selection:
+                legacy_selection = (self._read_legacy_settings().get("runtime") or {}).get("graph_id")
+                graph_ids = {item["id"] for item in graphs}
+                selected = legacy_selection if legacy_selection in graph_ids else None
+                if selected is None and len(graphs) == 1:
+                    selected = graphs[0]["id"]
+                if selected:
+                    self.active_graphs.select(self.runtime.project_id, selected)
         except Exception:
             # A malformed optional legacy file must not prevent the game from
             # starting; Studio will still expose any valid existing objects.
             return
-
-    # ── Provider configuration (keys are memory-only) ────────────────
-
-    def _active_narrative_node(self) -> tuple[dict | None, str | None]:
-        """Return the selected graph final narrative node and graph id."""
-        if self.workspace is not None and self.graph_definitions is not None:
-            graph_id = self._runtime_selection().get("graph_id")
-            if not graph_id:
-                return None, None
-            try:
-                graph = self.graph_definitions.get_graph(graph_id)
-            except GraphDefinitionError:
-                return None, graph_id
-            nodes = [node for node in graph.get("nodes", []) if node.get("enabled", True)]
-            if not nodes:
-                return None, graph_id
-            output_id = graph.get("output_node_id") or nodes[-1].get("node_id")
-            node = next((item for item in nodes if item.get("node_id") == output_id), nodes[-1])
-            agent = {}
-            if self.agent_store is not None:
-                try:
-                    agent = self.agent_store.get_agent(node.get("agent_id"))
-                except (AgentDefinitionError, TypeError):
-                    agent = {}
-            profile = {}
-            profile_id = node.get("provider_profile_id") or agent.get("provider_profile_id")
-            if profile_id and self.provider_profile_store is not None:
-                try:
-                    profile = self.provider_profile_store.get_profile(profile_id)
-                except ProviderProfileError:
-                    profile = {}
-            return {
-                "id": node.get("node_id"),
-                "provider": profile.get("provider") or profile.get("name") or "deepseek",
-                "model": node.get("model_id") or agent.get("model_id"),
-                "provider_profile_id": profile_id,
-            }, graph_id
-        if self.config_store is None:
-            return None, None
-        try:
-            graph_id = self._runtime_selection().get("graph_id")
-            if not graph_id:
-                return None, None
-            graph = self.config_store.read_config("graph", graph_id)
-            graph = self.config_store.validate_config("graph", graph_id, graph)
-        except (RuntimeConfigError, OSError):
-            return None, None
-        nodes = [node for node in graph.get("nodes", []) if node.get("enabled", True)]
-        if not nodes:
-            return None, graph_id
-        return nodes[-1], graph_id
-
-    def _provider_config_payload(self) -> dict[str, Any]:
-        node, _ = self._active_narrative_node()
-        provider = (node or {}).get("provider", "deepseek")
-        settings = self._read_settings()
-        provider_settings = settings.get("provider") if isinstance(settings, dict) else {}
-        if not isinstance(provider_settings, dict):
-            provider_settings = {}
-        return {
-            "ok": True,
-            "provider": provider,
-            "base_url": provider_settings.get("base_url") or DEFAULT_PROVIDER_BASE_URL,
-            "model": (node or {}).get("model") or "deepseek-v4-flash",
-            "key_configured": bool(runtime_provider_api_key(provider) or os.environ.get("DEEPSEEK_API_KEY")),
-        }
-
-    def _write_provider_config(self, body: dict) -> tuple[dict[str, Any], int]:
-        if not isinstance(body, dict):
-            return {"ok": False, "error": "invalid_payload"}, 400
-        node, graph_id = self._active_narrative_node()
-        if node is None or graph_id is None or self.config_store is None:
-            return {"ok": False, "error": "active_narrative_node_unavailable"}, 400
-        base_url = body.get("base_url")
-        if base_url is not None and (not isinstance(base_url, str) or not base_url.strip()):
-            return {"ok": False, "error": "invalid_base_url"}, 400
-        model = body.get("model")
-        if model is not None and (not isinstance(model, str) or not model.strip()):
-            return {"ok": False, "error": "invalid_model"}, 400
-        api_key = body.get("api_key")
-        if api_key is not None and (not isinstance(api_key, str) or not api_key.strip()):
-            return {"ok": False, "error": "invalid_api_key"}, 400
-        if base_url is not None:
-            settings = self._read_settings()
-            provider_settings = settings.get("provider") if isinstance(settings, dict) else {}
-            provider_settings = dict(provider_settings) if isinstance(provider_settings, dict) else {}
-            provider_settings["base_url"] = base_url.strip().rstrip("/")
-            try:
-                self.config_store.update_settings({"provider": provider_settings})
-            except RuntimeConfigError as exc:
-                return {"ok": False, **exc.to_dict()}, 400
-        if model is not None:
-            try:
-                graph = self.config_store.read_config("graph", graph_id)
-                final_node_id = node["id"]
-                final_node = next((item for item in graph.get("nodes", []) if item.get("id") == final_node_id), None)
-                if final_node is None:
-                    return {"ok": False, "error": "active_narrative_node_unavailable"}, 400
-                final_node["model"] = model.strip()
-                self.config_store.write_config("graph", graph_id, graph)
-            except (RuntimeConfigError, OSError) as exc:
-                return {"ok": False, "error": "invalid_runtime_config", "message": str(exc)}, 400
-        if api_key is not None:
-            # This key is intentionally process-only: never settings, task data, or events.
-            set_runtime_provider_override(node.get("provider", "deepseek"), api_key=api_key.strip())
-        return self._provider_config_payload(), 200
-
-    def _discover_provider_models(self, overrides: dict | None = None) -> dict[str, Any]:
-        overrides = overrides if isinstance(overrides, dict) else {}
-        current = self._provider_config_payload()
-        base_url = overrides.get("base_url", current["base_url"])
-        api_key = overrides.get("api_key") or runtime_provider_api_key(current["provider"]) or os.environ.get("DEEPSEEK_API_KEY")
-        if not isinstance(base_url, str) or not base_url.strip():
-            return {"ok": False, "models": [], "error": "invalid_base_url"}
-        if not isinstance(api_key, str) or not api_key:
-            return {"ok": False, "models": [], "error": "api_key_not_configured"}
-        try:
-            request = Request(
-                base_url.strip().rstrip("/") + "/models",
-                headers={"Accept": "application/json", "Authorization": f"Bearer {api_key}"},
-                method="GET",
-            )
-            with urlopen(request, timeout=MODEL_DISCOVERY_TIMEOUT_SECONDS) as response:
-                payload = json.loads(response.read().decode("utf-8"))
-            raw_models = payload.get("data", []) if isinstance(payload, dict) else []
-            models = sorted({item.get("id") for item in raw_models if isinstance(item, dict) and isinstance(item.get("id"), str) and item["id"]})
-            return {"ok": True, "models": models}
-        except Exception:
-            # Provider exceptions can include request details; do not expose them.
-            return {"ok": False, "models": [], "error": "model_discovery_failed"}
 
     # ── Studio Provider Profiles ──────────────────────────────────────
 
@@ -740,7 +595,6 @@ class SessionRuntimeServer:
             return {"ok": False, "error": "studio_library_unavailable"}, 501
         try:
             result = self.agent_definitions.create_agent(body)
-            self._sync_studio_graphs_to_legacy()
             return {"ok": True, **result}, 201
         except AgentDefinitionError as exc:
             return self._studio_agent_error(exc)
@@ -750,7 +604,6 @@ class SessionRuntimeServer:
             return {"ok": False, "error": "studio_library_unavailable"}, 501
         try:
             result = self.agent_definitions.update_agent(agent_id, body)
-            self._sync_studio_graphs_to_legacy()
             return {"ok": True, **result}, 200
         except AgentDefinitionError as exc:
             return self._studio_agent_error(exc)
@@ -760,7 +613,6 @@ class SessionRuntimeServer:
             return {"ok": False, "error": "studio_library_unavailable"}, 501
         try:
             result = self.agent_definitions.copy_agent(agent_id, body)
-            self._sync_studio_graphs_to_legacy()
             return {"ok": True, **result}, 201
         except AgentDefinitionError as exc:
             return self._studio_agent_error(exc)
@@ -782,21 +634,91 @@ class SessionRuntimeServer:
         except AgentDefinitionError as exc:
             return self._studio_agent_error(exc)
 
-    def _studio_prompt_preset_list(self) -> tuple[dict[str, Any], int]:
-        if self.agent_definitions is None:
-            return {"ok": False, "error": "studio_library_unavailable"}, 501
-        try:
-            return {"ok": True, "presets": self.agent_definitions.list_prompt_presets()}, 200
-        except AgentDefinitionError as exc:
-            return self._studio_agent_error(exc)
+    # ── Studio Regex Collections ─────────────────────────────────────
 
-    def _studio_prompt_preset_get(self, preset_id: str) -> tuple[dict[str, Any], int]:
-        if self.agent_definitions is None:
+    @staticmethod
+    def _studio_regex_collection_error(exc: RegexCollectionError) -> tuple[dict[str, Any], int]:
+        return exc.to_dict(), exc.status
+
+    def _studio_regex_collection_list(self) -> tuple[dict[str, Any], int]:
+        if self.regex_collections is None:
             return {"ok": False, "error": "studio_library_unavailable"}, 501
         try:
-            return {"ok": True, "preset": self.agent_definitions.get_prompt_preset(preset_id)}, 200
-        except AgentDefinitionError as exc:
-            return self._studio_agent_error(exc)
+            return {"ok": True, "collections": self.regex_collections.list_collections()}, 200
+        except RegexCollectionError as exc:
+            return self._studio_regex_collection_error(exc)
+
+    def _studio_regex_collection_get(self, collection_id: str) -> tuple[dict[str, Any], int]:
+        if self.regex_collections is None:
+            return {"ok": False, "error": "studio_library_unavailable"}, 501
+        try:
+            return {"ok": True, "collection": self.regex_collections.get_collection(collection_id)}, 200
+        except RegexCollectionError as exc:
+            return self._studio_regex_collection_error(exc)
+
+    def _studio_regex_collection_create(self, body: dict[str, Any]) -> tuple[dict[str, Any], int]:
+        if self.regex_collections is None:
+            return {"ok": False, "error": "studio_library_unavailable"}, 501
+        try:
+            return {"ok": True, "collection": self.regex_collections.create_collection(body)}, 201
+        except RegexCollectionError as exc:
+            return self._studio_regex_collection_error(exc)
+
+    def _studio_regex_collection_update(
+        self, collection_id: str, body: dict[str, Any]
+    ) -> tuple[dict[str, Any], int]:
+        if self.regex_collections is None:
+            return {"ok": False, "error": "studio_library_unavailable"}, 501
+        try:
+            return {
+                "ok": True,
+                "collection": self.regex_collections.update_collection(collection_id, body),
+            }, 200
+        except RegexCollectionError as exc:
+            return self._studio_regex_collection_error(exc)
+
+    def _studio_regex_collection_copy(
+        self, collection_id: str, body: dict[str, Any]
+    ) -> tuple[dict[str, Any], int]:
+        if self.regex_collections is None:
+            return {"ok": False, "error": "studio_library_unavailable"}, 501
+        try:
+            return {
+                "ok": True,
+                "collection": self.regex_collections.copy_collection(collection_id, body),
+            }, 201
+        except RegexCollectionError as exc:
+            return self._studio_regex_collection_error(exc)
+
+    def _studio_regex_collection_test(
+        self, collection_id: str, body: dict[str, Any]
+    ) -> tuple[dict[str, Any], int]:
+        if self.regex_collections is None:
+            return {"ok": False, "error": "studio_library_unavailable"}, 501
+        try:
+            candidate = body.get("collection") if isinstance(body, dict) else None
+            text = body.get("text", "") if isinstance(body, dict) else ""
+            target = body.get("target", "output") if isinstance(body, dict) else "output"
+            return {
+                "ok": True,
+                "result": self.regex_collections.test_collection(
+                    collection_id,
+                    candidate,
+                    text=text,
+                    target=target,
+                ),
+            }, 200
+        except RegexCollectionError as exc:
+            return self._studio_regex_collection_error(exc)
+
+    def _studio_regex_collection_delete(self, collection_id: str) -> tuple[dict[str, Any], int]:
+        if self.regex_collections is None:
+            return {"ok": False, "error": "studio_library_unavailable"}, 501
+        try:
+            self.regex_collections.delete_collection(collection_id)
+            return {"ok": True, "deleted_id": collection_id}, 200
+        except RegexCollectionError as exc:
+            return self._studio_regex_collection_error(exc)
 
     # ── Studio Graph Definitions ─────────────────────────────────────
 
@@ -825,7 +747,6 @@ class SessionRuntimeServer:
             return {"ok": False, "error": "studio_library_unavailable"}, 501
         try:
             result = self.graph_definitions.create_graph(body)
-            self._sync_studio_graphs_to_legacy()
             return {"ok": True, **result}, 201
         except GraphDefinitionError as exc:
             return self._studio_graph_error(exc)
@@ -835,7 +756,6 @@ class SessionRuntimeServer:
             return {"ok": False, "error": "studio_library_unavailable"}, 501
         try:
             result = self.graph_definitions.update_graph(graph_id, body)
-            self._sync_studio_graphs_to_legacy()
             return {"ok": True, **result}, 200
         except GraphDefinitionError as exc:
             return self._studio_graph_error(exc)
@@ -845,7 +765,6 @@ class SessionRuntimeServer:
             return {"ok": False, "error": "studio_library_unavailable"}, 501
         try:
             result = self.graph_definitions.copy_graph(graph_id, body)
-            self._sync_studio_graphs_to_legacy()
             return {"ok": True, **result}, 201
         except GraphDefinitionError as exc:
             return self._studio_graph_error(exc)
@@ -855,61 +774,12 @@ class SessionRuntimeServer:
             return {"ok": False, "error": "studio_library_unavailable"}, 501
         try:
             self.graph_definitions.delete_graph(graph_id)
+            affected_projects = self.active_graphs.clear_graph(graph_id) if self.active_graphs is not None else ()
+            if self.runtime.project_id in affected_projects:
+                self._configure_runtime_studio_graph()
             return {"ok": True, "deleted_id": graph_id}, 200
         except GraphDefinitionError as exc:
             return self._studio_graph_error(exc)
-
-    def _sync_studio_graphs_to_legacy(self) -> None:
-        """Project Studio graph definitions for the legacy startup reader.
-
-        Studio remains authoritative for an attached runtime.  The projection
-        is only a compatibility bridge for ``start_runtime.py`` which freezes
-        one legacy graph before constructing the HTTP server.
-        """
-        if self.workspace is not None:
-            # Workspace-backed runs execute directly from Studio definitions.
-            # Legacy projection remains available only for the old launcher.
-            return
-        if self.config_store is None or self.graph_definitions is None or self.agent_store is None:
-            return
-        try:
-            graphs = self.graph_definitions.list_graphs()
-        except GraphDefinitionError:
-            return
-        for graph in graphs:
-            try:
-                self.config_store.write_config("graph", graph["id"], self._legacy_graph_from_studio(graph))
-            except (GraphDefinitionError, AgentDefinitionError, RuntimeConfigError, OSError, ValueError):
-                continue
-
-    def _legacy_graph_from_studio(self, graph: dict[str, Any]) -> dict[str, Any]:
-        nodes = []
-        for index, node in enumerate(graph.get("nodes", [])):
-            agent = self.agent_store.get_agent(node["agent_id"])
-            provider_profile_id = node.get("provider_profile_id") or agent.get("provider_profile_id")
-            model = node.get("model_id") or agent.get("model_id") or ""
-            role = str(node.get("role") or node["node_id"])
-            nodes.append(
-                {
-                    "id": node["node_id"],
-                    "role": role,
-                    "enabled": node.get("enabled", True),
-                    "order": node.get("order", index),
-                    "provider": "deepseek",
-                    "provider_profile_id": provider_profile_id,
-                    "model": model,
-                    "max_tool_rounds": 8,
-                    "instruction": agent.get("instruction", ""),
-                    "generation": agent.get("generation") or {},
-                    "advanced": agent.get("advanced") or {},
-                }
-            )
-        return {
-            "id": graph["id"],
-            "version": str(graph.get("version") or "1"),
-            "mode": "sequential",
-            "nodes": nodes,
-        }
 
     # ── Studio Worldbooks and Project bindings ────────────────────────
 
@@ -918,28 +788,29 @@ class SessionRuntimeServer:
             self.runtime.configure_worldbook_library(self.worldbooks.snapshot_for_project)
 
     def _configure_runtime_studio_graph(self) -> None:
-        """Attach saved Studio definitions only when this runtime has a Graph Project.
-
-        A Runtime without a saved Project keeps its existing executor.  This
-        preserves the legacy/browser compatibility path while making a saved
-        Project's next submission compile from the Studio Library.
-        """
+        """Attach the active Studio Graph without mutating Project content."""
         if not all((self.agent_store, self.graphs, self.projects, self.worldbooks, self.provider_profiles)):
             return
         try:
             project = self.projects.get_project(self.runtime.project_id)
         except ProjectLibraryError:
-            if self._studio_graph_configured:
-                self.runtime.configure_execution_graph(None, None)
-                self._studio_graph_configured = False
-            return
-        try:
-            self.runtime.configure_turn_adapter(RPTurnAdapter.from_project(project))
-        except (TypeError, ValueError):
-            # Keep the runtime's compatibility adapter if an old Project has no
-            # usable adapter selection; Studio can repair the Project later.
-            pass
-        if not project.get("graph_id"):
+            # Legacy/browser launches may not have an explicit ``local``
+            # Project yet. If Studio has exactly one Project, make it the
+            # active runtime Project so the Runtime Graph selector remains
+            # useful without reviving the removed Preset requirement.
+            try:
+                projects = self.projects.list_projects()
+            except Exception:
+                projects = []
+            if len(projects) != 1:
+                if self._studio_graph_configured:
+                    self.runtime.configure_execution_graph(None, None)
+                    self._studio_graph_configured = False
+                return
+            project = projects[0]
+            self.runtime.project_id = project["id"]
+        selected_graph = self._runtime_selection().get("graph_id")
+        if not selected_graph:
             if self._studio_graph_configured:
                 self.runtime.configure_execution_graph(None, None)
                 self._studio_graph_configured = False
@@ -949,12 +820,14 @@ class SessionRuntimeServer:
             graph_store=self.graphs,
             project_store=self.projects,
             worldbook_store=self.worldbooks,
+            regex_collection_store=self.regex_collections,
         )
         runner = ProviderNodeRunner(self._provider_for_studio_graph_node)
         self.runtime.configure_execution_graph(
             compiler,
             GraphRuntime(runner),
             project_id=project["id"],
+            graph_id=selected_graph,
         )
         self._studio_graph_configured = True
 
@@ -1241,20 +1114,6 @@ class SessionRuntimeServer:
                             return
                         break
 
-                # Prompt presets are read-only library inputs for Agent editing.
-                if path in STUDIO_PROMPT_PRESET_PATHS:
-                    payload, status = server_ref._studio_prompt_preset_list()
-                    self._send_json(status, payload)
-                    return
-                for prefix in STUDIO_PROMPT_PRESET_PATHS:
-                    if path.startswith(prefix + "/"):
-                        preset_id = path[len(prefix) + 1:]
-                        if "/" not in preset_id:
-                            payload, status = server_ref._studio_prompt_preset_get(preset_id)
-                            self._send_json(status, payload)
-                            return
-                        break
-
                 # ── Runtime Studio Graph Definitions ──────────────────
                 if path in STUDIO_GRAPH_PATHS:
                     payload, status = server_ref._studio_graph_list()
@@ -1266,6 +1125,21 @@ class SessionRuntimeServer:
                         parts = suffix.split("/")
                         if len(parts) == 1:
                             payload, status = server_ref._studio_graph_get(parts[0])
+                            self._send_json(status, payload)
+                            return
+                        break
+
+                # ── Runtime Studio Regex Collections ──────────────────
+                if path in STUDIO_REGEX_COLLECTION_PATHS:
+                    payload, status = server_ref._studio_regex_collection_list()
+                    self._send_json(status, payload)
+                    return
+                for prefix in STUDIO_REGEX_COLLECTION_PATHS:
+                    if path.startswith(prefix + "/"):
+                        suffix = path[len(prefix) + 1:]
+                        parts = suffix.split("/")
+                        if len(parts) == 1:
+                            payload, status = server_ref._studio_regex_collection_get(parts[0])
                             self._send_json(status, payload)
                             return
                         break
@@ -1335,9 +1209,6 @@ class SessionRuntimeServer:
                 if path == "/api/openings":
                     self._send_json(200, server_ref._read_openings())
                     return
-                if path == "/api/settings":
-                    self._send_json(200, server_ref._read_settings())
-                    return
                 if path == "/api/style-profiles":
                     self._send_json(200, server_ref._read_style_profiles())
                     return
@@ -1350,30 +1221,8 @@ class SessionRuntimeServer:
                 if path == "/api/sessions":
                     self._send_json(200, server_ref._sessions_payload())
                     return
-                if path == "/api/provider/config":
-                    self._send_json(200, server_ref._provider_config_payload())
-                    return
-                if path == "/api/provider/models":
-                    self._send_json(200, server_ref._discover_provider_models())
-                    return
-                if path == "/api/runtime/config":
-                    self._send_json(200, server_ref._runtime_config_payload())
-                    return
-                if path == "/api/runtime/presets":
-                    self._send_json(200, server_ref._config_collection_payload("preset"))
-                    return
-                if path == "/api/runtime/graphs":
-                    self._send_json(200, server_ref._config_collection_payload("graph"))
-                    return
-                if path.startswith("/api/runtime/presets/"):
-                    config_id = path[len("/api/runtime/presets/"):]
-                    payload, code = server_ref._read_json_config("preset", config_id)
-                    self._send_json(code, payload)
-                    return
-                if path.startswith("/api/runtime/graphs/"):
-                    config_id = path[len("/api/runtime/graphs/"):]
-                    payload, code = server_ref._read_json_config("graph", config_id)
-                    self._send_json(code, payload)
+                if path == "/api/runtime/graph":
+                    self._send_json(200, server_ref._active_graph_payload())
                     return
 
                 # ── Static files from styles dir (index.html/content.js/...) ──
@@ -1499,6 +1348,25 @@ class SessionRuntimeServer:
                             return
                         break
 
+                # ── Runtime Studio Regex Collections ──────────────────
+                if path in STUDIO_REGEX_COLLECTION_PATHS:
+                    payload, status = server_ref._studio_regex_collection_create(body)
+                    self._send_json(status, payload)
+                    return
+                for prefix in STUDIO_REGEX_COLLECTION_PATHS:
+                    if path.startswith(prefix + "/"):
+                        suffix = path[len(prefix) + 1:]
+                        parts = suffix.split("/")
+                        if len(parts) == 2 and parts[1] in {"copy", "duplicate"}:
+                            payload, status = server_ref._studio_regex_collection_copy(parts[0], body)
+                            self._send_json(status, payload)
+                            return
+                        if len(parts) == 2 and parts[1] == "test":
+                            payload, status = server_ref._studio_regex_collection_test(parts[0], body)
+                            self._send_json(status, payload)
+                            return
+                        break
+
                 # ── Runtime Studio Graph Definitions ──────────────────
                 if path in STUDIO_GRAPH_PATHS:
                     payload, status = server_ref._studio_graph_create(body)
@@ -1614,10 +1482,6 @@ class SessionRuntimeServer:
                         200,
                         {**server_ref._sessions_payload(), "session": session},
                     )
-                    return
-
-                if path == "/api/provider/models":
-                    self._send_json(200, server_ref._discover_provider_models(body))
                     return
 
                 if path == "/v1/session/commands/submit":
@@ -1784,15 +1648,6 @@ class SessionRuntimeServer:
                     self._send_json(200 if result.ok else 400, {**result.to_dict(), "snapshot": server_ref._snapshot_payload()})
                     return
 
-                if path == "/api/settings":
-                    try:
-                        settings = server_ref._write_settings(body)
-                    except RuntimeConfigError as exc:
-                        self._send_json(400, {"ok": False, **exc.to_dict()})
-                        return
-                    self._send_json(200, {"ok": True, "settings": settings})
-                    return
-
                 if path == "/api/switch_opening":
                     ok = server_ref._switch_opening(body.get("opening_id"))
                     self._send_json(
@@ -1839,6 +1694,14 @@ class SessionRuntimeServer:
                         graph_id = path[len(prefix) + 1:]
                         if "/" not in graph_id:
                             payload, status = server_ref._studio_graph_delete(graph_id)
+                            self._send_json(status, payload)
+                            return
+                        break
+                for prefix in STUDIO_REGEX_COLLECTION_PATHS:
+                    if path.startswith(prefix + "/"):
+                        collection_id = path[len(prefix) + 1:]
+                        if "/" not in collection_id:
+                            payload, status = server_ref._studio_regex_collection_delete(collection_id)
                             self._send_json(status, payload)
                             return
                         break
@@ -1917,6 +1780,15 @@ class SessionRuntimeServer:
                             return
                         break
 
+                for prefix in STUDIO_REGEX_COLLECTION_PATHS:
+                    if path.startswith(prefix + "/"):
+                        collection_id = path[len(prefix) + 1:]
+                        if "/" not in collection_id:
+                            payload, status = server_ref._studio_regex_collection_update(collection_id, body)
+                            self._send_json(status, payload)
+                            return
+                        break
+
                 for prefix in STUDIO_WORLDBOOK_PATHS:
                     if path.startswith(prefix + "/"):
                         worldbook_id = path[len(prefix) + 1:]
@@ -1941,22 +1813,8 @@ class SessionRuntimeServer:
                             self._send_json(status, payload)
                             return
 
-                if path == "/api/provider/config":
-                    payload, code = server_ref._write_provider_config(body)
-                    self._send_json(code, payload)
-                    return
-                if path == "/api/runtime/config":
+                if path == "/api/runtime/graph":
                     payload, code = server_ref._write_runtime_selection(body)
-                    self._send_json(code, payload)
-                    return
-                if path.startswith("/api/runtime/presets/"):
-                    config_id = path[len("/api/runtime/presets/"):]
-                    payload, code = server_ref._write_json_config("preset", config_id, body)
-                    self._send_json(code, payload)
-                    return
-                if path.startswith("/api/runtime/graphs/"):
-                    config_id = path[len("/api/runtime/graphs/"):]
-                    payload, code = server_ref._write_json_config("graph", config_id, body)
                     self._send_json(code, payload)
                     return
 
@@ -2087,7 +1945,8 @@ class SessionRuntimeServer:
                     return data
         return []
 
-    def _read_settings(self) -> dict:
+    def _read_legacy_settings(self) -> dict:
+        """Read old static settings only while importing existing installs."""
         if not self.static_root:
             return {}
         p = self.static_root / "settings.json"
@@ -2098,163 +1957,26 @@ class SessionRuntimeServer:
                 return {}
         return {}
 
-    def _write_settings(self, updates: dict) -> dict:
-        current = self._read_settings()
-        if isinstance(updates, dict):
-            current.update(updates)
-        runtime_cfg = current.get("runtime") if isinstance(current, dict) else None
-        if self.config_store is not None and isinstance(runtime_cfg, dict):
-            return self.config_store.update_settings(updates)
-        if self.static_root is not None:
-            (self.static_root / "settings.json").write_text(
-                json.dumps(current, ensure_ascii=False, indent=2), encoding="utf-8"
-            )
-        return current
-
-    def _config_root_for(self, kind: str) -> Path | None:
-        if kind == "preset":
-            return self.preset_root
-        if kind == "graph":
-            return self.graph_root
-        return None
-
-    def _config_file_for(self, kind: str, config_id: str) -> tuple[Path | None, str | None]:
-        if not isinstance(config_id, str) or not CONFIG_ID_RE.fullmatch(config_id):
-            return None, "invalid_config_id"
-        root = self._config_root_for(kind)
-        if root is None:
-            return None, "config_root_unavailable"
-        root = root.resolve()
-        target = (root / f"{config_id}.json").resolve()
-        try:
-            target.relative_to(root)
-        except ValueError:
-            return None, "invalid_config_id"
-        return target, None
-
-    def _list_json_configs(self, kind: str) -> list[dict[str, Any]]:
-        if self.config_store is None:
-            return []
-        try:
-            return self.config_store.list_configs(kind)
-        except RuntimeConfigError:
-            return []
-
-    def _read_json_config(self, kind: str, config_id: str) -> tuple[dict[str, Any], int]:
-        if self.config_store is None:
-            return {"ok": False, "error": "config_root_unavailable", "kind": kind, "id": config_id}, 400
-        try:
-            data = self.config_store.read_config(kind, config_id)
-        except RuntimeConfigError as exc:
-            return {"ok": False, "kind": kind, "id": config_id, **exc.to_dict()}, 400
-        except OSError:
-            return {"ok": False, "error": "not_found", "kind": kind, "id": config_id}, 404
-        return {
-            "ok": True,
-            "kind": kind,
-            "id": config_id,
-            "text": json.dumps(data, ensure_ascii=False, indent=2),
-            "data": data,
-        }, 200
-
-    def _coerce_config_payload(self, body: dict) -> tuple[Any, str | None]:
-        if not isinstance(body, dict):
-            return None, "invalid_payload"
-        if "text" in body:
-            text = body.get("text")
-            if not isinstance(text, str) or not text.strip():
-                return None, "missing_text"
-            try:
-                data = json.loads(text)
-            except json.JSONDecodeError:
-                return None, "invalid_json"
-        elif "data" in body:
-            data = body.get("data")
-        else:
-            data = body
-        if not isinstance(data, (dict, list)):
-            return None, "config_must_be_object_or_array"
-        return data, None
-
-    def _write_json_config(self, kind: str, config_id: str, body: dict) -> tuple[dict[str, Any], int]:
-        data, payload_error = self._coerce_config_payload(body)
-        if payload_error:
-            return {"ok": False, "error": payload_error, "kind": kind, "id": config_id}, 400
-        if self.config_store is None:
-            return {"ok": False, "error": "config_root_unavailable", "kind": kind, "id": config_id}, 400
-        try:
-            self.config_store.write_config(kind, config_id, data)
-        except RuntimeConfigError as exc:
-            return {"ok": False, "kind": kind, "id": config_id, **exc.to_dict()}, 400
-        text = json.dumps(data, ensure_ascii=False, indent=2) + "\n"
-        return {
-            "ok": True,
-            "kind": kind,
-            "id": config_id,
-            "text": text,
-            "data": data,
-            "saved": True,
-        }, 200
-
     def _write_runtime_selection(self, body: dict) -> tuple[dict[str, Any], int]:
         if not isinstance(body, dict):
             return {"ok": False, "error": "invalid_payload"}, 400
-        if self.workspace is not None:
-            if self.projects is None or self.graph_definitions is None:
-                return {"ok": False, "error": "studio_library_unavailable"}, 501
-            current = self._runtime_selection()
-            graph_id = body.get("graph_id", current.get("graph_id"))
-            if not isinstance(graph_id, str) or not graph_id.strip():
-                return {"ok": False, "error": "graph_id_required"}, 400
-            try:
-                self.graph_definitions.get_graph(graph_id)
-                self.projects.update_project(self.runtime.project_id, {"graph_id": graph_id})
-            except GraphDefinitionError as exc:
-                return {"ok": False, **exc.to_dict()}, exc.status
-            except ProjectLibraryError as exc:
-                return {"ok": False, **exc.to_dict()}, exc.status
-            self._configure_runtime_studio_graph()
-            return {
-                "ok": True,
-                "runtime": {"preset_id": None, "graph_id": graph_id},
-                "snapshot": self._snapshot_payload(),
-            }, 200
-        if self.config_store is None:
-            return {"ok": False, "error": "config_root_unavailable"}, 400
         current = self._runtime_selection()
-        preset_id = body.get("preset_id", current.get("preset_id") or "default")
-        graph_id = body.get("graph_id", current.get("graph_id") or "default")
-        if preset_id in (None, ""):
-            preset_id = "default"
-        if graph_id in (None, ""):
-            graph_id = "default"
+        graph_id = body.get("graph_id", current.get("graph_id"))
+        if not isinstance(graph_id, str) or not graph_id.strip():
+            return {"ok": False, "error": "graph_id_required"}, 400
+        if self.graph_definitions is None or self.active_graphs is None:
+            return {"ok": False, "error": "studio_library_unavailable"}, 501
         try:
-            # Graphs are edited in Studio.  Materialize the selected Studio
-            # definition before the compatibility RuntimeConfigStore validates
-            # the selection, then bind the active card Project to that graph.
-            if self.graph_definitions is not None:
-                try:
-                    studio_graph = self.graph_definitions.get_graph(graph_id)
-                except GraphDefinitionError:
-                    studio_graph = None
-                if studio_graph is not None:
-                    self.config_store.write_config("graph", graph_id, self._legacy_graph_from_studio(studio_graph))
-            runtime_cfg = self.config_store.write_selection(preset_id, graph_id)
-            if self.projects is not None:
-                try:
-                    self.projects.update_project(self.runtime.project_id, {"graph_id": graph_id})
-                except ProjectLibraryError:
-                    pass
-                self._configure_runtime_studio_graph()
-        except RuntimeConfigError as exc:
-            return {"ok": False, **exc.to_dict()}, 400
-        except (GraphDefinitionError, AgentDefinitionError, ValueError) as exc:
-            return {"ok": False, "error": "invalid_runtime_config", "message": str(exc)}, 400
-        except OSError as exc:
-            return {"ok": False, "error": "not_found", "message": str(exc)}, 404
+            self.graph_definitions.get_graph(graph_id)
+            self.active_graphs.select(self.runtime.project_id, graph_id)
+        except GraphDefinitionError as exc:
+            return {"ok": False, **exc.to_dict()}, exc.status
+        except ValueError as exc:
+            return {"ok": False, "error": "invalid_graph_selection", "message": str(exc)}, 400
+        self._configure_runtime_studio_graph()
         return {
             "ok": True,
-            "runtime": runtime_cfg,
+            "runtime": {"graph_id": graph_id},
             "snapshot": self._snapshot_payload(),
         }, 200
 
@@ -2279,7 +2001,7 @@ class SessionRuntimeServer:
         return out
 
     def _delete_style_profile(self, name: str) -> bool:
-        if not self.static_root or not name or not CONFIG_ID_RE.fullmatch(name):
+        if not self.static_root or not name or not SAFE_FILE_ID_RE.fullmatch(name):
             return False
         root = (self.static_root / "profiles").resolve()
         target = (root / f"{name}.md").resolve()
@@ -2297,7 +2019,7 @@ class SessionRuntimeServer:
         from airp import handler
         try:
             resolved_id = int(opening_id or 0)
-            settings = self._read_settings()
+            settings = self.runtime.session_settings
             facts = self.runtime.card_facts()
             ok = bool(
                 handler.switch_opening(

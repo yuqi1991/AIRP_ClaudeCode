@@ -21,7 +21,6 @@ from engine.provider import (  # noqa: E402
     ProviderResult,
 )
 from engine.secret_store import LocalSecretStore  # noqa: E402
-from engine.executor_factory import RuntimeExecutorFactory  # noqa: E402
 from engine.provider_profiles import ProviderProfileService  # noqa: E402
 from engine.studio_library import ProviderProfileStore  # noqa: E402
 
@@ -309,7 +308,7 @@ def test_responses_failure_event_uses_stable_classification_and_redacts_secret()
     assert "[REDACTED]" in str(caught.value)
 
 
-def test_runtime_factory_resolves_profile_protocol_and_secret_without_freezing_key(tmp_path):
+def test_provider_profile_execution_resolves_protocol_and_secret(tmp_path):
     styles = tmp_path / "styles"
     profiles = ProviderProfileStore(styles)
     profile = profiles.create_profile(
@@ -323,34 +322,13 @@ def test_runtime_factory_resolves_profile_protocol_and_secret_without_freezing_k
     )
     secrets = LocalSecretStore(styles / "studio" / "secrets.json")
     secrets.set(profile["id"], "runtime-secret")
-    factory = RuntimeExecutorFactory(
-        mock=False,
-        provider_profile_service=ProviderProfileService(profiles, secrets),
+    adapter = ProviderProfileService(profiles, secrets).execution_adapter(
+        profile["id"], "deepseek-chat"
     )
-    frozen = {
-        "graph": {
-            "nodes": [
-                {
-                    "id": "director",
-                    "role": "narrative_director",
-                    "enabled": True,
-                    "provider": "deepseek",
-                    "provider_profile_id": profile["id"],
-                    "model": "deepseek-chat",
-                    "max_tool_rounds": 2,
-                    "max_retries": 0,
-                }
-            ]
-        }
-    }
-
-    graph = factory(frozen)
-    adapter = graph.nodes[0].director._provider
 
     assert isinstance(adapter, OpenAICompatibleProviderAdapter)
     assert adapter._api_format == "chat_completions"
     assert adapter._api_key == "runtime-secret"
-    assert "runtime-secret" not in json.dumps(frozen)
 
 
 def test_provider_profile_execution_uses_request_timeout_not_discovery_timeout(tmp_path):
@@ -377,22 +355,3 @@ def test_provider_profile_execution_uses_request_timeout_not_discovery_timeout(t
     adapter = service.execution_adapter(profile["id"], "writer")
 
     assert adapter._timeout == 77.0
-
-
-def test_runtime_factory_keeps_fake_provider_regression_path_without_secret_store():
-    factory = RuntimeExecutorFactory(mock=True)
-    graph = factory(
-        {
-            "graph": {
-                "nodes": [
-                    {
-                        "id": "director",
-                        "role": "narrative_director",
-                        "provider": "deepseek",
-                        "model": "deepseek-chat",
-                    }
-                ]
-            }
-        }
-    )
-    assert graph.nodes[0].director.__class__.__name__ == "DeterministicGraphDirector"

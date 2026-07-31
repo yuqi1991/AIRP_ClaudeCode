@@ -25,32 +25,6 @@ def _server(tmp_path: Path) -> SessionRuntimeServer:
     styles = tmp_path / "styles"
     styles.mkdir(exist_ok=True)
     shutil.copy(SKILLS / "styles" / "studio.html", styles / "studio.html")
-    presets = styles / "presets"
-    presets.mkdir(exist_ok=True)
-    (presets / "default.json").write_text(
-        json.dumps(
-            {
-                "id": "default",
-                "version": "test-v1",
-                "entries": [
-                    {
-                        "id": "policy",
-                        "role": "system",
-                        "order": 0,
-                        "content": "Preset policy",
-                    },
-                    {
-                        "id": "disabled",
-                        "role": "user",
-                        "enabled": False,
-                        "order": 1,
-                        "content": "Should not be shown",
-                    },
-                ],
-            }
-        ),
-        encoding="utf-8",
-    )
     card = tmp_path / "card"
     _write_card(card)
     runtime = SessionTurnRuntime(
@@ -82,7 +56,6 @@ def _agent_payload() -> dict:
         "agent_id": "writer-agent",
         "name": "Writer",
         "instruction": "Write the scene.",
-        "prompt_preset_id": "default",
         "provider_profile_id": "shared-provider",
         "model_id": "writer-model",
         "generation": {
@@ -175,7 +148,6 @@ def test_agent_prompt_preview_exposes_provenance_effective_config_and_tools(tmp_
         preview = preview_payload["preview"]
         assert [item["kind"] for item in preview["provenance"]] == [
             "instruction",
-            "prompt_preset",
             "project_input",
             "handoff",
             "tool_protocol",
@@ -183,13 +155,11 @@ def test_agent_prompt_preview_exposes_provenance_effective_config_and_tools(tmp_
         ]
         assert [item["source"] for item in preview["messages"]] == [
             "instruction",
-            "prompt_preset",
             "project_input",
             "handoff",
             "tool_protocol",
             "output_contract",
         ]
-        assert preview["messages"][1]["content"] == "Preset policy"
         assert preview["effective_config"]["generation"]["temperature"] == 0.8
         assert preview["effective_config"]["generation"]["max_output_tokens"] == 500
         assert preview["effective_config"]["model_id"] == "writer-model"

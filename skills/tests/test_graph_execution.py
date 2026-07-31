@@ -17,10 +17,12 @@ SKILLS = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SKILLS))
 
 from engine.graph_definitions import GraphDefinitionError, GraphDefinitionStore  # noqa: E402
+from engine.capabilities import CapabilityDefinition, CapabilityRegistry  # noqa: E402
 from engine.graph_runtime import (  # noqa: E402
     AgentArtifact,
     ExecutionPlanCompiler,
     GraphRuntime,
+    NodeExecutionContext,
     NodeResult,
 )
 from engine.node_runner import ProviderNodeRunner  # noqa: E402
@@ -34,7 +36,6 @@ def _agent(agent_id: str, *, instruction: str = "Write") -> dict:
         "agent_id": agent_id,
         "name": agent_id.title(),
         "instruction": instruction,
-        "prompt_preset_id": "default",
         "provider_profile_id": "provider",
         "model_id": "model",
         "generation": {"temperature": 0.2},
@@ -116,7 +117,6 @@ def test_execution_plan_freezes_project_agents_graph_prompt_tools_and_worldbook(
     project = {
         "id": "project",
         "name": "Project",
-        "graph_id": "writing",
         "worldbook_ids": ["book"],
         "description": "Original card",
     }
@@ -143,7 +143,7 @@ def test_execution_plan_freezes_project_agents_graph_prompt_tools_and_worldbook(
 
 def test_graph_runtime_hands_artifacts_in_order_and_returns_output_artifact():
     plan = ExecutionPlanCompiler().compile(
-        project={"id": "project", "graph_id": "writing"},
+        project={"id": "project"},
         graph={
             "id": "writing",
             "nodes": [
@@ -172,7 +172,7 @@ def test_graph_runtime_hands_artifacts_in_order_and_returns_output_artifact():
 
 def test_graph_runtime_fails_fast_and_does_not_run_following_nodes():
     plan = ExecutionPlanCompiler().compile(
-        project={"id": "project", "graph_id": "writing"},
+        project={"id": "project"},
         graph={
             "id": "writing",
             "nodes": [
@@ -203,7 +203,7 @@ def test_graph_runtime_fails_fast_and_does_not_run_following_nodes():
 
 def test_provider_node_runner_maps_provider_output_to_artifact_boundary():
     plan = ExecutionPlanCompiler().compile(
-        project={"id": "project", "graph_id": "writing"},
+        project={"id": "project"},
         graph={
             "id": "writing",
             "nodes": [{"node_id": "writer-node", "agent_id": "writer"}],
@@ -231,9 +231,192 @@ def test_provider_node_runner_maps_provider_output_to_artifact_boundary():
     assert provider.requests[0].messages[-1]["content"] == "hello"
 
 
+def test_provider_node_runner_uses_run_execution_context_tool_handler():
+    plan = ExecutionPlanCompiler().compile(
+        project={"id": "project"},
+        graph={
+            "id": "writing",
+            "nodes": [{"node_id": "writer-node", "agent_id": "writer"}],
+            "output_node_id": "writer-node",
+        },
+        agents={"writer": {**_agent("writer"), "tool_allowlist": ["get_recent_memory"]}},
+        worldbooks=[],
+        player_input="hello",
+    )
+    provider = FakeProvider(
+        [
+            [{"type": "tool_call", "id": "call-1", "name": "get_recent_memory", "args": {"max_chars": 20}}],
+            [{"type": "text", "text": "tool-aware output"}, {"type": "final"}],
+        ],
+        model="writer-model",
+    )
+    calls = []
+
+    def handle(_node, name, args):
+        calls.append((name, args))
+        return {"memory": "frozen memory"}
+
+    result = ProviderNodeRunner(lambda _node: provider).run(
+        plan.graph.nodes[0],
+        AgentArtifact.input("hello"),
+        execution_context=NodeExecutionContext(tool_handler=handle),
+    )
+
+    assert result.ok
+    assert result.primary_artifact.content == "tool-aware output"
+    assert calls == [("get_recent_memory", {"max_chars": 20})]
+    assert provider.requests[1].messages[-1]["role"] == "tool"
+    assert provider.requests[1].messages[-1]["content"] == "{\"memory\": \"frozen memory\"}"
+
+
+def test_provider_node_runner_uses_explicit_capability_registry_and_skill_catalog():
+    plan = ExecutionPlanCompiler().compile(
+        project={"id": "project"},
+        graph={
+            "id": "writing",
+            "nodes": [{"node_id": "writer-node", "agent_id": "writer"}],
+            "output_node_id": "writer-node",
+        },
+        agents={
+            "writer": {
+                **_agent("writer"),
+                "tool_allowlist": ["lookup_fact"],
+                "instruction": "Available skills: {{skills}}",
+                "prompt": [{"role": "system", "content": "Available skills: {{skills}}"}],
+            }
+        },
+        worldbooks=[],
+        player_input="hello",
+    )
+    provider = FakeProvider(
+        [
+            [{"type": "tool_call", "id": "call-1", "name": "lookup_fact", "args": {"key": "weather"}}],
+            [{"type": "text", "text": "capability-aware output"}, {"type": "final"}],
+        ],
+        model="writer-model",
+    )
+    registry = CapabilityRegistry()
+    registry.register(
+        CapabilityDefinition(
+            "lookup_fact",
+            "Look up one host fact",
+            {"type": "object", "properties": {"key": {"type": "string"}}},
+        ),
+        lambda args: {"key": args["key"], "value": "sunny"},
+    )
+
+    result = ProviderNodeRunner(lambda _node: provider).run(
+        plan.graph.nodes[0],
+        AgentArtifact.input("hello"),
+        execution_context=NodeExecutionContext(
+            tool_registry=registry,
+            skill_catalog={"worldbook": [{"name": "harbor", "description": "Harbor facts"}]},
+        ),
+    )
+
+    assert result.ok
+    assert result.primary_artifact.content == "capability-aware output"
+    assert provider.requests[0].tools[0]["function"]["name"] == "lookup_fact"
+    assert "harbor" in provider.requests[0].messages[0]["content"]
+    assert provider.requests[1].messages[-1]["content"] == '{"key": "weather", "value": "sunny"}'
+
+
+def test_session_graph_binds_host_tool_registry_for_worldbook_and_memory_tools(tmp_path):
+    card = tmp_path / "card"
+    (card / "memory").mkdir(parents=True)
+    (card / "memory" / "project.md").write_text("frozen memory", encoding="utf-8")
+    (card / ".initvar.json").write_text("{}", encoding="utf-8")
+    (card / "chat_log.json").write_text("[]", encoding="utf-8")
+    (card / ".card_data.json").write_text("{\"name\": \"Test\"}", encoding="utf-8")
+    styles = tmp_path / "styles"
+    provider = FakeProvider(
+        [
+            [{"type": "tool_call", "id": "call-1", "name": "load_worldbook_entry", "args": {"title": "Harbor"}}],
+            [{"type": "tool_call", "id": "call-2", "name": "get_recent_memory", "args": {"max_chars": 20}}],
+            [{"type": "text", "text": "tool-aware output"}, {"type": "final"}],
+        ],
+        model="writer-model",
+    )
+
+    class _WorldbookStore:
+        def get_worldbook(self, book_id):
+            return {
+                "id": book_id,
+                "name": "Harbor Book",
+                "entries": [
+                    {
+                        "id": "harbor-entry",
+                        "title": "Harbor",
+                        "usage": "harbor setting",
+                        "content": "The harbor is closed at dawn.",
+                        "enabled": True,
+                        "order": 0,
+                    }
+                ],
+            }
+
+        def effective_worldbooks(self, project_id):
+            del project_id
+            return [self.get_worldbook("book")]
+
+    compiler = ExecutionPlanCompiler(
+        project_store=_MemoryStore({"project": {"id": "project", "worldbook_ids": ["book"]}}),
+        graph_store=_MemoryStore({
+            "writing": {
+                "id": "writing",
+                "nodes": [{"node_id": "writer-node", "agent_id": "writer"}],
+                "output_node_id": "writer-node",
+            }
+        }),
+        agent_store=_MemoryStore({
+            "writer": {
+                **_agent("writer"),
+                "tool_allowlist": ["load_worldbook_entry", "get_recent_memory"],
+            }
+        }),
+        worldbook_store=_WorldbookStore(),
+    )
+    runtime = SessionTurnRuntime(
+        database_path=tmp_path / "runtime.sqlite3",
+        card_folder=card,
+        projection_root=styles,
+        executor=FakeNarrativeExecutor("unused"),
+        execution_plan_compiler=compiler,
+        graph_runtime=GraphRuntime(ProviderNodeRunner(lambda _node: provider)),
+        project_id="project",
+        execution_graph_id="writing",
+        bootstrap_legacy_history=False,
+    )
+
+    result = runtime.submit("hello", "tool-submit")
+
+    assert result.status == "succeeded"
+    assert provider.call_count == 3
+    assert {tool["name"] for tool in provider.requests[0].tools} == {
+        "load_worldbook_entry",
+        "get_recent_memory",
+    }
+    worldbook_schema = next(
+        tool["parameters"]
+        for tool in provider.requests[0].tools
+        if tool["name"] == "load_worldbook_entry"
+    )
+    assert worldbook_schema["type"] == "object"
+    assert worldbook_schema["required"] == ["title"]
+    assert provider.requests[1].messages[-1]["role"] == "tool"
+    assert any(
+        "closed at dawn" in message.get("content", "")
+        for message in provider.requests[1].messages
+        if message.get("role") == "tool"
+    )
+    assert provider.requests[2].messages[-1]["role"] == "tool"
+    assert "frozen memory" in provider.requests[2].messages[-1]["content"]
+    assert json.loads((card / "chat_log.json").read_text(encoding="utf-8"))[-1]["ai"] == "tool-aware output"
+
+
 def test_provider_node_runner_forwards_agent_generation_and_advanced_parameters():
     plan = ExecutionPlanCompiler().compile(
-        project={"id": "project", "graph_id": "writing"},
+        project={"id": "project"},
         graph={
             "id": "writing",
             "nodes": [{"node_id": "writer-node", "agent_id": "writer"}],
@@ -433,7 +616,7 @@ def test_graph_output_artifact_uses_existing_runtime_draft_commit_path(tmp_path)
     (card / ".initvar.json").write_text("{}", encoding="utf-8")
     (card / "chat_log.json").write_text("[]", encoding="utf-8")
     (card / ".card_data.json").write_text('{"name":"Test"}', encoding="utf-8")
-    project = {"id": "project", "graph_id": "writing", "worldbook_ids": []}
+    project = {"id": "project", "worldbook_ids": []}
     graph = {
         "id": "writing",
         "nodes": [{"node_id": "writer-node", "agent_id": "writer"}],
@@ -453,6 +636,7 @@ def test_graph_output_artifact_uses_existing_runtime_draft_commit_path(tmp_path)
         execution_plan_compiler=compiler,
         graph_runtime=GraphRuntime(_CommitRunner()),
         project_id="project",
+        execution_graph_id="writing",
         bootstrap_legacy_history=False,
     )
 
@@ -472,7 +656,7 @@ def test_graph_node_failure_aborts_session_task_without_story_commit(tmp_path):
     (card / ".initvar.json").write_text("{}", encoding="utf-8")
     (card / "chat_log.json").write_text("[]", encoding="utf-8")
     (card / ".card_data.json").write_text('{"name":"Test"}', encoding="utf-8")
-    project = {"id": "project", "graph_id": "writing", "worldbook_ids": []}
+    project = {"id": "project", "worldbook_ids": []}
     graph = {
         "id": "writing",
         "nodes": [
@@ -497,6 +681,7 @@ def test_graph_node_failure_aborts_session_task_without_story_commit(tmp_path):
         execution_plan_compiler=compiler,
         graph_runtime=GraphRuntime(runner),
         project_id="project",
+        execution_graph_id="writing",
         bootstrap_legacy_history=False,
     )
 
@@ -516,7 +701,7 @@ def test_graph_retry_recompiles_current_definitions_and_links_failed_run(tmp_pat
     (card / ".initvar.json").write_text("{}", encoding="utf-8")
     (card / "chat_log.json").write_text("[]", encoding="utf-8")
     (card / ".card_data.json").write_text('{"name":"Test"}', encoding="utf-8")
-    project = {"id": "project", "graph_id": "writing", "worldbook_ids": []}
+    project = {"id": "project", "worldbook_ids": []}
     graph = {
         "id": "writing",
         "nodes": [{"node_id": "writer-node", "agent_id": "writer"}],
@@ -542,6 +727,7 @@ def test_graph_retry_recompiles_current_definitions_and_links_failed_run(tmp_pat
         execution_plan_compiler=compiler,
         graph_runtime=GraphRuntime(runner),
         project_id="project",
+        execution_graph_id="writing",
         bootstrap_legacy_history=False,
     )
 
@@ -573,7 +759,7 @@ def test_debug_replay_runs_one_node_with_current_agent_and_frozen_input(tmp_path
     (card / ".initvar.json").write_text("{}", encoding="utf-8")
     (card / "chat_log.json").write_text("[]", encoding="utf-8")
     (card / ".card_data.json").write_text('{"name":"Test"}', encoding="utf-8")
-    project = {"id": "project", "graph_id": "writing", "worldbook_ids": []}
+    project = {"id": "project", "worldbook_ids": []}
     graph = {
         "id": "writing",
         "nodes": [
@@ -603,6 +789,7 @@ def test_debug_replay_runs_one_node_with_current_agent_and_frozen_input(tmp_path
         execution_plan_compiler=compiler,
         graph_runtime=GraphRuntime(runner),
         project_id="project",
+        execution_graph_id="writing",
         bootstrap_legacy_history=False,
     )
 
@@ -653,7 +840,7 @@ def test_graph_trace_survives_restart_and_prunes_older_terminal_runs(tmp_path):
     (card / "chat_log.json").write_text("[]", encoding="utf-8")
     (card / ".card_data.json").write_text('{"name":"Test"}', encoding="utf-8")
     stores = {
-        "project": _MemoryStore({"project": {"id": "project", "graph_id": "writing"}}),
+        "project": _MemoryStore({"project": {"id": "project"}}),
         "graph": _MemoryStore(
             {
                 "writing": {
@@ -679,6 +866,7 @@ def test_graph_trace_survives_restart_and_prunes_older_terminal_runs(tmp_path):
         execution_plan_compiler=compiler,
         graph_runtime=GraphRuntime(runner),
         project_id="project",
+        execution_graph_id="writing",
         bootstrap_legacy_history=False,
     )
 
@@ -692,6 +880,7 @@ def test_graph_trace_survives_restart_and_prunes_older_terminal_runs(tmp_path):
         execution_plan_compiler=compiler,
         graph_runtime=GraphRuntime(runner),
         project_id="project",
+        execution_graph_id="writing",
         bootstrap_legacy_history=False,
     )
     assert restarted.graph_run_detail(first_id)["nodes"][0]["state"] == "succeeded"
@@ -715,7 +904,7 @@ def test_restart_marks_in_flight_graph_run_interrupted(tmp_path):
     (card / "chat_log.json").write_text("[]", encoding="utf-8")
     (card / ".card_data.json").write_text('{"name":"Test"}', encoding="utf-8")
     stores = {
-        "project": _MemoryStore({"project": {"id": "project", "graph_id": "writing"}}),
+        "project": _MemoryStore({"project": {"id": "project"}}),
         "graph": _MemoryStore(
             {
                 "writing": {
@@ -741,6 +930,7 @@ def test_restart_marks_in_flight_graph_run_interrupted(tmp_path):
         execution_plan_compiler=compiler,
         graph_runtime=GraphRuntime(runner),
         project_id="project",
+        execution_graph_id="writing",
         bootstrap_legacy_history=False,
     )
     worker = threading.Thread(target=runtime.submit, args=("in flight", "restart-active"))
@@ -755,6 +945,7 @@ def test_restart_marks_in_flight_graph_run_interrupted(tmp_path):
         execution_plan_compiler=compiler,
         graph_runtime=GraphRuntime(_RetentionRunner()),
         project_id="project",
+        execution_graph_id="writing",
         bootstrap_legacy_history=False,
     )
     recovered = restarted.graph_runs_snapshot()["most_recent"]
@@ -816,7 +1007,7 @@ def test_session_graph_events_and_node_detail_are_live_and_persisted(tmp_path):
     (card / ".card_data.json").write_text('{"name":"Test"}', encoding="utf-8")
     provider = _BlockingStreamingProvider()
     compiler = ExecutionPlanCompiler(
-        project_store=_MemoryStore({"project": {"id": "project", "graph_id": "writing", "worldbook_ids": []}}),
+        project_store=_MemoryStore({"project": {"id": "project", "worldbook_ids": []}}),
         graph_store=_MemoryStore(
             {
                 "writing": {
@@ -843,6 +1034,7 @@ def test_session_graph_events_and_node_detail_are_live_and_persisted(tmp_path):
         execution_plan_compiler=compiler,
         graph_runtime=GraphRuntime(ProviderNodeRunner(lambda _node: provider)),
         project_id="project",
+        execution_graph_id="writing",
         bootstrap_legacy_history=False,
     )
 
@@ -902,7 +1094,7 @@ def test_studio_http_exposes_graph_retry_and_isolated_node_replay(tmp_path):
     (card / "chat_log.json").write_text("[]", encoding="utf-8")
     (card / ".card_data.json").write_text('{"name":"Test"}', encoding="utf-8")
     stores = {
-        "project": _MemoryStore({"project": {"id": "project", "graph_id": "writing"}}),
+        "project": _MemoryStore({"project": {"id": "project"}}),
         "graph": _MemoryStore(
             {
                 "writing": {
@@ -928,6 +1120,7 @@ def test_studio_http_exposes_graph_retry_and_isolated_node_replay(tmp_path):
         execution_plan_compiler=compiler,
         graph_runtime=GraphRuntime(runner),
         project_id="project",
+        execution_graph_id="writing",
         bootstrap_legacy_history=False,
     )
 

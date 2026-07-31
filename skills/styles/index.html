@@ -994,9 +994,9 @@ body {
       </div>
       <div class="side-note" id="session-meta">正在读取存档…</div>
     </div>
-    <div class="side-card" id="runtime-config-card">
-      <h4>🧩 Runtime Config</h4>
-      <div class="side-note" id="runtime-config-status">运行时配置状态: 未连接</div>
+    <div class="side-card" id="active-graph-card">
+      <h4>🧩 Active Graph</h4>
+      <div class="side-note" id="active-graph-status">活动 Graph 状态: 未连接</div>
       <div class="side-note" id="runtime-task-status">任务: —</div>
       <div class="side-note" id="runtime-task-id">Task ID: —</div>
       <div class="side-note" id="runtime-task-meta"></div>
@@ -1006,18 +1006,10 @@ body {
         <select id="runtime-graph-select" class="config-select"></select>
       </div>
       <div class="side-buttons">
-        <button class="side-button" onclick="applyRuntimeConfigSelection()">应用选择</button>
-        <button class="side-button" onclick="loadRuntimeConfigPanel()">刷新列表</button>
+        <button class="side-button" onclick="applyActiveGraphSelection()">应用选择</button>
+        <button class="side-button" onclick="loadActiveGraphPanel()">刷新列表</button>
       </div>
     </div>
-    <!-- Kept inert for extensions compiled against the old page contract. All
-         provider editing now lives in Studio and this template is never shown. -->
-    <template id="legacy-provider-controls-compat" hidden>
-      <input id="provider-base-url" type="url">
-      <input id="provider-api-key" type="password">
-      <select id="provider-model-select"></select>
-      <script type="application/json">["/v1/session/provider/models", "/v1/session/provider/config"]</script>
-    </template>
     <div class="side-card" id="agent-trace-card">
       <h4>🧭 Agent Trace</h4>
       <div class="side-note" id="agent-trace-status">等待运行时事件</div>
@@ -1532,7 +1524,7 @@ function pickAction(action) {
 
 const API_BASE = '';
 let bridgeOk = false;
-let runtimeConfigState = { presets: [], graphs: [], selected: { preset_id: null, graph_id: null } };
+let activeGraphState = { graphs: [], selected: { graph_id: null } };
 let sessionState = { active_session_id: null, sessions: [] };
 const RUNTIME_ACTIVE_STATUSES = new Set(['queued', 'leased', 'running', 'projection_pending']);
 const RUNTIME_TERMINAL_EVENT_TYPES = new Set([
@@ -1831,8 +1823,8 @@ function apiUrl(path) {
   return API_BASE + path;
 }
 
-function setRuntimeConfigStatus(msg) {
-  setText('runtime-config-status', msg || '运行时配置状态: —');
+function setActiveGraphStatus(msg) {
+  setText('active-graph-status', msg || '活动 Graph 状态: —');
 }
 
 function setRuntimeTaskStatus(task) {
@@ -2011,6 +2003,12 @@ function applyRuntimeEvent(event) {
   }
   if (event.type.indexOf('graph.') === 0) {
     recordAgentTrace(event.type, payload, sequence);
+    // Hydrate the durable snapshot at Graph completion so a missed node SSE
+    // event cannot leave the visible Trace stuck in its previous state.
+    if (event.type === 'graph.run.finished') {
+      hydrateRuntimeSnapshot();
+      hydrateGraphRunFromStudio();
+    }
   }
   if (event.type === 'narrative.preview.delta') {
     if (!streamingPreview.taskId || streamingPreview.taskId === payload.task_id) {
@@ -2080,6 +2078,16 @@ async function hydrateRuntimeSnapshot() {
     hydrateGraphRun(snapshot.graph_runs);
   } catch (e) {
     // Legacy /api/session_status polling remains the projection fallback.
+  }
+}
+
+async function hydrateGraphRunFromStudio() {
+  try {
+    const r = await fetch(apiUrl('/v1/studio/graph-runs'), { cache: 'no-store' });
+    if (!r.ok) return;
+    hydrateGraphRun(await r.json());
+  } catch (e) {
+    // The session snapshot remains the primary reconnect fallback.
   }
 }
 
@@ -2248,11 +2256,11 @@ async function checkBridge() {
     const data = await r.json();
     bridgeOk = true;
     const snapshot = data.snapshot || {};
-    setRuntimeConfigStatus('运行时配置状态: ' + (data.status || 'idle') + ' | Rev ' + (snapshot.active_revision || 0));
+    setActiveGraphStatus('活动 Graph 状态: ' + (data.status || 'idle') + ' | Rev ' + (snapshot.active_revision || 0));
     setRuntimeTaskStatus(snapshot.current_task || { status: data.status, task_id: data.task_id });
   } catch(e) {
     bridgeOk = false;
-    setRuntimeConfigStatus('运行时配置状态: 未连接');
+    setActiveGraphStatus('活动 Graph 状态: 未连接');
     setRuntimeTaskStatus(null);
   }
   document.getElementById('conn-dot').className = bridgeOk ? 'dot green' : 'dot red';
@@ -2272,25 +2280,25 @@ function setSelectOptions(selectId, items, selectedId, emptyLabel) {
   sel.value = selectedId || '';
 }
 
-async function loadRuntimeConfigPanel() {
+async function loadActiveGraphPanel() {
   try {
-    const r = await fetch(apiUrl('/v1/session/runtime/config'));
+    const r = await fetch(apiUrl('/v1/session/runtime/graph'));
     if (!r.ok) throw new Error('unavailable');
     const data = await r.json();
-    runtimeConfigState = data;
+    activeGraphState = data;
     setSelectOptions('runtime-graph-select', data.graphs, data.selected && data.selected.graph_id, '未选择 Graph');
-    setRuntimeConfigStatus('运行时配置状态: 配置接口已就绪');
+    setActiveGraphStatus('活动 Graph 接口已就绪');
   } catch(e) {
-    runtimeConfigState = { presets: [], graphs: [], selected: { preset_id: null, graph_id: null } };
+    activeGraphState = { graphs: [], selected: { graph_id: null } };
     setSelectOptions('runtime-graph-select', [], '', 'Graph 接口不可用');
-    setRuntimeConfigStatus('运行时配置状态: 配置接口不可用');
+    setActiveGraphStatus('活动 Graph 接口不可用');
   }
 }
 
-async function applyRuntimeConfigSelection() {
+async function applyActiveGraphSelection() {
   const graphId = document.getElementById('runtime-graph-select').value || null;
   try {
-    const r = await fetch(apiUrl('/v1/session/runtime/config'), {
+    const r = await fetch(apiUrl('/v1/session/runtime/graph'), {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ graph_id: graphId })
@@ -2299,9 +2307,9 @@ async function applyRuntimeConfigSelection() {
     if (!r.ok || !data.ok) throw Object.assign(new Error(data.message || data.error || 'save failed'), { serverData: data });
     showToast('✓ Runtime 选择已保存，改动将应用于下一任务');
     setRuntimeTaskStatus((data.snapshot || {}).current_task || null);
-    await loadRuntimeConfigPanel();
+    await loadActiveGraphPanel();
   } catch(e) {
-    showError('应用 Runtime 选择失败: ' + (e.message || '未知错误') + (e.serverData && e.serverData.path ? ' [' + e.serverData.path + ']' : ''));
+    showError('应用活动 Graph 失败: ' + (e.message || '未知错误') + (e.serverData && e.serverData.path ? ' [' + e.serverData.path + ']' : ''));
   }
 }
 
@@ -2783,11 +2791,11 @@ checkBridge();
 hydrateRuntimeSnapshot().finally(connectRuntimeEvents);
 loadSessions();
 loadOpenings();
-loadRuntimeConfigPanel();
+loadActiveGraphPanel();
 renderAgentTrace();
 pollTimer = setInterval(reloadData, 3000);
 setInterval(checkBridge, 5000);
-setInterval(loadRuntimeConfigPanel, 20000);
+setInterval(loadActiveGraphPanel, 20000);
 
 // ═══ Dark Mode Toggle ═══
 (function() {

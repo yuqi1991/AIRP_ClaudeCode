@@ -1,8 +1,8 @@
 """Persistent Studio library objects.
 
-The library is deliberately separate from the legacy runtime settings files.
-Provider Profiles are reusable definitions, while ``settings.json`` remains
-the compatibility source for the existing game runtime.
+The library is deliberately separate from legacy runtime settings files.
+Provider Profiles are reusable definitions. Historic ``settings.json`` files
+are read only by the one-time Studio migration path, never by active runs.
 """
 
 from __future__ import annotations

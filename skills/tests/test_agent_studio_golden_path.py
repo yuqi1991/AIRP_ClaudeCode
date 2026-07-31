@@ -311,13 +311,20 @@ def test_studio_to_game_golden_path_drives_saved_configuration_live_trace_and_re
                 "id": "golden-path",
                 "name": "Golden Project",
                 "description": "A saved Studio project.",
-                "graph_id": graph["graph"]["id"],
                 "worldbook_ids": [worldbook["worldbook"]["id"]],
                 "openings": [{"id": "default", "label": "Default", "content": "Hello", "is_default": True}],
             },
         )
         assert status == 201
-        assert project["project"]["graph_id"] == "studio-graph"
+        assert "graph_id" not in project["project"]
+
+        status, selected = _json_request(
+            "PUT",
+            f"{server.base_url}/v1/session/runtime/graph",
+            {"graph_id": graph["graph"]["id"]},
+        )
+        assert status == 200
+        assert selected["runtime"]["graph_id"] == "studio-graph"
 
         status, accepted = _json_request(
             "POST",
@@ -528,14 +535,13 @@ def test_browser_studio_to_game_golden_path_renders_trace_detail_and_retry(tmp_p
 
             browser.click('[data-studio-view="projects"]')
             browser.wait_for(
-                "document.querySelector('#project-graph option[value=\"browser-graph\"]') && document.querySelector('#project-worldbooks input')"
+                "document.querySelector('#project-worldbooks input')"
             )
             browser.evaluate(
                 """(() => {
                     document.getElementById('project-id').value = 'browser-golden-path';
                     document.getElementById('project-name').value = 'Browser Project';
                     document.getElementById('project-description').value = 'A browser-saved project.';
-                    document.getElementById('project-graph').value = 'browser-graph';
                     document.querySelector('#project-worldbooks input').checked = true;
                     return true;
                 })()"""
@@ -545,6 +551,18 @@ def test_browser_studio_to_game_golden_path_renders_trace_detail_and_retry(tmp_p
 
             browser.click('a[aria-label="Return to game"]')
             browser.wait_for("location.pathname === '/' && document.getElementById('user-input')")
+            browser.evaluate("loadActiveGraphPanel(); true")
+            browser.wait_for("document.querySelector('#runtime-graph-select option[value=\"browser-graph\"]')")
+            browser.evaluate(
+                """(() => {
+                    document.getElementById('runtime-graph-select').value = 'browser-graph';
+                    return true;
+                })()"""
+            )
+            browser.click('#active-graph-card .side-buttons .side-button')
+            browser.wait_for(
+                "(await fetch('/v1/session/runtime/graph').then((response) => response.json())).selected.graph_id === 'browser-graph'"
+            )
             browser.evaluate("document.getElementById('user-input').value = 'Enter the harbor.'; true")
             browser.click('.btn-submit')
             browser.wait_for(

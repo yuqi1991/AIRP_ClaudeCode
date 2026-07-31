@@ -2,9 +2,9 @@
 
 ## 当前架构
 
-当前系统由浏览器前端、本地 HTTP server、CLI 编排和兼容入口组成。生产实现统一位于 `src/airp/`：`airp.engine` 承载引擎，`airp.server` 承载 `/v1/*` transport，`airp.cli`/`airp.launcher` 承载可安装启动入口，`airp.handler` 与 `airp.import_*` 承载 RP 兼容投影和导入。`skills/` 只保留旧 import、脚本和 Claude Code loop 的兼容 wrapper。独立 runtime 已有可玩的 card-local 多 Session 黄金路径；原 Claude Code loop 仍保留为 legacy 路径。
+当前系统由浏览器前端、本地 HTTP server、CLI 编排和兼容入口组成。生产实现统一位于 `src/airp/`：`airp.engine` 承载内容中立的 Graph/Provider/Context/Regex 引擎，`airp.host.rp` 承载故事会话、卡片投影和 RP 工具，`airp.server` 承载 `/v1/*` transport，`airp.cli`/`airp.launcher` 承载可安装启动入口，`airp.handler` 与 `airp.import_*` 承载 RP 兼容投影和导入。`skills/` 只保留旧 import、脚本和兼容 wrapper。独立 runtime 已有可玩的 card-local 多 Session 黄金路径；原 Claude Code loop 仍保留为 legacy 路径。
 
-ADR-0018 确定后续架构方向：Agent Framework 只负责内容中立的 Agent/Graph 运作，RP 回合解析与 `<content>` 等格式规则属于 Project 选择的 RP Turn Adapter。Studio 定义是正常运行的唯一来源，旧配置仅用于迁移和回放；用户可变数据统一进入 Workspace，HTTP 正式入口统一为 `/v1/*`。
+ADR-0018/0019 确定当前架构：Agent Framework 只负责内容中立的 Agent/Graph 运作，RP 投影和会话提交属于 Host；RP 输出不做内置标签解析，格式转换只存在于一次性 legacy import。Studio 定义是正常运行的唯一来源，旧配置仅用于迁移和回放；Provider 通过 AIRP 自有 OpenAI-compatible adapter 直接调用，用户可变数据统一进入 Workspace，HTTP 正式入口统一为 `/v1/*`。
 
 ```text
 Browser ── HTTP commands / SSE ──► airp.server
@@ -24,7 +24,7 @@ Browser ── HTTP commands / SSE ──► airp.server
                          chat/state/content projection
 ```
 
-`airp-runtime`（实现于 `airp.cli`）负责导入或恢复卡片、恢复活动 session、交付 revision 0 开场并启动统一服务器。`SessionManager` 隐藏 SQLite catalog、活动指针、runtime 更换和兼容投影重建；浏览器提交、取消、重roll、回退、开场/存档切换和刷新恢复均通过 runtime interface 完成，不依赖 `.pending` 或 `input.txt`。`skills/start_runtime.py` 仅转发到同一 CLI。
+`airp-runtime`（实现于 `airp.cli`）负责导入或恢复卡片、恢复活动 session、交付 revision 0 开场并启动统一服务器。`SessionManager` 隐藏 SQLite catalog、活动指针、runtime 更换和兼容投影重建；浏览器提交、取消、重roll、回退、开场/存档切换和刷新恢复均通过 runtime interface 完成，不依赖 `.pending` 或 `input.txt`。`skills/start_runtime.py` 仅转发到同一 CLI，`skills/` 不参与 Agent 能力发现。
 
 ### Legacy Claude Code 路径
 
@@ -61,8 +61,9 @@ server.py ── input.txt/.pending ──► runtime loop (Claude Code 当前�
 | `airp.engine.worldbook` | 构建 catalog 与按标题读取条目 | usage 保留、条目索引、reference/user Markdown 定位 |
 | `airp.engine.context` | 构建启动/回合上下文 | import_context、变量路径列表、catalog 展示 |
 | `airp.engine.context_compiler` | 将 revision-scoped snapshot 编译为 Manifest/payload | section 选择、稳定顺序、预算、hash、重放 |
-| `airp.engine.runtime` | 提交、取消、回退、重roll、snapshot 与 opening | task lease、event/commit/revision DAG、state snapshot、幂等与投影恢复 |
-| `airp.engine.session_manager` | 列出、创建、切换、重命名和删除存档 | card-local catalog、活动指针、runtime 生命周期与删除清理 |
+| `airp.host.rp.session_runtime` | 提交、取消、回退、重roll、snapshot 与 opening | task lease、event/commit/revision DAG、state snapshot、幂等与投影恢复 |
+| `airp.host.rp.session_manager` | 列出、创建、切换、重命名和删除存档 | card-local catalog、活动指针、runtime 生命周期与删除清理 |
+| `airp.host.rp.tools` | Session、memory、Worldbook 的只读 Agent capabilities | Agent allowlist、冻结快照、调用审计与稳定错误 |
 
 这些模块的原则是：调用方只需知道少量 interface，文件格式、HTML、MVU 路径与 transcript 细节留在模块内部。
 
@@ -80,7 +81,7 @@ server.py ── input.txt/.pending ──► runtime loop (Claude Code 当前�
 独立 runtime 的回合流程：
 
 1. 浏览器 `POST /v1/session/commands/submit`，runtime 建立带幂等键的持久 task；
-2. runtime 在 task 的 base revision 冻结 card、Project、Studio Graph 和相关世界书输入，编译 Context Manifest；legacy settings/preset 只在兼容回放路径出现；
+2. runtime 在 task 的 base revision 冻结 card、Project、Studio Graph 和相关世界书输入，编译 Context Manifest；旧配置只在一次性导入/兼容回放边界读取，不参与现行 Graph Run；
 3. provider 流式产生 preview 与最终叙事文本，SSE 向浏览器发布任务状态；
 4. harness 解析文本、执行质量与 MVU 门禁，原子写入 commit/revision/state；
 5. active lineage 重建兼容 `chat_log.json`、`state.js` 与 `content.js` 投影。
@@ -91,11 +92,11 @@ server.py ── input.txt/.pending ──► runtime loop (Claude Code 当前�
 
 Provider 面板通过 `/v1/studio/providers` 管理 Provider Profile，并将非敏感连接资料保存到 Workspace。网页输入的 key 只进入本地 Secret Store；它不进入 Graph、Execution Plan、事件、manifest、SQLite、projection 或响应。
 
-顺序 graph 无论有一个还是多个节点，均通过 `SequentialAgentGraph` 执行。runtime 发布 `agent_node.started/finished`、`model_call.started/finished` 与 `tool_run.*` durable events；前端 Agent Trace 以此显示当前节点、模型耗时/token 和工具结果。graph 仍是受限的线性 writing-role pipeline，不是通用工作流 DSL。
+顺序 graph 无论有一个还是多个节点，均通过 `GraphRuntime` 调度、`ProviderNodeRunner` 执行。runtime 发布 `agent_node.started/finished`、`model_call.started/finished` 与 `tool_run.*` durable events；前端 Agent Trace 以此显示当前节点、模型耗时/token 和工具结果。graph 仍是受限的线性 pipeline，不是通用工作流 DSL。
 
 存档切换不复制 JSON 文件：`SessionManager` 选择目标 session 的 runtime，并由其 active lineage 原地重建共享 projection。生成 lease 活动时，创建、切换和删除返回冲突，避免浏览器在 provider 调用中途换掉 active runtime。
 
-开场是 RP Turn Adapter 的独立阶段：卡片已有 `first_mes` 时直接交付；没有时由所选 Project Adapter 生成或解释。生成结果写成 AI-only 的 revision 0 opening，不创建玩家 task/commit/revision；opening 中经 Adapter 解释的初始变量成为 revision 0 状态，usage 和 `session.opening_generated` 事件随 opening 保存。这样玩家第一条输入始终对应 revision 1。
+开场是 Host Session 的初始化阶段：卡片已有 `first_mes` 时直接交付；没有时由当前 Studio Graph 执行一次 AI-only opening。结果写入 revision 0 的 opening，不创建玩家 task/commit/revision；这样玩家第一条输入始终对应 revision 1。引擎不解析标签或写作格式，开场策略由 Host 和用户配置的 Agent instruction 决定。
 
 Legacy Claude Code 回合流程：
 
@@ -114,7 +115,7 @@ Legacy Claude Code 回合流程：
 | `<card>/` 与运行态 projection root | 当前活动 session 的兼容投影 | `chat_log.json`、`.var_diff.json`、`content.js`、`state.js` |
 | `src/airp/engine/` | 可复用纯逻辑代码 | card/render/mvu/tokens/worldbook/context |
 | `src/airp/web/` | wheel 内置只读网页资源 | `index.html`、`studio.html`、默认静态片段 |
-| `src/airp/resources/sidecar/` | wheel 内置 provider sidecar | `pi_provider_sidecar.mjs` |
+| `src/airp/engine/provider.py` | OpenAI-compatible Provider Adapter | `/v1/chat/completions`、`/v1/responses` |
 | Workspace / `AIRP_STATIC_ROOT` | 用户可写 Studio、Secret 和运行投影 | library、projects、sessions、secrets、projection |
 
-> 一个 server 进程当前仍只服务一张卡，且 settings/preset 与 `memory/*.md` 是卡片级共享。多 session 已摆脱 JSON 历史单例，但多卡并行和 session-scoped 长期记忆仍是后续数据分层工作。
+> 一个 server 进程当前仍只服务一张卡，且卡片级素材与 `memory/*.md` 是共享输入。多 session 已摆脱 JSON 历史单例，但多卡并行和 session-scoped 长期记忆仍是后续数据分层工作。

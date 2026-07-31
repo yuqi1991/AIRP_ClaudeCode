@@ -16,7 +16,7 @@ class QualityPolicy:
     """Technical gate for a commit-capable narrative payload.
 
     User-authored writing preferences such as target length, style, person,
-    summaries and options belong in editable prompt presets. The runtime only
+    summaries and options belong in editable Agent instructions. The runtime only
     rejects an empty visible payload here; upper/lower length bounds are retained
     as explicit opt-in constructor knobs for tests and embedders.
     """

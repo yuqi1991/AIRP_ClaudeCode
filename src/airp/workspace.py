@@ -59,6 +59,10 @@ class Workspace:
         return self.library_root / "worldbooks"
 
     @property
+    def regex_collections_root(self) -> Path:
+        return self.library_root / "regex_collections"
+
+    @property
     def projects_root(self) -> Path:
         return self.root / "projects"
 
@@ -80,6 +84,7 @@ class Workspace:
             self.agents_root,
             self.graphs_root,
             self.worldbooks_root,
+            self.regex_collections_root,
             self.projects_root,
             self.sessions_root,
             self.runtime_root,

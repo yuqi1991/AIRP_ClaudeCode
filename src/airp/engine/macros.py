@@ -19,7 +19,6 @@ DEFAULT_MACRO_ROOTS = frozenset(
         "node",
         "settings",
         "runtime",
-        "runtime_config",
         "card_facts",
         "card_structure",
         "character",
@@ -42,6 +41,7 @@ DEFAULT_MACRO_ROOTS = frozenset(
         "handoff",
         "output_contract",
         "tool_protocol",
+        "skills",
     }
 )
 
@@ -83,7 +83,7 @@ def build_context(*sources: Mapping[str, Any] | None, request: Mapping[str, Any]
     # supplied explicitly as ``worldbook_entries`` when the runtime has a
     # reason to include it.
     context.setdefault("worldbooks", context.get("worldbook_entries", worldbook_catalog))
-    context.setdefault("runtime", context.get("runtime_config", {}))
+    context.setdefault("runtime", {})
     context.setdefault("project", {"id": context.get("project_id", "")})
     return context
 

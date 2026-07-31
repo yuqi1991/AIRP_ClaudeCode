@@ -14,9 +14,6 @@ import re
 from pathlib import Path
 from typing import Any
 
-from airp.engine.provider import runtime_provider_api_key
-
-
 _SAFE_ID = re.compile(r"[^A-Za-z0-9_.-]+")
 _GENERATION_FIELDS = {
     "temperature",
@@ -43,8 +40,6 @@ def bootstrap_legacy_runtime_library(
 
     root = Path(static_root).resolve()
     settings = _read_object(root / "settings.json")
-    runtime_settings = settings.get("runtime") if isinstance(settings.get("runtime"), dict) else {}
-    selected_graph_id = _safe_id(runtime_settings.get("graph_id") or "default")
     legacy_graphs = _legacy_graphs(root / "graphs")
     if not legacy_graphs:
         return {"graphs": 0, "agents": 0, "providers": 0, "project": False}
@@ -98,11 +93,6 @@ def bootstrap_legacy_runtime_library(
                 updates = {}
                 if effective_instruction and not str(existing.get("instruction") or "").strip():
                     updates["instruction"] = effective_instruction
-                if existing.get("prompt_preset_id"):
-                    # Existing imported definitions are migrated to the
-                    # instruction-only shape; the Agent store still reads an
-                    # explicit legacy field for old hand-authored files.
-                    updates["prompt_preset_id"] = None
                 if updates:
                     agent_store.update_agent(agent_id, updates)
                 continue
@@ -175,23 +165,13 @@ def bootstrap_legacy_runtime_library(
     project_created = False
     if project_store is not None and isinstance(project_id, str) and project_id:
         try:
-            project = project_store.get_project(project_id)
-            if not project.get("graph_id"):
-                project_store.update_project(
-                    project_id,
-                    {
-                        "graph_id": selected_graph_id
-                        if selected_graph_id in legacy_graphs
-                        else next(iter(legacy_graphs), None)
-                    },
-                )
+            project_store.get_project(project_id)
         except Exception:
             facts = card_facts if isinstance(card_facts, dict) else {}
             project_payload = {
                 "id": project_id,
                 "name": str(facts.get("name") or project_id),
                 "card": facts,
-                "graph_id": selected_graph_id if selected_graph_id in legacy_graphs else next(iter(legacy_graphs), None),
             }
             try:
                 project_store.create_project(project_payload)
@@ -281,9 +261,6 @@ def _provider_base_url(provider: str, node: dict[str, Any], settings: dict[str, 
 
 
 def _provider_key_from_environment(provider: str) -> str | None:
-    override = runtime_provider_api_key(provider)
-    if override:
-        return override
     suffix = re.sub(r"[^A-Za-z0-9]", "_", provider).upper()
     return os.environ.get(f"{suffix}_API_KEY") or (os.environ.get("DEEPSEEK_API_KEY") if provider == "deepseek" else None)
 

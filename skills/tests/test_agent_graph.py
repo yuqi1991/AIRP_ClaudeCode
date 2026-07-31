@@ -9,7 +9,6 @@ sys.path.insert(0, str(SKILLS))
 from engine.agent_graph import SequentialAgentGraph, SequentialGraphNode  # noqa: E402
 from engine.context_compiler import CompiledContext  # noqa: E402
 from engine.director import NarrativeDirector  # noqa: E402
-from engine.executor_factory import RuntimeExecutorFactory  # noqa: E402
 
 
 class _Director(NarrativeDirector):
@@ -98,29 +97,3 @@ def test_sequential_graph_hands_prior_output_to_next_node_and_commits_last():
     assert handle.final == "final turn"
     assert writer.payloads[0][-1]["role"] == "user"
     assert "plan" in writer.payloads[0][-1]["content"]
-
-
-def test_mock_executor_factory_preserves_multi_node_graph_contract():
-    factory = RuntimeExecutorFactory(mock=True)
-    executor = factory(
-        {
-            "graph": {
-                "nodes": [
-                    {"id": "planner", "role": "story_planner", "enabled": True},
-                    {"id": "director", "role": "narrative_director", "enabled": True},
-                ]
-            }
-        }
-    )
-    handle = _Handle()
-    handle._task_text = "我推门"
-    compiled = CompiledContext(
-        [{"role": "user", "content": "base"}],
-        {},
-        "payload",
-        "stable",
-    )
-
-    executor.direct(handle, compiled)
-
-    assert "<content><p>Mock：我推门</p></content>" in handle.final

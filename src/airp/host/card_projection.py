@@ -1,9 +1,4 @@
-"""Compatibility projection adapter for the RP card file format.
-
-The Agent Framework does not write chat logs or browser projections. This
-adapter is the remaining first-party RP integration and lazily loads the
-legacy card handler until that projection implementation is migrated too.
-"""
+"""Write committed turns into the browser card projection format."""
 
 from __future__ import annotations
 
@@ -12,10 +7,12 @@ from pathlib import Path
 
 
 def _handler():
-    return importlib.import_module("handler")
+    return importlib.import_module("airp.handler")
 
 
-class LegacyProjectionAdapter:
+class CardProjection:
+    """Transactional projection from a committed host turn to card files."""
+
     def __init__(self, card_folder, projection_root):
         self.card_folder = Path(card_folder)
         self.projection_root = Path(projection_root)

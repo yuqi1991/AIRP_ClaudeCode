@@ -78,7 +78,7 @@ def test_execution_plan_freezes_macro_expansion_from_runtime_context(tmp_path: P
         }
     )
     plan = ExecutionPlanCompiler(agent_store=store).compile(
-        project={"id": "project", "graph_id": "story"},
+        project={"id": "project"},
         graph={
             "id": "story",
             "name": "Story",
@@ -110,7 +110,7 @@ def test_node_runner_expands_handoff_macro_from_the_current_artifact(tmp_path: P
         }
     )
     plan = ExecutionPlanCompiler(agent_store=store).compile(
-        project={"id": "project", "graph_id": "story"},
+        project={"id": "project"},
         graph={"id": "story", "nodes": [{"id": "review", "agent_id": "reviewer"}]},
         player_input="start",
     )

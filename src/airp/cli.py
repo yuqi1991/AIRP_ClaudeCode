@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
-"""start_runtime.py — 启动新 Pi-runtime 的浏览器黄金路径（基本可用）。
+"""start_runtime.py — 启动 AIRP Graph Runtime 的浏览器黄金路径。
 
 并行于 legacy start_server.py，二者择一运行。新 runtime 独占 :8765（启动时
 清理 legacy 残留）。流程：
-  1. 环境检查（DEEPSEEK_API_KEY / node_modules）
+  1. 环境检查（真实模式需要 Provider Profile 中已配置的 Key）
   2. 清理 :8765 残留进程（legacy server.py / 旧 runtime / mvu_server）
   3. 导入卡片（import_prepare，若未导入）
-  4. 构造 RealProviderAdapter + ProviderDrivenDirector + SessionTurnRuntime
-     (projection_root = skills/styles)
+  4. 构造 SessionTurnRuntime；Provider 与 Graph 由 Studio 负责绑定
   5. 交付 opening（卡片 first_mes 优先；无则 DeepSeek 生成）
   6. 启动统一服务器 :8765，打印 URL
 
@@ -67,62 +66,6 @@ def _ensure_web_assets(styles: Path) -> None:
     if assets.resolve() == styles.resolve() or not assets.is_dir():
         return
     shutil.copytree(assets, styles, dirs_exist_ok=True)
-
-
-def _ensure_runtime_defaults(styles: Path) -> None:
-    """Create the small compatibility config needed by a fresh wheel install."""
-    settings = styles / "settings.json"
-    presets = styles / "presets"
-    graphs = styles / "graphs"
-    presets.mkdir(parents=True, exist_ok=True)
-    graphs.mkdir(parents=True, exist_ok=True)
-    if not settings.exists():
-        settings.write_text(
-            json.dumps({"runtime": {"preset_id": "default", "graph_id": "default"}}, indent=2),
-            encoding="utf-8",
-        )
-    preset = presets / "default.json"
-    if not preset.exists():
-        preset.write_text(
-            json.dumps(
-                {
-                    "id": "default",
-                    "version": "1",
-                    "entries": [
-                        {"id": "card-facts", "role": "user", "content": "{{card_facts}}"},
-                        {"id": "current-state", "role": "user", "content": "{{current_state}}"},
-                        {"id": "player-input", "role": "user", "content": "{{player_input}}"},
-                    ],
-                },
-                ensure_ascii=False,
-                indent=2,
-            ),
-            encoding="utf-8",
-        )
-    graph = graphs / "default.json"
-    if not graph.exists():
-        graph.write_text(
-            json.dumps(
-                {
-                    "id": "default",
-                    "version": "1",
-                    "mode": "sequential",
-                    "nodes": [
-                        {
-                            "id": "director",
-                            "role": "default",
-                            "enabled": True,
-                            "order": 0,
-                            "provider": "deepseek",
-                            "model": "",
-                        }
-                    ],
-                },
-                ensure_ascii=False,
-                indent=2,
-            ),
-            encoding="utf-8",
-        )
 
 
 def _die(msg: str, code: int = 1) -> None:
@@ -223,8 +166,6 @@ def _deliver_opening(
     runtime,
     *,
     mock: bool,
-    runtime_config=None,
-    provider=None,
 ) -> str:
     """Write the opening turn (index 0, AI-only). Card first_mes preferred;
     otherwise generate via the real provider. Returns 'first_mes' | 'generated'."""
@@ -265,108 +206,22 @@ def _deliver_opening(
         runtime.capture_opening_from_chat_log()
         return "placeholder"
 
-    from airp.engine.provider import (
-        AbortSignal,
-        ProviderDelta,
-        ProviderError,
-        ProviderRequest,
-        ProviderResult,
-        RealProviderAdapter,
-        UsageRecord,
-    )
-    from airp.engine.agent_framework import AgentArtifact
-
-    config = runtime_config
-    if not isinstance(config, dict):
-        store = getattr(runtime, "runtime_config_store", None)
-        if store is None:
-            raise ValueError("generated opening requires runtime config")
-        config = store.freeze().data
-    graph = config.get("graph") or {}
-    nodes = [node for node in graph.get("nodes", []) if node.get("enabled", True)]
-    if not nodes:
-        raise ValueError("generated opening requires at least one enabled graph node")
-    node = nodes[-1]
-    turn_adapter = getattr(runtime, "turn_adapter", None)
-    validate_opening_plan = getattr(turn_adapter, "validate_opening_plan", None)
-    if callable(validate_opening_plan):
-        validate_opening_plan(config)
-    opening_instruction = getattr(turn_adapter, "opening_instruction", None)
-    if not callable(opening_instruction):
-        raise TypeError("selected TurnAdapter does not support generated openings")
-    instruction = opening_instruction(node.get("instruction") or "")
-    compiled = runtime.compile_opening_context(instruction)
-    adapter = provider or RealProviderAdapter(
-        mock=False,
-        model=node["model"],
-        base_url="https://api.deepseek.com",
-        provider=node["provider"],
-    )
-    request = ProviderRequest(
-        messages=compiled.payload,
-        tools=[],
-        model=node["model"],
-        metadata={
-            "session_id": runtime.session_id,
-            "phase": "opening",
-            "payload_hash": compiled.payload_hash,
-        },
-        parameters={
-            **(node.get("generation") or {}),
-            **(node.get("advanced") or {}),
-        },
-    )
-    usage = UsageRecord()
-    raw_text = ""
-    # A provider error fails the opening phase; retries are explicit graph/run
-    # commands and must never be hidden inside a model call.
-    for _attempt in range(1):
-        chunks = []
-        usage = UsageRecord()
-        try:
-            for item in adapter.stream(request, AbortSignal()):
-                if isinstance(item, ProviderDelta):
-                    if item.tool_call is not None:
-                        raise RuntimeError("opening provider returned an unexpected tool call")
-                    if item.text:
-                        chunks.append(item.text)
-                elif isinstance(item, ProviderResult):
-                    usage = item.usage
-            raw_text = "".join(chunks).strip()
-            break
-        except ProviderError:
-            raise
-    if not raw_text:
-        raise RuntimeError("opening provider returned empty content")
-    if turn_adapter is None or not callable(getattr(turn_adapter, "interpret", None)):
-        raise TypeError("generated opening requires a TurnAdapter")
-    draft = turn_adapter.interpret(
-        AgentArtifact.text(raw_text),
-        context={"phase": "opening", "graph_id": config.get("graph_id")},
-    )
+    draft = runtime.generate_opening_draft()
     if not draft.content.strip():
         raise RuntimeError("opening provider returned no visible content")
-    tokens = {
-        "in": usage.prompt_tokens,
-        "out": usage.completion_tokens,
-        "total": usage.total_tokens,
-    }
     handler.append_turn(
         str(card_folder),
         content=draft.content,
         summary=draft.summary,
         options=draft.options,
         is_opening=True,
-        tokens=tokens,
-        full_text=raw_text,
+        full_text=draft.content,
         projection_root=styles,
     )
     runtime.capture_opening_from_chat_log(
         event_type="session.opening_generated",
         event_payload={
-            "graph_id": config.get("graph_id"),
-            "model": node["model"],
-            "preset_id": config.get("preset_id"),
+            "graph_id": runtime.execution_graph_id,
         },
     )
     return "generated"
@@ -396,11 +251,9 @@ def main() -> None:
     styles = _resolve_styles_root(root, workspace)
     _ensure_web_assets(styles)
     os.environ.setdefault("AIRP_STATIC_ROOT", str(styles))
-    _ensure_runtime_defaults(styles)
 
-    # 1. Environment checks
-    if not mock and not os.environ.get("DEEPSEEK_API_KEY"):
-        _die("DEEPSEEK_API_KEY 未设置（请 source ~/.zshrc 或导出环境变量），或用 --mock 走 FakeProvider")
+    # 1. Environment checks. Provider credentials belong to Studio's local
+    # SecretStore; startup only needs a selected Graph in real mode.
     if not card_folder.is_dir():
         _die(f"卡片文件夹不存在: {card_folder}")
 
@@ -422,48 +275,27 @@ def main() -> None:
         except Exception as exc:
             _die(f"import_prepare 失败: {exc}")
 
-    # 4. Construct the runtime. Normal turns resolve their graph from the
-    # Workspace-backed Studio Project; legacy config is opening compatibility.
+    # 4. Construct the runtime. Studio owns all executable configuration.
     from airp.engine.context_compiler import ContextPolicy
-    from airp.engine.executor_factory import RuntimeExecutorFactory
-    from airp.engine.provider_profiles import ProviderProfileService
-    from airp.engine.runtime import MultiTurnFakeExecutor, SessionTurnRuntime
-    from airp.engine.runtime_config import RuntimeConfigStore
-    from airp.engine.session_manager import SessionManager
-    from airp.engine.secret_store import LocalSecretStore
-    from airp.engine.studio_library import ProviderProfileStore
+    from airp.host.rp.session_runtime import MultiTurnFakeExecutor, SessionTurnRuntime
+    from airp.host.rp.session_manager import SessionManager
 
-    config_store = RuntimeConfigStore(styles)
-    frozen_config = config_store.freeze().data
-    # Workspace-backed Studio definitions are authoritative for normal turns.
-    # Keep the legacy config only for the one-time opening compatibility path;
-    # turn snapshots must not freeze presets/settings from the shipped tree.
     manifest_policy = ContextPolicy(version="runtime-v1", token_budget=8000)
-    provider_profile_service = ProviderProfileService(
-        ProviderProfileStore(styles, workspace=workspace),
-        LocalSecretStore(workspace.secrets_path),
-    )
-    executor_factory = RuntimeExecutorFactory(
-        mock=mock,
-        base_url="https://api.deepseek.com",
-        provider_profile_service=provider_profile_service,
-        cwd=root,
-    )
     database_path = card_folder / ".runtime.sqlite3"
+
+    class GraphSelectionRequiredExecutor:
+        def run(self, _text, _compiled_context=None):
+            raise RuntimeError("select an active Studio Graph before starting a run")
 
     def build_runtime(session_id, *, bootstrap_legacy_history=False):
         return SessionTurnRuntime(
             database_path=database_path,
             card_folder=str(card_folder),
             projection_root=styles,
-            # The factory is authoritative for every task; retain this fallback for
-            # callers and legacy test helpers that inspect or swap runtime.executor.
-            executor=MultiTurnFakeExecutor(),
+            executor=MultiTurnFakeExecutor() if mock else GraphSelectionRequiredExecutor(),
             session_id=session_id,
             session_settings={},
             manifest_policy=manifest_policy,
-            runtime_config_store=None,
-            executor_factory=executor_factory,
             bootstrap_legacy_history=bootstrap_legacy_history,
         )
 
@@ -479,70 +311,41 @@ def main() -> None:
         default_opening=runtime.opening_turn(),
     )
 
-    # Construct the server before generated opening delivery so its Studio
-    # project selection can configure the Turn Adapter and execution graph.
+    # Construct the server before generated opening delivery so its active
+    # Studio Graph can configure the execution plan.
     from airp.server import SessionRuntimeServer
     server = SessionRuntimeServer(
         runtime,
         host="0.0.0.0",
         port=PORT,
         static_root=styles,
-        preset_root=config_store.preset_root,
-        graph_root=config_store.graph_root,
         session_manager=session_manager,
         workspace=workspace,
     )
 
-    opening_config = frozen_config
-    try:
-        selected_graph_id = server._runtime_selection().get("graph_id")
-        if selected_graph_id and server.graph_definitions is not None:
-            selected_graph = server.graph_definitions.get_graph(selected_graph_id)
-            opening_config = {
-                **frozen_config,
-                "graph_id": selected_graph_id,
-                "graph": server._legacy_graph_from_studio(selected_graph),
-            }
-    except Exception:
-        # Legacy config remains a valid opening fallback when no Studio Graph
-        # is selected or an old project references a removed Graph.
-        opening_config = frozen_config
-
-    opening_provider = None
-    if not mock:
-        opening_nodes = [
-            node for node in (opening_config.get("graph") or {}).get("nodes", [])
-            if node.get("enabled", True)
-        ]
-        opening_node = opening_nodes[-1] if opening_nodes else {}
-        profile_id = opening_node.get("provider_profile_id")
-        if profile_id:
-            opening_provider = provider_profile_service.execution_adapter(
-                profile_id,
-                opening_node.get("model", ""),
-            )
-
     # 5. Deliver opening (only if chat_log is empty — no turn 0 yet) OR rebuild
     # projection from an existing save so the browser reflects the save instead
     # of import_prepare's placeholder content.js.
-    if runtime.opening_turn() is None and runtime.active_revision() == 0:
+    if runtime.opening_turn() is None and runtime.active_revision() == 0 and (
+        mock or runtime.execution_graph_id
+    ):
         origin = _deliver_opening(
             card_folder,
             styles,
             runtime,
             mock=mock,
-            runtime_config=opening_config,
-            provider=opening_provider,
         )
         runtime.resume_projection()
         print(f"[start_runtime] 开场已交付（来源: {origin}）", file=sys.stderr)
-    else:
+    elif runtime.opening_turn() is not None or runtime.active_revision() != 0:
         runtime.resume_projection()
         print(
             f"[start_runtime] 已恢复存档 {runtime.session_id} "
             f"（revision {runtime.active_revision()}），projection 已重建",
             file=sys.stderr,
         )
+    else:
+        print("[start_runtime] 请先在 Studio 中创建并激活 Graph，然后在游戏中开始故事", file=sys.stderr)
 
     # 6. Start unified server on :8765
     server.start()

@@ -11,6 +11,7 @@ from runtime_server import SessionRuntimeServer
 
 
 SKILLS = Path(__file__).resolve().parents[1]
+STUDIO_SOURCE = SKILLS.parent / "src" / "airp" / "web" / "studio.html"
 
 
 def _write_card(card: Path) -> None:
@@ -21,7 +22,7 @@ def _write_card(card: Path) -> None:
     (card / ".card_data.json").write_text(json.dumps({"name": "Test"}), encoding="utf-8")
 
 
-def _server(tmp_path: Path) -> SessionRuntimeServer:
+def _server(tmp_path: Path, *, workspace: bool = False) -> SessionRuntimeServer:
     styles = tmp_path / "styles"
     styles.mkdir(exist_ok=True)
     shutil.copy(SKILLS / "styles" / "studio.html", styles / "studio.html")
@@ -33,7 +34,11 @@ def _server(tmp_path: Path) -> SessionRuntimeServer:
         projection_root=styles,
         executor=FakeNarrativeExecutor(content="<p>ok</p>"),
     )
-    return SessionRuntimeServer(runtime, static_root=styles)
+    return SessionRuntimeServer(
+        runtime,
+        static_root=styles,
+        workspace=tmp_path / "workspace" if workspace else None,
+    )
 
 
 def _json_request(method: str, url: str, body: dict | None = None) -> tuple[int, dict]:
@@ -96,7 +101,6 @@ def test_project_editor_normalizes_card_openings_and_preserves_runtime_inputs(tm
                 },
                 "variables": {"entrypoint": "state"},
                 "assets": [{"id": "portrait", "path": "keqing.png"}],
-                "graph_id": "writing",
                 "worldbook_ids": [book["id"]],
             },
         )
@@ -120,7 +124,7 @@ def test_project_editor_normalizes_card_openings_and_preserves_runtime_inputs(tm
         assert project["openings"][1]["is_default"] is False
         assert project["variables"] == {"entrypoint": "state"}
         assert project["assets"] == [{"id": "portrait", "path": "keqing.png"}]
-        assert project["graph_id"] == "writing"
+        assert "turn_adapter" not in project
         assert project["worldbook_ids"] == [book["id"]]
         assert "first_mes" not in project
         assert "alternate_greetings" not in project
@@ -241,8 +245,78 @@ def test_projects_view_exposes_normalized_editor_without_import_format_editors(t
     assert 'id="project-openings"' in page
     assert 'id="project-variables"' in page
     assert 'id="project-assets"' in page
-    assert 'id="project-graph"' in page
+    assert 'id="project-graph"' not in page
     assert "/v1/studio/projects" in page
     assert "alternate_greetings" not in page
     assert "example_messages" not in page
     assert "extensions JSON" not in page
+
+
+def test_runtime_graph_selection_does_not_require_a_legacy_preset(tmp_path: Path):
+    with _server(tmp_path, workspace=True) as server:
+        status, agent = _json_request(
+            "POST",
+            f"{server.base_url}/v1/studio/agents",
+            {"agent_id": "writer", "name": "Writer", "instruction": "Write"},
+        )
+        assert status == 201
+        status, graph = _json_request(
+            "POST",
+            f"{server.base_url}/v1/studio/graphs",
+            {
+                "id": "writing",
+                "name": "Writing",
+                "nodes": [{"node_id": "writer-node", "agent_id": agent["agent"]["agent_id"]}],
+                "output_node_id": "writer-node",
+            },
+        )
+        assert status == 201
+
+        status, before = _json_request(
+            "GET",
+            f"{server.base_url}/v1/session/runtime/graph",
+        )
+        assert status == 200
+        assert before["selected"]["graph_id"] is None
+
+        status, selected = _json_request(
+            "PUT",
+            f"{server.base_url}/v1/session/runtime/graph",
+            {"graph_id": graph["graph"]["id"]},
+        )
+
+        assert status == 200
+        assert selected["runtime"]["graph_id"] == "writing"
+        status, active = _json_request(
+            "GET",
+            f"{server.base_url}/v1/session/runtime/graph",
+        )
+        assert status == 200
+        assert active["selected"]["graph_id"] == "writing"
+        assert server.active_graphs.graph_id_for(server.runtime.project_id) == "writing"
+
+
+def test_packaged_studio_owns_regex_collections_and_keeps_project_editor_minimal():
+    page = STUDIO_SOURCE.read_text(encoding="utf-8")
+
+    assert 'data-studio-view="regex-collections"' in page
+    assert 'id="regex-collections-view"' in page
+    assert 'id="regex-collection-form"' in page
+    assert 'id="regex-collection-list"' in page
+    assert 'id="regex-collection-name"' in page
+    assert 'id="regex-rules"' in page
+    assert 'id="add-regex-rule"' in page
+    assert 'id="test-regex-collection"' in page
+    assert 'id="copy-regex-collection"' in page
+    assert 'id="delete-regex-collection"' in page
+    assert "/v1/studio/regex-collections" in page
+    assert "regex_collection_id" in page
+    assert 'id="agent-regex-collection"' in page
+
+    assert 'id="load-project"' not in page
+    assert 'id="project-graph"' not in page
+    assert 'id="project-adapter-id"' not in page
+    assert 'id="project-adapter-config"' not in page
+    assert 'graph_id: $("project-graph")' not in page
+    assert 'turn_adapter:' not in page
+    assert '· ${project.graph_id' not in page

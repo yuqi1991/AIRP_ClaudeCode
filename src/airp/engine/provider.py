@@ -1,64 +1,40 @@
-"""engine.provider — AIRP-owned provider adapter seam for the narrative director.
+"""Provider protocol clients used internally by Provider Profile execution.
 
-This module is the boundary between AIRP's narrative-director loop and any
-underlying model provider. It ships:
+This module is the boundary between AIRP's node runner and any underlying
+model provider. It ships:
 
 * a deterministic :class:`FakeProvider` used by the Session Turn Runtime
   Contract tests (scriptable: fixed text, tool-call sequences, retryable /
   terminal errors, abort, scripted usage);
-* a :class:`RealProviderAdapter` that spawns the Node Pi sidecar
-  (``skills/sidecar/pi_provider_sidecar.mjs``) and streams real DeepSeek
-  (``deepseek-v4-flash``) via ``@earendil-works/pi-ai`` over line-JSON stdio
-  (ADR-0010). Mock mode covers the IPC contract without network/key.
+* an :class:`OpenAICompatibleProviderAdapter` for the supported
+  ``/v1/chat/completions`` and ``/v1/responses`` protocols;
 
-The seam is intentionally narrow: domain code and the director loop depend on
-:class:`ProviderAdapter` only, never on Pi types or provider-specific error
-strings. Provider credentials are process configuration held by the adapter
-implementation / sidecar env; they NEVER travel through
+The seam is intentionally narrow: the execution layer depends on
+:class:`ProviderAdapter` only, never on provider-specific request types or
+error strings. Provider credentials are read by the profile service and
+injected only into the concrete client; they NEVER travel through
 :class:`ProviderRequest`, :class:`ProviderDelta`, :class:`ProviderResult`,
 :class:`UsageRecord` or any event payload (see spec Implementation Decision 36).
 """
 
 import hashlib
 import json
-import os
-import queue
 import re
-import subprocess
 import threading
 import time
-import uuid
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Iterator
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
-
-
-_runtime_provider_overrides: dict[str, dict[str, str]] = {}
-_runtime_provider_lock = threading.Lock()
-
-
-def set_runtime_provider_override(provider: str, *, api_key: str | None = None) -> None:
-    """Keep a UI-supplied provider key in process memory only."""
-    with _runtime_provider_lock:
-        if api_key:
-            _runtime_provider_overrides[provider] = {"api_key": api_key}
-
-
-def runtime_provider_api_key(provider: str) -> str | None:
-    with _runtime_provider_lock:
-        value = _runtime_provider_overrides.get(provider, {}).get("api_key")
-    return value or None
 
 
 # ═══ Abort signaling ═══
 
 
 class AbortSignal:
-    """Cooperative cancel flag shared between the runtime and a running director.
+    """Cooperative cancel flag shared between the runtime and a running node.
 
-    ``stop(task_id)`` calls :meth:`cancel`; the director loop and the provider
+    ``stop(task_id)`` calls :meth:`cancel`; the node runner and the provider
     stream poll :attr:`cancelled` / block on :meth:`wait`. This is the
     ``AbortSignal`` analogue from spec Implementation Decision 25 — stop uses
     abort semantics, not steering.
@@ -163,7 +139,7 @@ class UsageRecord:
 
 @dataclass(frozen=True)
 class CostEstimate:
-    """Pi-catalog-rate cost estimate. Explicitly NOT provider billing.
+    """Local rate-table estimate. Explicitly NOT provider billing.
 
     Carries ``rate_version`` so consumers never confuse it with a real invoice
     (spec Implementation Decision 32).
@@ -194,7 +170,7 @@ class ProviderResult:
 
 
 class ProviderAdapter:
-    """Interface every provider (fake or the future real Node/Pi bridge) satisfies."""
+    """Interface every provider adapter satisfies."""
 
     def stream(
         self, request: ProviderRequest, signal: AbortSignal
@@ -657,423 +633,3 @@ class FakeProvider(ProviderAdapter):
                 stop_reason="stop",
                 cost_estimate=self._rates,
             )
-
-
-def _default_sidecar_script() -> Path:
-    """Resolve the sidecar through explicit resource or repository seams."""
-    from airp.resources import sidecar_script
-
-    return sidecar_script()
-
-
-def _default_repo_root() -> Path:
-    """Resolve the provider working directory without assuming ``skills``."""
-    from airp.resources import repository_root
-
-    return repository_root()
-
-
-class RealProviderAdapter(ProviderAdapter):
-    """Node/Pi sidecar bridge for real DeepSeek (``deepseek-v4-flash``).
-
-    Spawns the configured Pi sidecar and speaks line-delimited
-    JSON over stdio (see ADR-0010). Pi types never leave the Node process;
-    this adapter only yields AIRP :class:`ProviderDelta` /
-    :class:`ProviderResult` and raises :class:`ProviderError` /
-    :class:`ProviderAborted`.
-
-    Credentials: the sidecar reads ``DEEPSEEK_API_KEY`` from a minimal,
-    allowlisted child environment. Python NEVER puts the key into IPC request
-    bodies, metadata, events, manifests, or logs. ``credentials`` is accepted
-    for API symmetry with :class:`FakeProvider` but is **not** forwarded into
-    the sidecar env or request payloads.
-    """
-
-    DEFAULT_MODEL = "deepseek-v4-flash"
-    DEFAULT_BASE_URL = "https://api.deepseek.com"
-    DEFAULT_PROVIDER = "deepseek"
-    RATE_VERSION = "pi-catalog-0.82.1"
-    DEFAULT_REQUEST_TIMEOUT = 120.0
-
-    def __init__(
-        self,
-        sidecar_command=None,
-        credentials=None,
-        *,
-        model: str | None = None,
-        base_url: str | None = None,
-        provider: str | None = None,
-        mock: bool | None = None,
-        node_binary: str | None = None,
-        cwd: str | Path | None = None,
-        rates: CostEstimate | None = None,
-        request_timeout: float | None = None,
-        runtime_api_key: str | None = None,
-    ) -> None:
-        self._sidecar_command = list(sidecar_command) if sidecar_command else None
-        # Accepted for symmetry with FakeProvider; NEVER forwarded to the
-        # sidecar, request bodies, or any durable surface.
-        self._credentials = credentials or {}
-        # Volatile UI secret: only copied into this call's sidecar environment.
-        self._runtime_api_key = runtime_api_key or None
-        self._model = model or self.DEFAULT_MODEL
-        self._base_url = base_url or self.DEFAULT_BASE_URL
-        self._provider = provider or self.DEFAULT_PROVIDER
-        if mock is None:
-            mock = os.environ.get("PI_SIDECAR_MOCK") == "1"
-        self._mock = bool(mock)
-        self._node_binary = node_binary or os.environ.get("AIRP_NODE_BINARY") or "node"
-        self._cwd = Path(cwd) if cwd else _default_repo_root()
-        self._rates = rates or CostEstimate(
-            amount=0.0, currency="USD", rate_version=self.RATE_VERSION
-        )
-        self._request_timeout = (
-            self.DEFAULT_REQUEST_TIMEOUT if request_timeout is None else request_timeout
-        )
-        if self._request_timeout <= 0:
-            raise ValueError("request_timeout must be positive")
-
-    def model_id(self, role: str) -> str:
-        return self._model
-
-    def stream(self, request: ProviderRequest, signal: AbortSignal):
-        request_id = f"req_{uuid.uuid4().hex[:16]}"
-        command = self._build_command()
-        env = self._spawn_env()
-        try:
-            proc = subprocess.Popen(
-                command,
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                cwd=str(self._cwd),
-                env=env,
-                text=True,
-                bufsize=1,
-            )
-        except OSError as exc:
-            raise ProviderError(
-                f"failed to spawn provider sidecar: {exc}",
-                "terminal_internal",
-                False,
-            ) from exc
-
-        line_queue: queue.Queue = queue.Queue()
-        stderr_chunks: list[str] = []
-
-        def _reader():
-            try:
-                assert proc.stdout is not None
-                for line in proc.stdout:
-                    line_queue.put(("line", line))
-            except Exception as exc:  # noqa: BLE001 — surface via queue
-                line_queue.put(("reader_error", str(exc)))
-            finally:
-                line_queue.put(("eof", None))
-
-        def _stderr_reader():
-            try:
-                assert proc.stderr is not None
-                for chunk in proc.stderr:
-                    # Never log env; stderr is only attached to ProviderError
-                    # messages for crash diagnosis.
-                    stderr_chunks.append(chunk)
-            except Exception:
-                pass
-
-        stdout_thread = threading.Thread(target=_reader, name="pi-sidecar-stdout", daemon=True)
-        stderr_thread = threading.Thread(
-            target=_stderr_reader, name="pi-sidecar-stderr", daemon=True
-        )
-        stdout_thread.start()
-        stderr_thread.start()
-
-        abort_sent = False
-
-        def _send_abort():
-            nonlocal abort_sent
-            if abort_sent:
-                return
-            abort_sent = True
-            try:
-                if proc.stdin and proc.poll() is None:
-                    proc.stdin.write(
-                        json.dumps({"type": "abort", "request_id": request_id}) + "\n"
-                    )
-                    proc.stdin.flush()
-            except (BrokenPipeError, OSError, ValueError):
-                pass
-
-        abort_watcher_stop = threading.Event()
-
-        def _watch_abort():
-            while not abort_watcher_stop.is_set():
-                if signal.cancelled:
-                    _send_abort()
-                    return
-                if signal.wait(timeout=0.05):
-                    _send_abort()
-                    return
-
-        abort_thread = threading.Thread(
-            target=_watch_abort, name="pi-sidecar-abort", daemon=True
-        )
-        abort_thread.start()
-
-        try:
-            if signal.cancelled:
-                _send_abort()
-                raise ProviderAborted("aborted before stream")
-
-            payload = {
-                "type": "stream",
-                "request_id": request_id,
-                "messages": list(request.messages or []),
-                "tools": list(request.tools or []),
-                "model": request.model or self._model,
-                # Correlation only — never secrets. base_url is non-secret config.
-                "metadata": {
-                    **dict(request.metadata or {}),
-                    "base_url": self._base_url,
-                    "provider": self._provider,
-                },
-            }
-            # Defence in depth: strip any accidental credential-shaped keys.
-            payload["metadata"] = _strip_secret_keys(payload["metadata"])
-
-            try:
-                assert proc.stdin is not None
-                proc.stdin.write(json.dumps(payload, ensure_ascii=False) + "\n")
-                proc.stdin.flush()
-            except (BrokenPipeError, OSError) as exc:
-                stderr_text = _redact_sidecar_stderr("".join(stderr_chunks).strip())
-                raise ProviderError(
-                    f"sidecar stdin write failed: {exc}"
-                    + (f"; stderr={stderr_text[:500]}" if stderr_text else ""),
-                    "terminal_internal",
-                    False,
-                ) from exc
-
-            deadline = time.monotonic() + self._request_timeout
-            while True:
-                if signal.cancelled and not abort_sent:
-                    _send_abort()
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    _terminate_process(proc)
-                    raise ProviderError(
-                        "provider request timed out", "provider_unavailable", True
-                    )
-                try:
-                    kind, data = line_queue.get(timeout=min(0.1, remaining))
-                except queue.Empty:
-                    if proc.poll() is not None:
-                        # Process exited; drain remaining lines briefly.
-                        try:
-                            kind, data = line_queue.get(timeout=0.2)
-                        except queue.Empty:
-                            stderr_text = _redact_sidecar_stderr("".join(stderr_chunks).strip())
-                            raise ProviderError(
-                                "sidecar exited unexpectedly"
-                                + (f"; stderr={stderr_text[:500]}" if stderr_text else ""),
-                                "terminal_internal",
-                                False,
-                            )
-                    else:
-                        continue
-
-                if kind == "eof":
-                    if proc.poll() is None:
-                        # stdout closed while process still alive — treat as crash.
-                        try:
-                            proc.kill()
-                        except OSError:
-                            pass
-                    stderr_text = _redact_sidecar_stderr("".join(stderr_chunks).strip())
-                    if signal.cancelled:
-                        raise ProviderAborted("aborted (sidecar eof)")
-                    raise ProviderError(
-                        "sidecar stdout closed without terminal event"
-                        + (f"; stderr={stderr_text[:500]}" if stderr_text else ""),
-                        "terminal_internal",
-                        False,
-                    )
-                if kind == "reader_error":
-                    raise ProviderError(
-                        f"sidecar stdout reader failed: {data}",
-                        "terminal_internal",
-                        False,
-                    )
-
-                line = (data or "").strip()
-                if not line:
-                    continue
-                try:
-                    event = json.loads(line)
-                except json.JSONDecodeError as exc:
-                    raise ProviderError(
-                        f"sidecar emitted non-json line: {line[:200]!r}",
-                        "terminal_internal",
-                        False,
-                    ) from exc
-
-                etype = event.get("type")
-                if etype == "delta":
-                    text = event.get("text")
-                    if text:
-                        yield ProviderDelta(text=text)
-                elif etype == "tool_call":
-                    yield ProviderDelta(
-                        tool_call={
-                            "id": event.get("id") or _new_call_id(),
-                            "name": event.get("name") or "",
-                            "args": event.get("args") or {},
-                        }
-                    )
-                elif etype == "result":
-                    usage_raw = event.get("usage") or {}
-                    usage = UsageRecord(
-                        prompt_tokens=int(usage_raw.get("prompt_tokens") or 0),
-                        completion_tokens=int(usage_raw.get("completion_tokens") or 0),
-                        total_tokens=int(usage_raw.get("total_tokens") or 0),
-                        stop_reason=str(event.get("stop_reason") or "stop"),
-                    )
-                    cost_raw = event.get("cost_estimate") or {}
-                    cost = CostEstimate(
-                        amount=float(cost_raw.get("amount") or 0.0),
-                        currency=str(cost_raw.get("currency") or "USD"),
-                        rate_version=str(
-                            cost_raw.get("rate_version") or self._rates.rate_version
-                        ),
-                    )
-                    yield ProviderResult(
-                        usage=usage,
-                        stop_reason=str(event.get("stop_reason") or "stop"),
-                        cost_estimate=cost,
-                    )
-                    return
-                elif etype == "error":
-                    category = str(event.get("category") or "terminal_internal")
-                    # Normalize to the stable category set used by FakeProvider.
-                    if category not in {
-                        "provider_unavailable",
-                        "provider_rejected",
-                        "terminal_internal",
-                    }:
-                        category = "terminal_internal"
-                    raise ProviderError(
-                        str(event.get("message") or "provider error"),
-                        category,
-                        bool(event.get("retryable", False)),
-                    )
-                elif etype == "aborted":
-                    raise ProviderAborted("aborted by signal")
-                else:
-                    raise ProviderError(
-                        f"unknown sidecar event type: {etype!r}",
-                        "terminal_internal",
-                        False,
-                    )
-        finally:
-            abort_watcher_stop.set()
-            try:
-                if proc.stdin and not proc.stdin.closed:
-                    proc.stdin.close()
-            except OSError:
-                pass
-            if proc.poll() is None:
-                _terminate_process(proc)
-
-    def _build_command(self) -> list[str]:
-        if self._sidecar_command:
-            return list(self._sidecar_command)
-        script = _default_sidecar_script()
-        cmd = [self._node_binary, str(script)]
-        if self._mock:
-            cmd.append("--mock")
-        return cmd
-
-    def _spawn_env(self) -> dict:
-        # The child needs only its provider credential, Node resolution/config,
-        # and platform loader settings. Deliberately do not inherit unrelated
-        # parent-process secrets such as home-directory, CI, or service tokens.
-        allowed = {
-            "DEEPSEEK_API_KEY",
-            "NODE_OPTIONS",
-            "NODE_EXTRA_CA_CERTS",
-            "NODE_NO_WARNINGS",
-            "SSL_CERT_FILE",
-            "SSL_CERT_DIR",
-            "PATH",
-            "SYSTEMROOT",
-            "WINDIR",
-            "COMSPEC",
-        }
-        env = {key: os.environ[key] for key in allowed if key in os.environ}
-        if self._runtime_api_key:
-            env["DEEPSEEK_API_KEY"] = self._runtime_api_key
-        if self._mock:
-            env["PI_SIDECAR_MOCK"] = "1"
-        # Ensure node can resolve the root node_modules even if cwd drifts.
-        inherited_node_path = os.environ.get("NODE_PATH", "")
-        root_modules = str(self._cwd / "node_modules")
-        env["NODE_PATH"] = (
-            root_modules
-            if not inherited_node_path
-            else f"{root_modules}{os.pathsep}{inherited_node_path}"
-        )
-        return env
-
-
-def _terminate_process(proc: subprocess.Popen) -> None:
-    """Stop a sidecar promptly after a deadline or stream failure."""
-    if proc.poll() is not None:
-        return
-    try:
-        proc.terminate()
-        proc.wait(timeout=1.0)
-    except (OSError, subprocess.TimeoutExpired):
-        try:
-            proc.kill()
-            proc.wait(timeout=1.0)
-        except (OSError, subprocess.TimeoutExpired):
-            pass
-
-
-_CREDENTIAL_VALUE_PATTERNS = (
-    re.compile(r"(?i)(authorization\s*[:=]\s*bearer\s+)([^\s,;]+)"),
-    re.compile(r"(?i)((?:api[_ -]?key|token|secret|password)\s*[:=]\s*)([^\s,;]+)"),
-)
-
-
-def _redact_sidecar_stderr(stderr: str) -> str:
-    """Remove likely credential values before attaching sidecar stderr to errors."""
-    for pattern in _CREDENTIAL_VALUE_PATTERNS:
-        stderr = pattern.sub(r"\1[REDACTED]", stderr)
-    return stderr
-
-
-_SECRET_KEY_NAMES = {
-    "api_key",
-    "apikey",
-    "secret",
-    "token",
-    "password",
-    "authorization",
-    "credential",
-    "credentials",
-    "deepseek_api_key",
-}
-
-
-def _strip_secret_keys(value):
-    """Recursively drop credential-shaped keys from metadata before IPC."""
-    if isinstance(value, dict):
-        return {
-            k: _strip_secret_keys(v)
-            for k, v in value.items()
-            if not (isinstance(k, str) and k.lower() in _SECRET_KEY_NAMES)
-        }
-    if isinstance(value, list):
-        return [_strip_secret_keys(v) for v in value]
-    return value

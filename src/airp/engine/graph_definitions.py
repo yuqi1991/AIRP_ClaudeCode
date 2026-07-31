@@ -59,23 +59,16 @@ class GraphDefinitionStore:
         *,
         library_root: str | Path | None = None,
         agent_store=None,
-        project_root: str | Path | None = None,
         workspace=None,
     ) -> None:
         self.static_root = Path(static_root).resolve()
         workspace_graphs_root = getattr(workspace, "graphs_root", None)
-        workspace_projects_root = getattr(workspace, "projects_root", None)
         self.library_root = (
             Path(library_root).resolve()
             if library_root is not None
             else (Path(workspace_graphs_root).resolve() if workspace_graphs_root else self.static_root / "studio" / "graphs")
         )
         self.agent_store = agent_store
-        self.project_root = (
-            Path(project_root).resolve()
-            if project_root is not None
-            else (Path(workspace_projects_root).resolve() if workspace_projects_root else self.static_root / "studio" / "projects")
-        )
         self._lock = threading.RLock()
 
     def list_graphs(self) -> list[dict[str, Any]]:
@@ -165,14 +158,6 @@ class GraphDefinitionStore:
                     "graph_not_found",
                     f"Graph Definition {graph_id!r} was not found",
                     status=404,
-                )
-            references = self._project_references(graph_id)
-            if references:
-                raise GraphDefinitionError(
-                    "graph_in_use",
-                    f"Graph Definition {graph_id!r} is still referenced",
-                    status=409,
-                    references=references,
                 )
             path.unlink()
 
@@ -294,25 +279,6 @@ class GraphDefinitionStore:
             code = getattr(exc, "code", "agent_not_found")
             status = getattr(exc, "status", 404)
             raise GraphDefinitionError(code, str(exc), status=status) from exc
-
-    def _project_references(self, graph_id: str) -> list[dict[str, str]]:
-        references: list[dict[str, str]] = []
-        if not self.project_root.is_dir():
-            return references
-        for path in sorted(self.project_root.glob("*.json")):
-            try:
-                raw = json.loads(path.read_text(encoding="utf-8"))
-            except (OSError, UnicodeDecodeError, json.JSONDecodeError):
-                continue
-            if isinstance(raw, dict) and raw.get("graph_id") == graph_id:
-                references.append(
-                    {
-                        "type": "project",
-                        "id": path.stem,
-                        "name": str(raw.get("name") or path.stem),
-                    }
-                )
-        return references
 
     def _copy_name(self, name: str) -> str:
         names = {graph["name"].casefold() for graph in self.list_graphs()}

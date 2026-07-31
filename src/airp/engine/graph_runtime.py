@@ -13,6 +13,7 @@ import inspect
 import json
 import time
 from dataclasses import dataclass, field
+from collections.abc import Callable
 from typing import Any, Mapping, Protocol
 
 
@@ -176,13 +177,28 @@ class NodeResult:
 
 
 @dataclass(frozen=True)
+class NodeExecutionContext:
+    """Host capabilities supplied for one Graph Run.
+
+    Graph Runtime does not know what a tool means or where it is persisted.
+    The host may provide a node-aware dispatcher so each Agent Definition's
+    allowlist is enforced without making the provider runner depend on RP
+    Session or Worldbook modules.
+    """
+
+    tool_handler: Callable[["GraphNodePlan", str, dict[str, Any]], Any] | None = None
+    tool_registry: Any | None = None
+    skill_catalog: Mapping[str, Any] | None = None
+    abort_signal: Any | None = None
+
+
+@dataclass(frozen=True)
 class ResolvedAgent:
     """Definition data needed by a single planned node."""
 
     agent_id: str
     name: str
     instruction: str
-    prompt_preset_id: str | None
     provider_profile_id: str | None
     model_id: str | None
     generation: Mapping[str, Any]
@@ -191,6 +207,7 @@ class ResolvedAgent:
     prompt: tuple[Mapping[str, Any], ...]
     prompt_provenance: tuple[Mapping[str, Any], ...]
     effective_config: Mapping[str, Any]
+    regex_collection_id: str | None = None
 
     @classmethod
     def from_definition(cls, definition: Mapping[str, Any], preview: Mapping[str, Any] | None = None) -> "ResolvedAgent":
@@ -205,6 +222,11 @@ class ResolvedAgent:
                 "tool_allowlist": list(definition.get("tool_allowlist") or []),
                 "stream": True,
             }
+        else:
+            effective = _copy(dict(effective))
+        regex_collection = definition.get("regex_collection")
+        if isinstance(regex_collection, Mapping):
+            effective["regex_collection"] = _copy(dict(regex_collection))
         raw_prompt = preview.get("messages") if isinstance(preview, Mapping) else None
         if not isinstance(raw_prompt, list):
             raw_prompt = definition.get("prompt", definition.get("compiled_prompt", definition.get("messages", [])))
@@ -222,7 +244,6 @@ class ResolvedAgent:
             agent_id=str(definition.get("agent_id", definition.get("id")) or ""),
             name=str(definition.get("name") or definition.get("agent_id") or "Agent"),
             instruction=str(definition.get("instruction") or ""),
-            prompt_preset_id=definition.get("prompt_preset_id"),
             provider_profile_id=definition.get("provider_profile_id"),
             model_id=definition.get("model_id"),
             generation=_copy(definition.get("generation") or {}),
@@ -231,6 +252,7 @@ class ResolvedAgent:
             prompt=tuple(_redact_secrets(item) for item in raw_prompt if isinstance(item, Mapping)),
             prompt_provenance=tuple(_redact_secrets(item) for item in raw_provenance if isinstance(item, Mapping)),
             effective_config=_redact_secrets(dict(effective)),
+            regex_collection_id=definition.get("regex_collection_id"),
         )
 
     @classmethod
@@ -239,7 +261,6 @@ class ResolvedAgent:
             agent_id=str(payload.get("agent_id") or ""),
             name=str(payload.get("name") or payload.get("agent_id") or "Agent"),
             instruction=str(payload.get("instruction") or ""),
-            prompt_preset_id=payload.get("prompt_preset_id"),
             provider_profile_id=payload.get("provider_profile_id"),
             model_id=payload.get("model_id"),
             generation=_copy(payload.get("generation") or {}),
@@ -248,6 +269,7 @@ class ResolvedAgent:
             prompt=tuple(_redact_secrets(item) for item in payload.get("prompt") or []),
             prompt_provenance=tuple(_redact_secrets(item) for item in payload.get("prompt_provenance") or []),
             effective_config=_redact_secrets(payload.get("effective_config") or {}),
+            regex_collection_id=payload.get("regex_collection_id"),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -264,10 +286,8 @@ class ResolvedAgent:
             "prompt_provenance": [_copy(item) for item in self.prompt_provenance],
             "effective_config": _copy(dict(self.effective_config)),
         }
-        if self.prompt_preset_id is not None:
-            # Keep explicitly authored legacy plans replayable without adding
-            # a null preset field to new instruction-only plans.
-            payload["prompt_preset_id"] = self.prompt_preset_id
+        if self.regex_collection_id is not None:
+            payload["regex_collection_id"] = self.regex_collection_id
         return payload
 
 
@@ -399,11 +419,13 @@ class ExecutionPlanCompiler:
         graph_store=None,
         project_store=None,
         worldbook_store=None,
+        regex_collection_store=None,
     ) -> None:
         self.agent_store = agent_store
         self.graph_store = graph_store
         self.project_store = project_store
         self.worldbook_store = worldbook_store
+        self.regex_collection_store = regex_collection_store
 
     def compile(
         self,
@@ -419,7 +441,9 @@ class ExecutionPlanCompiler:
     ) -> ExecutionPlan:
         project = self._resolve_project(project, project_id)
         resolved_project_id = str(project.get("id") or project.get("project_id") or project_id or "project")
-        graph = self._resolve_graph(graph, graph_id or project.get("graph_id"))
+        # Graph activation is runtime state, not Project content. Callers must
+        # explicitly provide the selected Graph (or its id) for every run.
+        graph = self._resolve_graph(graph, graph_id)
         resolved_graph_id = str(graph.get("id") or graph.get("graph_id") or graph_id or "graph")
         agents_by_id = self._resolve_agents(agents)
         books = self._resolve_worldbooks(worldbooks, project)
@@ -446,6 +470,7 @@ class ExecutionPlanCompiler:
                 definition = _copy(self.agent_store.get_agent(agent_id))
             if definition is None:
                 raise ValueError(f"Agent Definition {agent_id!r} was not found")
+            definition = self._freeze_regex_collection(definition)
             preview = self._preview_agent(definition, player_input, context=context)
             resolved_agent = self._apply_node_overrides(
                 ResolvedAgent.from_definition(definition, preview),
@@ -528,7 +553,6 @@ class ExecutionPlanCompiler:
             agent_id=agent.agent_id,
             name=agent.name,
             instruction=agent.instruction,
-            prompt_preset_id=agent.prompt_preset_id,
             provider_profile_id=provider_profile_id,
             model_id=model_id,
             generation=generation,
@@ -537,14 +561,36 @@ class ExecutionPlanCompiler:
             prompt=agent.prompt,
             prompt_provenance=agent.prompt_provenance,
             effective_config=effective,
+            regex_collection_id=agent.regex_collection_id,
         )
+
+    def _freeze_regex_collection(self, definition: Mapping[str, Any]) -> dict[str, Any]:
+        snapshot = _copy(dict(definition))
+        collection_id = snapshot.get("regex_collection_id")
+        if not collection_id:
+            return snapshot
+        if self.regex_collection_store is None or not hasattr(self.regex_collection_store, "get_collection"):
+            raise ValueError(
+                f"Regex Collection store is required for Agent Definition {snapshot.get('agent_id') or snapshot.get('id')!r}"
+            )
+        try:
+            collection = self.regex_collection_store.get_collection(collection_id)
+        except Exception as exc:
+            raise ValueError(
+                f"Regex Collection {collection_id!r} for Agent Definition "
+                f"{snapshot.get('agent_id') or snapshot.get('id')!r} was not found"
+            ) from exc
+        if not isinstance(collection, Mapping):
+            raise ValueError(f"Regex Collection {collection_id!r} must be an object")
+        snapshot["regex_collection"] = _copy(dict(collection))
+        return snapshot
 
     def _resolve_project(self, project, project_id):
         if isinstance(project, Mapping):
             return _copy(dict(project))
         resolved_id = project if isinstance(project, str) else project_id
         if self.project_store is None or not resolved_id:
-            return {"id": str(resolved_id or "project"), "graph_id": None, "worldbook_ids": []}
+            return {"id": str(resolved_id or "project"), "worldbook_ids": []}
         return _copy(self.project_store.get_project(resolved_id))
 
     def _resolve_graph(self, graph, graph_id):
@@ -593,9 +639,9 @@ class ExecutionPlanCompiler:
                 if isinstance(preview, Mapping):
                     return _copy(dict(preview))
             except Exception:
-                # A definition snapshot remains usable even when its optional
-                # preset source is unavailable; the frozen fallback still records
-                # instruction/configuration/tools for the run.
+                # A definition snapshot remains usable when preview expansion
+                # is unavailable; the frozen fallback still records its
+                # instruction, configuration, and tools for the run.
                 pass
         return {}
 
@@ -603,7 +649,14 @@ class ExecutionPlanCompiler:
 class NodeRunner(Protocol):
     """Provider-independent execution seam for one resolved node."""
 
-    def run(self, node: GraphNodePlan, input_artifact: AgentArtifact) -> NodeResult:
+    def run(
+        self,
+        node: GraphNodePlan,
+        input_artifact: AgentArtifact,
+        *,
+        observer: Any = None,
+        execution_context: NodeExecutionContext | None = None,
+    ) -> NodeResult:
         ...
 
 
@@ -652,6 +705,7 @@ class GraphRuntime:
         initial_artifact: AgentArtifact | None = None,
         *,
         observer: Any = None,
+        execution_context: NodeExecutionContext | None = None,
     ) -> GraphRunResult:
         current = initial_artifact or AgentArtifact.input(plan.player_input)
         outcomes: list[NodeRunOutcome] = []
@@ -661,7 +715,7 @@ class GraphRuntime:
                 continue
             _notify(observer, "node_started", node, current)
             try:
-                result = self._run_node(node, current, observer)
+                result = self._run_node(node, current, observer, execution_context)
             except Exception as exc:  # Runner failures are Graph failures.
                 result = NodeResult.failed(str(exc))
             if isinstance(result, AgentArtifact):
@@ -691,17 +745,24 @@ class GraphRuntime:
         _notify(observer, "graph_finished", graph_result)
         return graph_result
 
-    def _run_node(self, node: GraphNodePlan, input_artifact: AgentArtifact, observer: Any) -> NodeResult:
+    def _run_node(
+        self,
+        node: GraphNodePlan,
+        input_artifact: AgentArtifact,
+        observer: Any,
+        execution_context: NodeExecutionContext | None,
+    ) -> NodeResult:
         runner = self.node_runner.run
-        if observer is None:
-            return runner(node, input_artifact)
         try:
             parameters = inspect.signature(runner).parameters
         except (TypeError, ValueError):
             parameters = {}
+        kwargs = {}
         if "observer" in parameters:
-            return runner(node, input_artifact, observer=observer)
-        return runner(node, input_artifact)
+            kwargs["observer"] = observer
+        if "execution_context" in parameters:
+            kwargs["execution_context"] = execution_context
+        return runner(node, input_artifact, **kwargs)
 
 
 class GraphExecutionError(RuntimeError):
@@ -711,36 +772,3 @@ class GraphExecutionError(RuntimeError):
         self.result = result
         detail = result.failed_node_id or "unknown node"
         super().__init__(f"Graph Run failed at {detail}")
-
-
-class GraphRuntimeExecutor:
-    """Compatibility executor that delegates output interpretation to an adapter.
-
-    New callers should compose :class:`AgentFrameworkExecutor` with a selected
-    adapter directly. This name remains for legacy executor-factory callers,
-    but Graph Runtime itself no longer knows about RP parsing or output tags.
-    """
-
-    def __init__(
-        self,
-        graph_runtime: GraphRuntime,
-        plan: ExecutionPlan,
-        *,
-        adapter=None,
-        observer: Any = None,
-    ):
-        if adapter is None or not callable(getattr(adapter, "interpret", None)):
-            raise TypeError("GraphRuntimeExecutor requires an explicit TurnAdapter")
-        self.graph_runtime = graph_runtime
-        self.plan = plan
-        self.adapter = adapter
-        self.observer = observer
-
-    def run(self, text: str, compiled_context=None):
-        del compiled_context
-        from airp.engine.agent_framework import AdaptedGraphExecutor, AgentFrameworkExecutor
-
-        return AdaptedGraphExecutor(
-            AgentFrameworkExecutor(self.graph_runtime, self.plan, observer=self.observer),
-            self.adapter,
-        ).run(text)

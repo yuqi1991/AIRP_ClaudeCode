@@ -14,7 +14,7 @@ if str(SRC) not in sys.path:
 from airp.bootstrap import RepositoryLayout, bootstrap_legacy_runtime  # noqa: E402
 from airp.launcher import load_legacy_launcher  # noqa: E402
 from airp.import_prepare import prepare_card  # noqa: E402
-from airp.resources import packaged_web_root, sidecar_script  # noqa: E402
+from airp.resources import packaged_web_root  # noqa: E402
 
 
 def test_repository_layout_points_at_src_and_skills() -> None:
@@ -62,5 +62,3 @@ def test_packaged_import_prepare_accepts_explicit_projection_root(tmp_path) -> N
 
 def test_packaged_runtime_resources_are_available() -> None:
     assert (packaged_web_root() / "index.html").is_file()
-    assert sidecar_script().name == "pi_provider_sidecar.mjs"
-    assert sidecar_script().is_file()

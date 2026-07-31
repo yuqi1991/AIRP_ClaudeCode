@@ -16,15 +16,13 @@ import threading
 import time
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
+from airp.engine.capabilities import provider_parameters
 from airp.engine.macros import available_macro_roots, build_context, expand_template
-from airp.engine.tools import TOOL_SCHEMAS
 
 
 AGENT_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
-PROMPT_PRESET_ID_RE = AGENT_ID_RE
-
 GENERATION_FIELDS = (
     "temperature",
     "max_output_tokens",
@@ -102,8 +100,8 @@ class AgentDefinitionStore:
         *,
         library_root: str | Path | None = None,
         graph_root: str | Path | None = None,
-        preset_root: str | Path | None = None,
         workspace=None,
+        tool_schema_provider: Mapping[str, Mapping[str, Any]] | None = None,
     ) -> None:
         self.static_root = Path(static_root).resolve()
         workspace_agents_root = getattr(workspace, "agents_root", None)
@@ -120,13 +118,13 @@ class AgentDefinitionStore:
             self.static_root / "graphs",
         ]
         self._graph_roots = tuple(dict.fromkeys(root for root in graph_roots if root is not None))
-        preset_roots = [
-            Path(preset_root).resolve() if preset_root is not None else None,
-            self.static_root / "studio" / "prompt_presets",
-            self.static_root / "prompt_presets",
-            self.static_root / "presets",
-        ]
-        self._preset_roots = tuple(dict.fromkeys(root for root in preset_roots if root is not None))
+        # Tool schemas are supplied by the host composition root. The engine
+        # stores only the allowlist and falls back to a generic preview.
+        self._tool_schema_provider = {
+            str(name): copy.deepcopy(dict(schema))
+            for name, schema in (tool_schema_provider or {}).items()
+            if isinstance(name, str) and isinstance(schema, Mapping)
+        }
         self._lock = threading.RLock()
 
     # ── Definition lifecycle ──────────────────────────────────────────
@@ -234,60 +232,11 @@ class AgentDefinitionStore:
             copied.pop("updated_at", None)
             return self.create_agent(copied)
 
-    # ── Prompt presets and preview ────────────────────────────────────
-
-    def list_prompt_presets(self) -> list[dict[str, Any]]:
-        with self._lock:
-            presets: list[dict[str, Any]] = []
-            seen: set[str] = set()
-            for root in self._preset_roots:
-                if not root.is_dir():
-                    continue
-                for path in sorted(root.glob("*.json")):
-                    if path.stem in seen:
-                        continue
-                    try:
-                        raw = self._read_json(path)
-                    except AgentDefinitionError:
-                        continue
-                    preset_id = raw.get("id") if isinstance(raw, dict) else path.stem
-                    if not isinstance(preset_id, str) or not PROMPT_PRESET_ID_RE.fullmatch(preset_id):
-                        continue
-                    seen.add(preset_id)
-                    presets.append(
-                        {
-                            "id": preset_id,
-                            "name": str(raw.get("name") or preset_id),
-                            "version": str(raw.get("version") or "1"),
-                        }
-                    )
-            if "default" not in seen:
-                presets.append({"id": "default", "name": "Default", "version": "1"})
-            return sorted(presets, key=lambda item: (item["name"].casefold(), item["id"]))
-
-    def get_prompt_preset(self, preset_id: str) -> dict[str, Any]:
-        self._validate_preset_id(preset_id)
-        with self._lock:
-            path = self._preset_path(preset_id)
-            if path is None:
-                # A missing preset should not make a saved Agent impossible to
-                # inspect. Preview records the missing source explicitly.
-                return {"id": preset_id, "version": "missing", "entries": [], "available": False}
-            raw = self._read_json(path)
-            return self._normalize_preset(raw, preset_id, path)
-
     def preview_agent(self, agent_id: str, payload: Any = None) -> dict[str, Any]:
         if payload is not None and not isinstance(payload, dict):
-            raise AgentDefinitionError("invalid_prompt_preview", "preview payload must be an object")
+            raise AgentDefinitionError("invalid_agent_preview", "preview payload must be an object")
         agent = self.get_agent(agent_id)
-        request = payload or {}
-        # Prompt presets are retained only as a read-compatible path for
-        # definitions created by older versions. New definitions are
-        # instruction-only and never acquire a default preset.
-        preset = None
-        if agent.get("prompt_preset_id"):
-            preset = self.get_prompt_preset(agent["prompt_preset_id"])
-        return self._compile_preview(agent, preset, request)
+        return self._compile_preview(agent, payload or {})
 
     # ── Normalization ─────────────────────────────────────────────────
 
@@ -307,14 +256,6 @@ class AgentDefinitionStore:
         if not isinstance(instruction, str):
             raise AgentDefinitionError("invalid_agent_definition", "instruction must be a string")
 
-        preset_id = None
-        for key in ("prompt_preset_id", "promptPresetId", "preset_id"):
-            if key in payload:
-                preset_id = payload[key]
-                if preset_id not in (None, ""):
-                    self._validate_preset_id(preset_id)
-                break
-
         provider_payload = payload
         default_provider = payload.get("default_provider")
         if isinstance(default_provider, dict):
@@ -332,6 +273,11 @@ class AgentDefinitionStore:
             "default_model_id",
             "default_model",
             "model",
+        )
+        regex_collection_id = self._first_string(
+            payload,
+            "regex_collection_id",
+            "regex_collection",
         )
 
         generation = payload.get("generation")
@@ -387,22 +333,18 @@ class AgentDefinitionStore:
             "instruction": instruction,
             "provider_profile_id": provider_profile_id,
             "model_id": model_id,
+            "regex_collection_id": regex_collection_id,
             "generation": copy.deepcopy(generation),
             "advanced": copy.deepcopy(advanced),
             "tool_allowlist": normalized_tools,
             "created_at": self._timestamp(payload.get("created_at")),
             "updated_at": self._timestamp(payload.get("updated_at")),
         }
-        if preset_id is not None:
-            # Compatibility only: Studio-created definitions omit this field.
-            normalized["prompt_preset_id"] = preset_id
         return normalized
 
     @staticmethod
     def _apply_aliases(merged: dict[str, Any], payload: dict[str, Any]) -> None:
         aliases = (
-            ("prompt_preset_id", "promptPresetId"),
-            ("prompt_preset_id", "preset_id"),
             ("provider_profile_id", "default_provider_profile_id"),
             ("provider_profile_id", "default_provider_id"),
             ("provider_profile_id", "provider_id"),
@@ -481,20 +423,11 @@ class AgentDefinitionStore:
         if not isinstance(agent_id, str) or not AGENT_ID_RE.fullmatch(agent_id):
             raise AgentDefinitionError("invalid_agent_definition", "agent_id must be a safe library identifier")
 
-    @staticmethod
-    def _validate_preset_id(preset_id: Any) -> None:
-        if not isinstance(preset_id, str) or not PROMPT_PRESET_ID_RE.fullmatch(preset_id):
-            raise AgentDefinitionError(
-                "invalid_agent_definition",
-                "prompt_preset_id must be a safe library identifier",
-            )
-
     # ── Prompt preview helpers ─────────────────────────────────────────
 
     def _compile_preview(
         self,
         agent: dict[str, Any],
-        preset: dict[str, Any] | None,
         request: dict[str, Any],
     ) -> dict[str, Any]:
         project_input = request.get(
@@ -507,22 +440,6 @@ class AgentDefinitionStore:
         tool_protocol = self._tool_protocol(agent["tool_allowlist"])
         runtime_context = request.get("context") if isinstance(request.get("context"), dict) else {}
         macro_context = build_context(runtime_context, request=request)
-        preset_entries = []
-        if preset is not None:
-            for entry in preset.get("entries", []):
-                if not entry.get("enabled", True):
-                    continue
-                content = self._expand_macros(entry.get("content", ""), request)
-                preset_entries.append(
-                    {
-                        "id": entry["id"],
-                        "role": entry.get("role") or "user",
-                        "content": content,
-                        "source_ref": entry.get("source_ref") or {"id": entry["id"]},
-                        "inclusion_reason": entry.get("inclusion_reason") or "prompt preset entry",
-                    }
-                )
-
         instruction = expand_template(agent["instruction"], macro_context, preserve_unknown=True)
         source_specs = [
             ("instruction", "Agent instruction", "system", instruction, bool(instruction)),
@@ -533,17 +450,6 @@ class AgentDefinitionStore:
         if output_contract is not None:
             source_specs.append(
                 ("output_contract", "Output contract", "system", output_contract, True)
-            )
-        if preset is not None:
-            source_specs.insert(
-                1,
-                (
-                    "prompt_preset",
-                    f"Prompt Preset: {agent['prompt_preset_id']}",
-                    None,
-                    preset_entries,
-                    bool(preset_entries),
-                ),
             )
         provenance: list[dict[str, Any]] = []
         messages: list[dict[str, Any]] = []
@@ -558,30 +464,8 @@ class AgentDefinitionStore:
             }
             if kind == "instruction":
                 record["template"] = agent["instruction"]
-            if kind == "prompt_preset":
-                record["preset_id"] = agent["prompt_preset_id"]
-                record["preset_version"] = preset.get("version", "1")
-                record["available"] = preset.get("available", True)
             provenance.append(record)
             if not included:
-                continue
-            if kind == "prompt_preset":
-                for entry in content:
-                    messages.append(
-                        {
-                            "role": entry["role"],
-                            "content": entry["content"],
-                            "source": kind,
-                            "source_entry_id": entry["id"],
-                            "inclusion_reason": entry["inclusion_reason"],
-                            "provenance": {
-                                "kind": kind,
-                                "preset_id": agent["prompt_preset_id"],
-                                "entry_id": entry["id"],
-                                "source_ref": copy.deepcopy(entry["source_ref"]),
-                            },
-                        }
-                    )
                 continue
             messages.append(
                 {
@@ -648,17 +532,10 @@ class AgentDefinitionStore:
             return value
         return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
-    @staticmethod
-    def _expand_macros(value: Any, request: dict[str, Any]) -> Any:
-        context = request.get("context") if isinstance(request.get("context"), dict) else {}
-        merged = build_context(context, request=request)
-        return expand_template(value, merged, preserve_unknown=True)
-
-    @staticmethod
-    def _tool_protocol(tool_names: list[str]) -> list[dict[str, Any]]:
+    def _tool_protocol(self, tool_names: list[str]) -> list[dict[str, Any]]:
         protocol: list[dict[str, Any]] = []
         for name in tool_names:
-            schema = TOOL_SCHEMAS.get(name)
+            schema = self._tool_schema_provider.get(name)
             if schema is None:
                 protocol.append(
                     {
@@ -672,11 +549,7 @@ class AgentDefinitionStore:
                 {
                     "name": name,
                     "description": schema["description"],
-                    "parameters": {
-                        "required": sorted(schema["required"].keys()),
-                        "optional": sorted(schema["optional"].keys()),
-                        "types": {**schema["required"], **schema["optional"]},
-                    },
+                    "parameters": provider_parameters(schema),
                 }
             )
         return protocol
@@ -804,92 +677,6 @@ class AgentDefinitionStore:
             except FileNotFoundError:
                 pass
 
-    def _preset_path(self, preset_id: str) -> Path | None:
-        for root in self._preset_roots:
-            path = (root / f"{preset_id}.json").resolve()
-            try:
-                path.relative_to(root)
-            except ValueError:
-                continue
-            if path.is_file():
-                return path
-        return None
-
-    def _normalize_preset(self, raw: Any, preset_id: str, path: Path) -> dict[str, Any]:
-        if not isinstance(raw, dict):
-            raise AgentDefinitionError("invalid_prompt_preset", f"Prompt Preset {preset_id!r} is not an object")
-        declared_id = raw.get("id", preset_id)
-        if declared_id != preset_id:
-            raise AgentDefinitionError("invalid_prompt_preset", "prompt preset id does not match its path")
-        raw_entries = raw.get("entries", raw.get("messages", []))
-        if not isinstance(raw_entries, list):
-            raise AgentDefinitionError("invalid_prompt_preset", "Prompt Preset entries must be an array")
-        entries: list[dict[str, Any]] = []
-        for index, item in enumerate(raw_entries):
-            if not isinstance(item, dict):
-                raise AgentDefinitionError("invalid_prompt_preset", "Prompt Preset entries must be objects")
-            entry_id = item.get("id") or f"entry-{index + 1}"
-            if not isinstance(entry_id, str) or not AGENT_ID_RE.fullmatch(entry_id):
-                raise AgentDefinitionError("invalid_prompt_preset", "Prompt Preset entry id is invalid")
-            content = item.get("raw_content", item.get("content", ""))
-            source_ref: dict[str, Any] = {"type": "inline", "id": entry_id}
-            source = item.get("source")
-            if not isinstance(content, str) and source is not None:
-                content = ""
-            if isinstance(source, dict):
-                source_type = source.get("type")
-                if source_type == "inline" and isinstance(source.get("content"), str):
-                    content = source["content"]
-                    source_ref = {"type": "inline", "id": entry_id}
-                elif source_type == "markdown" and isinstance(source.get("path"), str):
-                    content, source_ref = self._read_markdown_source(source["path"], entry_id, path)
-            if not isinstance(content, (str, dict, list)):
-                content = str(content)
-            entries.append(
-                {
-                    "id": entry_id,
-                    "role": item.get("role", "user"),
-                    "enabled": item.get("enabled", True),
-                    "order": item.get("order", index),
-                    "content": copy.deepcopy(content),
-                    "source_ref": source_ref,
-                    "inclusion_reason": item.get("inclusion_reason", "prompt preset entry"),
-                }
-            )
-        entries.sort(key=lambda item: (item["order"] if isinstance(item["order"], int) else 0))
-        return {
-            "id": preset_id,
-            "version": str(raw.get("version") or "1"),
-            "entries": entries,
-            "available": True,
-        }
-
-    def _read_markdown_source(self, relative: str, entry_id: str, preset_path: Path) -> tuple[str, dict[str, Any]]:
-        candidates = [
-            (preset_path.parent / relative).resolve(),
-            (self.static_root / relative).resolve(),
-        ]
-        for target in candidates:
-            try:
-                target.relative_to(self.static_root)
-            except ValueError:
-                continue
-            if not target.is_file():
-                continue
-            try:
-                return target.read_text(encoding="utf-8"), {
-                    "type": "markdown",
-                    "id": relative,
-                    "path": relative,
-                }
-            except OSError:
-                break
-        raise AgentDefinitionError(
-            "invalid_prompt_preset",
-            f"cannot read Prompt Preset source {relative!r} for {entry_id!r}",
-        )
-
-
 class AgentDefinitionService:
     """Thin public service facade used by the Runtime Studio HTTP adapter."""
 
@@ -916,9 +703,3 @@ class AgentDefinitionService:
 
     def preview_agent(self, agent_id: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
         return {"preview": self._store.preview_agent(agent_id, payload)}
-
-    def list_prompt_presets(self) -> list[dict[str, Any]]:
-        return self._store.list_prompt_presets()
-
-    def get_prompt_preset(self, preset_id: str) -> dict[str, Any]:
-        return self._store.get_prompt_preset(preset_id)

@@ -33,7 +33,6 @@ from engine.provider import (
     ProviderAdapter,
     ProviderError,
     ProviderResult,
-    RealProviderAdapter,
     UsageRecord,
 )
 from engine.quality import QualityPolicy
@@ -106,7 +105,7 @@ def event_types(runtime, after=0):
 # ════════════════════════════════════════════════════════════════════
 
 
-def test_director_commits_via_tool_produces_one_turn(tmp_path):
+def test_director_commits_opaque_final_text_as_one_turn(tmp_path):
     card_folder = tmp_path / "card"
     card_folder.mkdir()
     write_card_fixture(card_folder)
@@ -114,7 +113,7 @@ def test_director_commits_via_tool_produces_one_turn(tmp_path):
     director = ScriptedDirector([
         ("preview", "<p>海风"),
         ("preview", "掠过礁石。</p>"),
-        ("final", final_text()),
+        ("final", "<p>海风掠过礁石。</p>"),
     ])
     runtime = SessionTurnRuntime(
         database_path=tmp_path / "runtime.sqlite3",
@@ -129,22 +128,23 @@ def test_director_commits_via_tool_produces_one_turn(tmp_path):
     assert result.revision == 1
     assert result.commit_id
 
-    # committed content/summary/options match what the director supplied
+    # Final text is opaque host content. It is not interpreted as an RP tag
+    # protocol, and therefore cannot silently mutate summary/options/state.
     log = json.loads((card_folder / "chat_log.json").read_text(encoding="utf-8"))
     assert len(log) == 1
     assert log[0]["user"] == "我走向海边"            # task-owned input is immutable
-    assert log[0]["summary"] == "玩家来到海边"
+    assert log[0]["summary"] == ""
     content_js = (tmp_path / "projection" / "content.js").read_text(encoding="utf-8")
     assert "海风掠过礁石" in content_js
-    assert "继续观察海面" in content_js
+    assert "继续观察海面" not in content_js
 
-    # MVU commands applied to the committed state_snapshots row
+    # No user-authored output protocol is built into the runtime.
     with sqlite3.connect(tmp_path / "runtime.sqlite3") as connection:
         row = connection.execute(
             "SELECT state_json FROM state_snapshots WHERE revision = 1"
         ).fetchone()
     state = json.loads(row[0])
-    assert state["世界"]["时间"] == "1月1日 10:00"
+    assert state["世界"]["时间"] == "1月1日 09:00"
 
     # the original six contract events remain, in order, surrounding the new
     # tool/preview events
@@ -294,8 +294,8 @@ def test_quality_retry_exhaustion_fails_without_commit_or_projection(tmp_path):
     write_card_fixture(card_folder)
 
     director = ScriptedDirector([
-        ("final", final_text(content="<p>短</p>", mvu_commands="")),
-        ("final", final_text(content="<p>短</p>", mvu_commands="")),
+        ("final", "<p>短</p>"),
+        ("final", "<p>短</p>"),
     ])
     runtime = SessionTurnRuntime(
         database_path=tmp_path / "runtime.sqlite3",
@@ -710,14 +710,12 @@ def test_stop_marks_queued_task_cancelled(tmp_path):
 # ════════════════════════════════════════════════════════════════════
 
 
-def test_provider_adapter_is_a_clean_interface_and_real_adapter_is_callable():
-    # the seam exists; RealProviderAdapter is the Node/Pi sidecar bridge (ADR-0010).
-    # Default construction is mock-friendly and does not require a live key.
+def test_provider_adapter_is_a_clean_interface_and_openai_adapter_is_callable():
+    # The production seam is the direct OpenAI-compatible adapter.  The
+    # adapter is constructed in provider-profile tests with a real endpoint;
+    # this test only asserts the common interface remains narrow.
     assert hasattr(ProviderAdapter, "stream")
     assert hasattr(ProviderAdapter, "model_id")
-    real = RealProviderAdapter(mock=True)
-    assert real.model_id("narrative_director") == "deepseek-v4-flash"
-    assert callable(real.stream)
 
 
 def test_first_turn_provider_receives_persisted_opening_context(tmp_path):
