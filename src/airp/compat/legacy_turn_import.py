@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import re
 
+from airp.host.rp.types import TurnDraft
+
 
 _TAG_RE = {
     "polished_input": re.compile(r"<polished_input>(.*?)</polished_input>", re.DOTALL | re.IGNORECASE),
@@ -17,8 +19,6 @@ _TAG_RE = {
 
 def parse_legacy_turn(text: str, *, fallback_input: str = ""):
     """Normalize an old tagged chat entry before storing its durable history."""
-    from airp.host.rp.session_runtime import TurnDraft
-
     raw = text if isinstance(text, str) else ""
 
     def first(key: str) -> str:

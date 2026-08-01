@@ -11,6 +11,24 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 from airp.import_card import run_import  # noqa: E402
 from airp.engine.render import resolve_card_macros  # noqa: E402
+from airp.compat.legacy_turn_import import parse_legacy_turn  # noqa: E402
+
+
+def test_legacy_turn_parser_returns_standalone_turn_draft():
+    draft = parse_legacy_turn(
+        "<polished_input>你好</polished_input>\n"
+        "<content>璃月港的夜雨落下。</content>\n"
+        "<summary>夜雨</summary>\n"
+        "<options>A|B</options>\n"
+        "<UpdateVariable>_.set('weather', 'rain')</UpdateVariable>",
+        fallback_input="fallback",
+    )
+
+    assert draft.content == "璃月港的夜雨落下。"
+    assert draft.polished_input == "你好"
+    assert draft.summary == "夜雨"
+    assert draft.options == "A|B"
+    assert draft.mvu_commands.startswith("<UpdateVariable>")
 
 
 def test_sillytavern_identity_macros_resolve_for_display():
