@@ -20,8 +20,8 @@
 - 消除对追加式 Claude transcript 的功能依赖。
 
 **已锁定的基础契约**：ADR-0021 规定 canonical Runtime/Harness 独占从 `submit` 到唯一
-commit、projection 和 durable events 的回合生命周期。#17 继续验证真实 Provider、断线和
-长会话恢复；这不等同于任意 DAG 或多 Agent 世界模拟已经决定。
+commit、projection 和 durable events 的回合生命周期。真实 Provider、断线和长会话恢复
+按 ADR-0022 的 qualification 验收；这不等同于任意 DAG 或多 Agent 世界模拟已经决定。
 
 **已锁定的 Provider 发布边界**：ADR-0022 采用 OpenAI-compatible 能力契约；默认 CI 使用
 无密钥 fixture，真实发布 route 需要 opt-in qualification，包括 20 回合 bounded soak、

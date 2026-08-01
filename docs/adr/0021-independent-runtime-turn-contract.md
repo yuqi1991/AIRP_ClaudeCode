@@ -97,5 +97,5 @@ Code/file-loop 继续写同一份故事。回退必须是显式的 operator/sess
 
 当前实现和确定性测试已覆盖 command/event、幂等 Task、唯一 commit、MVU/质量门禁、
 投影幂等、取消、Graph Trace 和基础重启分类。真实 Provider 跨协议、断线/代理 SSE、
-长会话故障注入和浏览器可见的长期恢复由 Wayfinder #17 继续验收；多游戏/存档边界
-由 #15 验收。
+长会话故障注入和浏览器可见的长期恢复按 ADR-0022 的发布 qualification 继续验收；
+多游戏/存档边界由 #15 验收。

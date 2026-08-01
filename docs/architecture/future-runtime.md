@@ -33,7 +33,7 @@ projection/events` 的生命周期。浏览器只通过 Command API 和可重放
 
 这一契约已经由当前 Python Runtime 的 durable Task、generation lease、revision/commit、
 Trace、SSE 和 projection 代码承载，但真实 Provider 的跨协议/长会话可靠性仍不是本节的
-完成证明，继续由 Wayfinder #17 验收。任意 DAG 和多 Agent 世界模拟保持未决。
+完成证明，按 ADR-0022 的发布 qualification 继续验收。任意 DAG 和多 Agent 世界模拟保持未决。
 
 Provider 发布不以“能发出一次请求”为标准。ADR-0022 规定 adapter 能力契约和两层测试：
 默认 CI 用无密钥 deterministic/loopback fixture，准备发布的真实 Provider 需通过 opt-in
