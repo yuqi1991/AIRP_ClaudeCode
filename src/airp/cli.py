@@ -1,21 +1,15 @@
 #!/usr/bin/env python3
-"""start_runtime.py — 启动 AIRP Graph Runtime 的浏览器黄金路径。
+"""AIRP Graph Runtime 的浏览器黄金路径。
 
-并行于 legacy start_server.py，二者择一运行。新 runtime 独占 :8765（启动时
-清理 legacy 残留）。流程：
+流程：
   1. 环境检查（真实模式需要 Provider Profile 中已配置的 Key）
-  2. 清理 :8765 残留进程（legacy server.py / 旧 runtime / mvu_server）
+  2. 清理 :8765 残留进程
   3. 导入卡片（import_prepare，若未导入）
   4. 构造 SessionTurnRuntime；Provider 与 Graph 由 Studio 负责绑定
   5. 交付 opening（卡片 first_mes 优先；无则 DeepSeek 生成）
   6. 启动统一服务器 :8765，打印 URL
 
-用法:
-  python skills/start_runtime.py <card_folder> <ROOT>
-  python skills/start_runtime.py <card_folder> <ROOT>
-
-``skills/`` 目前只作为过渡入口。生产包入口是 ``airp-runtime``；直接执行
-旧脚本仍受支持，方便旧脚本和开发环境迁移。
+用法: ``airp-runtime <card_folder> <ROOT>``
 """
 from __future__ import annotations
 
@@ -28,24 +22,16 @@ import sys
 import time
 from pathlib import Path
 
-PACKAGE_ROOT = Path(__file__).resolve().parent
-REPOSITORY_ROOT = Path(
-    os.environ.get("AIRP_REPOSITORY_ROOT", str(PACKAGE_ROOT.parents[1]))
-).expanduser().resolve()
-LEGACY_SKILLS_ROOT = REPOSITORY_ROOT / "skills"
-
 PORT = 8765
 MAX_WAIT = 15.0
 
 
 def _resolve_styles_root(root: Path, workspace) -> Path:
-    """Select mutable UI/runtime files without requiring ``skills/``."""
+    """Select the mutable projection root for one runtime."""
     configured = os.environ.get("AIRP_STATIC_ROOT")
     candidates = (
         Path(configured).expanduser() if configured else None,
-        root / "skills" / "styles",
         root / "styles",
-        PACKAGE_ROOT / "styles",
         workspace.runtime_root / "styles",
     )
     for candidate in candidates:
@@ -101,30 +87,6 @@ def _kill_port(port: int) -> int:
     if killed:
         time.sleep(0.5)
     return killed
-
-
-def _kill_legacy_skills_processes() -> None:
-    """Kill stale legacy server.py / runtime_server.py / mvu_server.js processes."""
-    for pattern in (
-        str(LEGACY_SKILLS_ROOT / "server.py"),
-        str(LEGACY_SKILLS_ROOT / "runtime_server.py"),
-        str(LEGACY_SKILLS_ROOT / "mvu_server.js"),
-    ):
-        try:
-            out = subprocess.check_output(["pgrep", "-f", pattern], text=True, timeout=5)
-        except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired):
-            continue
-        for line in out.splitlines():
-            try:
-                pid = int(line.strip())
-            except ValueError:
-                continue
-            if pid == os.getpid():
-                continue
-            try:
-                os.kill(pid, signal.SIGTERM)
-            except (ProcessLookupError, PermissionError):
-                pass
 
 
 def _load_first_mes(card_folder: Path) -> dict | None:
@@ -225,7 +187,7 @@ def _wait_server_ready(url: str, timeout: float = MAX_WAIT) -> bool:
 
 def main() -> None:
     if len(sys.argv) != 3:
-        _die("Usage: python skills/start_runtime.py <card_folder> <ROOT>")
+        _die("Usage: airp-runtime <card_folder> <ROOT>")
     card_folder = Path(sys.argv[1]).resolve()
     root = Path(sys.argv[2]).resolve()
     from airp.workspace import Workspace
@@ -242,7 +204,6 @@ def main() -> None:
 
     # 2. Clean :8765 + stale processes
     killed = _kill_port(PORT)
-    _kill_legacy_skills_processes()
     if killed:
         print(f"[start_runtime] 已清理 :{PORT} 上的 {killed} 个残留进程", file=sys.stderr)
 

@@ -22,10 +22,6 @@
       "WebFetch(domain:raw.githubusercontent.com)",
       "Bash(gh search *)",
       "Bash(xargs grep *)",
-      "Bash(PYTHONIOENCODING=utf-8 python \"D:/ds4/skills/import_card.py\" \"D:/ds4/tmp_import_test/card1_6\" \"D:/ds4\")",
-      "Bash(PYTHONIOENCODING=utf-8 python \"D:/ds4/skills/import_card.py\" \"D:/ds4/tmp_import_test/card40k\" \"D:/ds4\")",
-      "Bash(PYTHONIOENCODING=utf-8 python \"D:/ds4/skills/import_card.py\" \"D:/ds4/tmp_import_test/card19961\" \"D:/ds4\")",
-      "Bash(PYTHONIOENCODING=utf-8 python \"D:/ds4/skills/import_card.py\" \"D:/ds4/tmp_import_test/card25\" \"D:/ds4\")",
       "Bash(claude settings *)",
       "Bash(claude project *)",
       "Bash(claude doctor *)",
@@ -40,25 +36,6 @@
       "Bash(git ls-files *)",
       "Bash(git check-ignore *)",
       "PowerShell(\\(Get-Content D:\\\\ds4\\\\README.md | Measure-Object -Line\\).Lines)"
-    ]
-  },
-  "hooks": {
-    "SessionEnd": [
-      {
-        "matcher": "*",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "powershell -Command \"Get-Process python -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like '*skills*' } | Stop-Process -Force\"",
-            "timeout": 15
-          },
-          {
-            "type": "command",
-            "command": "powershell -Command \"Get-Process node -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like '*mvu_server*' } | Stop-Process -Force\"",
-            "timeout": 15
-          }
-        ]
-      }
     ]
   }
 }

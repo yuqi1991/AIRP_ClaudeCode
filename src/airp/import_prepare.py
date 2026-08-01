@@ -3,25 +3,19 @@
 import_prepare.py — 导入/启动预处理管线。
 
 统一完成启动阶段所有机械操作:
-  1. 清理残留 Python 进程
+  1. 清理旧 pending marker
   2. 解析角色卡数据 (代理 import_card.run_import)
   3. 初始化 session 文件 (.card_path, state.js, content.js, chat_log.json)
-  4. 预填 response.txt (卡片 first_mes)
+  4. 预填兼容投影内容
   5. 写入 import_context.txt (启动阶段汇总上下文)
   6. 输出 JSON 摘要到 stdout
 
-替代 CLAUDE.md「自动启动流程」中的步骤 0/2/4/4.5/5/6 机械操作。
-
-用法:
-  python import_prepare.py <卡片文件夹> <ROOT>
+该函数由 `airp-runtime` 调用；它不是独立的第二套 runtime。
 """
 
 import json
 import os
-import signal
-import subprocess
 import sys
-import time
 from pathlib import Path
 
 # import_card.run_import() has no stdout side effects after refactoring.
@@ -31,73 +25,10 @@ from airp.import_card import run_import
 from airp.engine.context import build_import_context
 
 
-# ─── Phase 0: Cleanup ────────────────────────────────────────
-
-def _pgrep(pattern: str) -> set[int]:
-    try:
-        result = subprocess.run(
-            ["pgrep", "-f", pattern],
-            capture_output=True, text=True, timeout=5
-        )
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        return set()
-
-    pids = set()
-    for line in result.stdout.splitlines():
-        try:
-            pids.add(int(line.strip()))
-        except ValueError:
-            pass
-    return pids
-
-
-def _terminate_pids(pids: set[int], exclude: set[int]) -> int:
-    targets = [pid for pid in sorted(pids) if pid not in exclude]
-    killed = 0
-
-    for pid in targets:
-        try:
-            os.kill(pid, signal.SIGTERM)
-            killed += 1
-        except ProcessLookupError:
-            pass
-        except PermissionError:
-            pass
-
-    if targets:
-        time.sleep(0.3)
-
-    for pid in targets:
-        try:
-            os.kill(pid, 0)
-        except ProcessLookupError:
-            continue
-        except PermissionError:
-            continue
-        try:
-            os.kill(pid, signal.SIGKILL)
-        except (ProcessLookupError, PermissionError):
-            pass
-
-    return killed
-
+# ─── Phase 0: Remove stale legacy marker ─────────────────────
 
 def cleanup_residual(styles_dir: Path) -> dict:
-    """Kill stale Python processes running this repo's skills scripts."""
-    skills_dir = styles_dir.parent.resolve()
-    current_pid = os.getpid()
-    patterns = {
-        str(skills_dir / "server.py"),
-        str(skills_dir / "handler.py"),
-        str(skills_dir / "round_prepare.py"),
-        str(skills_dir / "round_deliver.py"),
-    }
-    pids = set()
-    for pattern in patterns:
-        pids.update(_pgrep(pattern))
-
-    killed = _terminate_pids(pids, {current_pid, os.getppid()})
-
+    """Remove the old file-loop marker without managing another runtime."""
     pending = styles_dir / ".pending"
     pending_existed = pending.exists()
     if pending_existed:
@@ -106,13 +37,13 @@ def cleanup_residual(styles_dir: Path) -> dict:
         except Exception:
             pass
 
-    return {"killed_processes": killed, "stale_pending_cleared": pending_existed}
+    return {"killed_processes": 0, "stale_pending_cleared": pending_existed}
 
 
 # ─── Phase 2: Session File Initialization ────────────────────
 
 def write_card_path(card_folder: str, styles_dir: Path) -> str:
-    """Write .card_path so server.py can find the active card folder."""
+    """Write the compatibility projection's active card path."""
     abs_path = str(Path(card_folder).resolve())
     (styles_dir / ".card_path").write_text(abs_path, encoding="utf-8")
     return abs_path
@@ -228,7 +159,7 @@ def prepare_card(
     )
 
     # ══ Phase 3.5: Token Checkpoint Init ══
-    # Write initial checkpoint so round_deliver can compute deltas.
+    # Record a baseline for the optional local token projection.
     # load_checkpoint handles cross-session transcript switching automatically.
     try:
         from airp.engine import tokens as token_stats

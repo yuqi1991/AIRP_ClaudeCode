@@ -1,8 +1,6 @@
-"""engine.worldbook — 世界书 catalog 构建（纯 I/O）。
+"""世界书 catalog 构建（纯 I/O）。
 
-从 import_card.py 剪切的 build_worldbook_index，保持函数名与签名不变。
-import_card.py 通过 `from engine.worldbook import build_worldbook_index` 引入同名符号，
-调用点（run_import 内 build_worldbook_index(entries, memory_dir)）无需修改。
+导入器将原始条目写成可审计的 catalog 与正文文件，Host 再按精确标题加载正文。
 
 catalog 格式（skill 模式）：每条记录含 title/section/usage，供主 agent 按需 Grep
 reference.md 取全文；重新导入时按 section 保留已生成的 usage。

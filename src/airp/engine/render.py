@@ -1,9 +1,7 @@
-"""engine.render — 纯渲染层（content.js / beautify panel 的 HTML 构造）。
-
-从 handler.py 剪切的渲染函数，保持函数名与签名不变。
-handler.py 通过 `from engine.render import ...` 引入同名符号，调用点无需修改。
+"""纯渲染层（content.js / beautify panel 的 HTML 构造）。
 
 全部为纯函数：接受数据返回 HTML/文本，不读写文件。
+
 内部互相调用（_build_beautify_panel → _render_stat_bar → _stat_color 等）保持不变。
 """
 import json

@@ -1,9 +1,4 @@
-"""Card data access and compatibility projection storage (pure I/O).
-
-The legacy ``engine.card`` import remains a thin Adapter. Projection roots
-are explicit when supplied and otherwise resolved through AIRP environment
-configuration during the source-checkout migration.
-"""
+"""Card data access and compatibility projection storage (pure I/O)."""
 import json
 import re
 from pathlib import Path

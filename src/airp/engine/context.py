@@ -1,13 +1,13 @@
-"""engine.context — 启动/回合上下文构建（纯逻辑）。
+"""启动/导入上下文构建（纯逻辑）。
 
-从 import_prepare.py / round_prepare.py 剪切的上下文构建函数，保持函数名与签名不变。
-原文件通过 `from engine.context import ...` 引入同名符号，调用点无需修改。
+这些函数只负责导入阶段的可读上下文文件；Graph 执行上下文由
+``context_compiler`` 负责。
 
 包含：
 - build_import_context: 生成 import_context.txt（启动汇总），连同其专用 helper
   read_json / _walk_vars 一并迁入（这三个 helper 仅被 build_import_context 使用，
   迁入后 engine.context 自包含，避免对 import_prepare 的循环 import）。
-- list_initvar_paths: 递归列出 initvar 路径（round_prepare 静态前缀用）。
+- list_initvar_paths: 递归列出 initvar 路径，供导入上下文和 Host 使用。
 """
 import json
 from pathlib import Path

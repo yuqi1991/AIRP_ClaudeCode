@@ -1,7 +1,6 @@
 """Thin stdlib HTTP + SSE server for the AIRP Graph runtime.
 
-Parallel to the legacy Claude Code bridge in ``skills/server.py``. This module
-MUST NOT import or patch that bridge. It never writes ``input.txt`` / ``.pending``
+The canonical AIRP HTTP transport. It never writes ``input.txt`` / ``.pending``
 and never calls ``/api/wait_pending``.
 
 Endpoints
@@ -46,7 +45,7 @@ via ``Last-Event-ID`` / ``?after=`` and the server is at-least-once for the gap
 
 Thread model
 ------------
-* One :class:`~engine.runtime.SessionTurnRuntime` per server (single-session
+* One :class:`~airp.host.rp.session_runtime.SessionTurnRuntime` per server (single-session
   tracer bullet, ADR-0004).
 * ``submit`` work runs on a daemon worker thread so the request thread and any
   concurrent SSE handlers remain responsive.
@@ -57,7 +56,6 @@ Thread model
 from __future__ import annotations
 
 import json
-import re
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -78,14 +76,13 @@ from airp.engine.regex_collections import RegexCollectionError
 from airp.host.rp.session_runtime import RuntimeEvent, SessionTurnRuntime
 from airp.host.rp.session_manager import SessionManager, SessionManagerError
 from airp.engine.studio_library import ProviderProfileError
-from airp.engine.studio_migration import bootstrap_legacy_runtime_library
+from airp.compat.studio_migration import bootstrap_legacy_runtime_library
 from airp.engine.worldbook_library import WorldbookLibraryError
 
 SSE_HEARTBEAT_SECONDS = 15.0
 SSE_POLL_INTERVAL_SECONDS = 0.05
 SUBMIT_ACCEPT_WAIT_SECONDS = 2.0
 RUNNING_TASK_STATUSES = frozenset({"queued", "leased", "running", "projection_pending"})
-SAFE_FILE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 STUDIO_PROVIDER_PATHS = ("/v1/studio/providers",)
 STUDIO_AGENT_PATHS = ("/v1/studio/agents", "/v1/studio/agent-definitions")
 STUDIO_GRAPH_PATHS = ("/v1/studio/graphs",)
@@ -1209,9 +1206,6 @@ class SessionRuntimeServer:
                 if path == "/api/openings":
                     self._send_json(200, server_ref._read_openings())
                     return
-                if path == "/api/style-profiles":
-                    self._send_json(200, server_ref._read_style_profiles())
-                    return
                 if path == "/api/session_status":
                     self._send_json(200, server_ref._session_status_payload())
                     return
@@ -1656,12 +1650,6 @@ class SessionRuntimeServer:
                     )
                     return
 
-                if path == "/api/style-profiles/delete":
-                    name = (body.get("name") or "").strip()
-                    ok = server_ref._delete_style_profile(name)
-                    self._send_json(200 if ok else 404, {"ok": ok})
-                    return
-
                 self._send_json(404, {"ok": False, "error": "not_found"})
 
             def do_DELETE(self):  # noqa: N802
@@ -1979,40 +1967,6 @@ class SessionRuntimeServer:
             "runtime": {"graph_id": graph_id},
             "snapshot": self._snapshot_payload(),
         }, 200
-
-    def _read_style_profiles(self) -> list:
-        if not self.static_root:
-            return []
-        profiles_dir = self.static_root / "profiles"
-        out = []
-        if not profiles_dir.is_dir():
-            return out
-        for f in sorted(profiles_dir.glob("*.md")):
-            name = f.stem
-            content = f.read_text(encoding="utf-8")
-            title, desc = name, ""
-            for line in content.strip().split("\n"):
-                if line.startswith("# ") and not line.startswith("## "):
-                    title = line[2:].strip()
-                elif line.strip() and not line.startswith("#"):
-                    desc = line.strip()
-                    break
-            out.append({"name": name, "title": title, "description": desc})
-        return out
-
-    def _delete_style_profile(self, name: str) -> bool:
-        if not self.static_root or not name or not SAFE_FILE_ID_RE.fullmatch(name):
-            return False
-        root = (self.static_root / "profiles").resolve()
-        target = (root / f"{name}.md").resolve()
-        try:
-            target.relative_to(root)
-        except ValueError:
-            return False
-        if target.is_file():
-            target.unlink()
-            return True
-        return False
 
     def _switch_opening(self, opening_id) -> bool:
         """Switch the active opening and rebuild runtime-derived projections."""

@@ -17,5 +17,8 @@ where = ["src"]
 [tool.setuptools.package-data]
 airp = ["web/**/*", "resources/**/*"]
 
+[tool.setuptools.exclude-package-data]
+airp = ["**/__pycache__/*", "**/*.pyc"]
+
 [tool.pytest.ini_options]
-pythonpath = ["src", "skills"]
+pythonpath = ["src"]

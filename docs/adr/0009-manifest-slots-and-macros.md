@@ -37,10 +37,10 @@ Ticket 02 的 Context Manifest 以固定 11 个 section 硬编码在 `context_co
    - `static_slot(...)` 便于挂固定指令文本（可带宏）。
 
 5. **Runtime 接线（2026-07-27 续接）**
-   - `skills/styles/presets/*.json` 与 `settings.json.runtime.preset_id` 只作为旧 runtime manifest 的兼容读取路径；新运行时由 Studio Project、Agent instruction 和 Graph Definition 负责用户配置。
+   - `legacy styles/presets/*.json` 与 `settings.json.runtime.preset_id` 只作为旧 runtime manifest 的兼容读取路径；新运行时由 Studio Project、Agent instruction 和 Graph Definition 负责用户配置。
    - 旧 entry 仍使用稳定 `id`、`role`、`enabled`、`placement`、`depth`、`order`，正文可内联或引用用户工作区 Markdown；引擎不再随 wheel 提供具体写作 preset。
-   - preset 在 task 创建时连同 source hash 与展开 provenance 冻结到 `source_snapshot`；前端编辑仅影响后续 task。
-   - `skills/styles/graphs/*.json` 只为旧客户端提供兼容投影；新 Graph Definition 存放在 Workspace，执行图不绑定写作角色或内容格式。
+   - Agent instruction 在 task 创建时连同 source hash 与展开 provenance 冻结到 `source_snapshot`；Studio 编辑仅影响后续 task。
+   - 旧 `styles/graphs/*.json` 只在一次性迁移中读取；新 Graph Definition 存放在 Workspace，执行图不绑定写作角色或内容格式。
 
 ## Consequences
 

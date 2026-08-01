@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-token_stats.py — Token statistics with checkpoint-based delta tracking.
+Token statistics with checkpoint-based delta tracking.
 
 Reads Claude Code session transcript JSONL files to compute per-round
 and cumulative token usage, including cache hit rates.
@@ -12,8 +12,9 @@ Key features:
   resets offset to 0 for new transcript
 - Cache hit rate: extracts cache_read_input_tokens from usage data
 
-Used by: round_deliver.py (per-round stats), import_prepare.py (init checkpoint),
-         handler.py (startup_end checkpoint)
+Used by the compatibility projection and import bootstrap when a local
+Claude transcript is available. The canonical Provider usage record remains
+the source for graph execution metrics.
 """
 
 import json

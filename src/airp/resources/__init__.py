@@ -20,7 +20,7 @@ def packaged_web_root() -> Path:
     try:
         return Path(files("airp.web"))
     except ModuleNotFoundError:
-        return repository_root() / "skills" / "styles"
+        return Path(__file__).resolve().parents[1] / "web"
 
 
 def static_asset_root() -> Path:
@@ -31,7 +31,7 @@ def static_asset_root() -> Path:
     packaged = packaged_web_root()
     if packaged.exists():
         return packaged
-    return repository_root() / "skills" / "styles"
+    return Path(__file__).resolve().parents[1] / "web"
 
 
 def projection_root(root: str | Path | None = None) -> Path:
@@ -39,16 +39,14 @@ def projection_root(root: str | Path | None = None) -> Path:
     override = os.environ.get("AIRP_STATIC_ROOT")
     if override:
         return Path(override).expanduser().resolve()
-    base = Path(root).expanduser().resolve() if root is not None else repository_root()
-    legacy = base / "skills" / "styles"
-    if legacy.exists():
-        return legacy
+    base = Path(root).expanduser().resolve() if root is not None else None
     try:
         from airp.workspace import Workspace
 
-        return Workspace.default().runtime_root / "styles"
+        workspace = Workspace.from_root(base) if base is not None else Workspace.default()
+        return workspace.runtime_root / "styles"
     except Exception:
-        return base / ".airp" / "web"
+        return (base or repository_root()) / ".airp" / "web"
 
 
 __all__ = [

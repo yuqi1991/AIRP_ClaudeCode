@@ -18,7 +18,7 @@
 | `memory/story_plan.md` | 中期剧情规划 | 周期性更新 |
 | `memory/feedback.md` | 用户偏好和边界 | 偶发更新 |
 
-## 世界书 skill 模式
+## 世界书按需 capability
 
 世界书条目不再每轮全文注入。导入时，agent 为每条条目生成 usage：
 
@@ -28,12 +28,12 @@
 
 回合时：
 
-1. 叙事 agent 读 `WORLDBOOK_CATALOG`；
-2. 对照用户输入、当前场景和剧情需求选择真正需要的条目；
-3. 用完整标题从 `reference.md` 按需读取正文；
-4. 读取到的正文严格约束对应主题的描写。
+1. Context Manifest 只冻结 `WORLDBOOK_CATALOG`；
+2. Agent 通过 Host 注册的 exact-title capability 选择真正需要的条目；
+3. capability 从 `reference.md`/绑定 Worldbook 按需读取正文；
+4. 读取结果进入本次节点的可审计输入，不会隐式扫描源码目录。
 
-这减少了动态上下文体积，但当前 Claude Code transcript 仍会保存按需读取结果；独立 harness 应把上下文装配完全纳入自己的控制。
+这减少了动态上下文体积，并让每次加载都能在 Agent Trace 中定位来源。
 
 普通结构化世界书条目只作为参考事实，不会被猜测为 MVU 初始变量。导入器仅接受显式 `[initvar]` / `<initvar>`、Zod prefault 或 beautify 变量宏作为变量来源。SillyTavern 标准 `{{user}}` / `{{char}}` 宏在开场交付时按当前玩家名和卡片名解析。
 
@@ -41,7 +41,7 @@
 
 `SessionManager` 是创建、切换、重命名和删除存档的 interface。每个 session 在 SQLite 中拥有独立 opening、task、event、commit、active revision 和 state snapshot；幂等键也以 session 为作用域。浏览器一次只激活一个 session，切换时 runtime 从该 session 的 active lineage 重建共享 `chat_log.json`、`content.js` 和 `state.js`。
 
-因此这些 JSON/JS 文件不是多 session 的事实源。卡片事实、世界书、变量基线、settings/preset 和现有 `memory/*.md` 仍为卡片级共享；需要真正分叉长期记忆时，应先把 memory 纳入 revision/session store，而不是复制投影文件。
+因此这些 JSON/JS 文件不是多 session 的事实源。卡片事实、绑定 Worldbook、变量基线和现有 `memory/*.md` 仍为卡片级共享；需要真正分叉长期记忆时，应先把 memory 纳入 revision/session store，而不是复制投影文件。
 
 ## 记忆职责分离
 

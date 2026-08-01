@@ -2,35 +2,6 @@
 __pycache__/
 *.pyc
 
-# Runtime-generated files (auto-rebuilt by handler.py)
-skills/styles/content.js
-skills/styles/state.js
-
-# Runtime Studio library definitions (user-owned, not source fixtures)
-skills/styles/studio/
-
-# User input buffer (runtime only)
-skills/styles/input.txt
-
-# Card path config (runtime routing)
-skills/styles/.card_path
-
-# Temporary response file
-skills/styles/response.txt
-
-# Pending signal file
-skills/styles/.pending
-
-# Session init signal (runtime touch)
-skills/styles/.session_init
-
-# Runtime context files
-skills/styles/round_context.txt
-skills/styles/import_context.txt
-
-# Card-specific openings (runtime, changes per card import)
-skills/styles/openings.json
-
 # Lock files
 *.lock
 .claude/scheduled_tasks.lock
@@ -53,27 +24,14 @@ node_modules/
 !.claude/skills/
 !.claude/skills/**
 !.claude/settings.local.json
-!skills/
-!skills/engine/
-!skills/engine/*.py
-!skills/styles/
-!skills/styles/presets/
-!skills/styles/presets/*.json
-!skills/styles/graphs/
-!skills/styles/graphs/*.json
-
 # Formal production package. Runtime/user data remains outside the source tree.
 !src/
 !src/airp/
 !src/airp/**
 src/airp/**/__pycache__/
 src/airp/**/*.pyc
-!skills/styles/prompt_fragments/
-!skills/styles/prompt_fragments/*.md
-!skills/sidecar/
-!skills/sidecar/**
-!skills/tests/
-!skills/tests/*.py
+!tests/
+!tests/*.py
 !docs/
 !docs/**/
 !docs/**/*.md

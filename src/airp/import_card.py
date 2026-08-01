@@ -825,14 +825,15 @@ def run_card_scripts(card_dir: str, root_dir: str) -> dict | None:
     """Call Node.js runner to execute card's tavern_helper scripts.
     Returns structured JSON with initvar/schema/injections, or None on failure.
     """
-    runner_path = os.path.join(root_dir, "skills", "run_card_scripts.js")
+    del root_dir
+    runner_path = Path(__file__).resolve().parent / "resources" / "run_card_scripts.cjs"
     if not os.path.isfile(runner_path):
         return None
     try:
         result = subprocess.run(
             ["node", runner_path, card_dir],
             capture_output=True, text=True, encoding="utf-8", timeout=15,
-            cwd=os.path.join(root_dir, "skills"),
+            cwd=str(runner_path.parent),
         )
         if result.returncode == 0 and result.stdout and result.stdout.strip():
             data = json.loads(result.stdout)
@@ -913,7 +914,10 @@ def run_import(card_dir, root_dir, *, styles_dir=None):
     Callers (import_prepare.py or main() below) are responsible for
     printing the JSON summary or acting on the result dict.
     """
-    styles_dir = styles_dir or os.path.join(root_dir, "skills", "styles")
+    if styles_dir is None:
+        from airp.resources import projection_root
+
+        styles_dir = projection_root(root_dir)
     os.makedirs(styles_dir, exist_ok=True)
 
     result = {

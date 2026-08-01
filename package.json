@@ -2,5 +2,8 @@
   "name": "airp-claude-code",
   "private": true,
   "description": "AIRP provider protocol fixtures",
-  "type": "module"
+  "type": "module",
+  "dependencies": {
+    "zod": "^3.24.4"
+  }
 }
