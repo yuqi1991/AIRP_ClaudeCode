@@ -56,6 +56,10 @@
   }
 
   function setOpen(open) {
+    if (open && !host.hidden) {
+      if (global.AIRPWorldbookDrawer && typeof global.AIRPWorldbookDrawer.close === 'function') global.AIRPWorldbookDrawer.close();
+      if (global.AIRPStudioAgentsDrawer && typeof global.AIRPStudioAgentsDrawer.close === 'function') global.AIRPStudioAgentsDrawer.close();
+    }
     model.open = !!open;
     document.querySelectorAll('[data-studio-drawer-panel]').forEach(function (view) {
       view.hidden = model.open ? view !== panel : view === panel;
@@ -64,6 +68,10 @@
     host.hidden = !model.open;
     host.setAttribute('aria-hidden', model.open ? 'false' : 'true');
     toggle.setAttribute('aria-expanded', model.open ? 'true' : 'false');
+    var worldbookToggle = document.getElementById('studio-worldbooks-toggle');
+    var regexToggle = document.getElementById('studio-regex-toggle');
+    if (worldbookToggle) worldbookToggle.setAttribute('aria-expanded', 'false');
+    if (regexToggle) regexToggle.setAttribute('aria-expanded', 'false');
     if (global.AIRPWorkspace) {
       global.AIRPWorkspace.setState('studioDrawer', { open: model.open, view: 'game' });
       global.AIRPWorkspace.emit('studio-drawer:' + (model.open ? 'opened' : 'closed'), { view: 'game' });

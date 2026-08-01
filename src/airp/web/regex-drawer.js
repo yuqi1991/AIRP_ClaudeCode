@@ -699,6 +699,8 @@
   }
 
   function openRegexDrawer() {
+    var regexToggle = $('studio-regex-toggle');
+    if (regexToggle) regexToggle.setAttribute('aria-expanded', 'true');
     if (integratedPanel() && global.AIRPStudioAgentsDrawer && typeof global.AIRPStudioAgentsDrawer.open === 'function') {
       return Promise.resolve(global.AIRPStudioAgentsDrawer.open('regex-collections')).then(function() {
         ensureMarkup();
@@ -723,6 +725,18 @@
 
   ensureMarkup();
   bindControlsOnce();
+  var regexToggle = $('studio-regex-toggle');
+  if (regexToggle) {
+    regexToggle.addEventListener('click', function () {
+      var current = workspace && workspace.state && workspace.state.studioDrawer;
+      if (current && current.open && current.view === 'regex-collections') {
+        if (global.AIRPStudioAgentsDrawer && typeof global.AIRPStudioAgentsDrawer.close === 'function') global.AIRPStudioAgentsDrawer.close();
+        else if (global.AIRPWorldbookDrawer && typeof global.AIRPWorldbookDrawer.close === 'function') global.AIRPWorldbookDrawer.close();
+      } else {
+        openRegexDrawer();
+      }
+    });
+  }
   if (workspace && workspace.events && typeof workspace.events.addEventListener === 'function') {
     workspace.events.addEventListener('studio-drawer:opened', onDrawerOpened);
     workspace.events.addEventListener('studio:drawer-opened', onDrawerOpened);

@@ -84,12 +84,6 @@ body {
 #topbar .sep { color: var(--border); }
 #topbar .dim { color: var(--muted); }
 #topbar .spacer { flex: 1; }
-#studio-link {
-  color: var(--text); text-decoration: none; font-size: .78em; font-weight: 650;
-  border: 1px solid var(--border); border-radius: 4px; padding: 4px 8px;
-  background: var(--input-bg); white-space: nowrap;
-}
-#studio-link:hover, #studio-link:focus-visible { color: var(--accent); border-color: var(--accent); outline: none; }
 #sidebar-toggle {
   display: none; width: 28px; height: 26px; padding: 0;
   border: 1px solid var(--border); border-radius: 4px;
@@ -274,12 +268,12 @@ body {
 .trace-meta { color: var(--muted); font-size: .7em; margin-top: 2px; overflow-wrap: anywhere; }
 #node-detail-modal[hidden] { display: none; }
 #node-detail-modal {
-  position: fixed; inset: 0; z-index: 1000; display: flex;
+  position: fixed; top: 34px; right: 300px; bottom: 0; left: 0; z-index: 90; display: flex;
   align-items: center; justify-content: center; padding: 16px;
   background: rgba(0,0,0,.42);
 }
 .node-detail-panel {
-  width: min(680px, 96vw); max-height: 88vh; overflow: auto;
+  width: min(760px, calc(100% - 24px)); max-height: calc(100% - 24px); overflow: auto;
   background: var(--surface); border: 1px solid var(--border);
   border-radius: 8px; padding: 14px;
 }
@@ -400,6 +394,7 @@ body {
     background: rgba(0,0,0,.35);
   }
   body.sidebar-open #sidebar-backdrop { display: block; }
+  #node-detail-modal { top: 34px; right: 0; padding: 10px; }
   #input-panel { padding: 8px 10px; min-width: 0; }
   #input-panel .input-row { gap: 7px; }
   #input-panel textarea { min-width: 0; padding: 8px 10px; }
@@ -973,7 +968,8 @@ body {
     <button id="game-drawer-toggle" class="workspace-nav-button" type="button" data-airp-action="game-open" aria-controls="studio-drawer-host" aria-expanded="false">游戏</button>
     <button id="studio-agents-toggle" class="workspace-studio-action" type="button" data-airp-action="studio-agents" aria-controls="studio-drawer-host" aria-expanded="false">Agents 与编排</button>
     <button id="studio-model-toggle" class="workspace-studio-action" type="button" data-airp-action="studio-model" aria-controls="studio-drawer-host" aria-expanded="false">模型</button>
-    <a id="studio-link" href="/studio" aria-label="打开 Agent Studio" data-airp-action="studio-open">Studio</a>
+    <button id="studio-worldbooks-toggle" class="workspace-studio-action" type="button" data-airp-action="studio-worldbooks" aria-controls="studio-drawer-host" aria-expanded="false">世界书</button>
+    <button id="studio-regex-toggle" class="workspace-studio-action" type="button" data-airp-action="studio-regex" aria-controls="studio-drawer-host" aria-expanded="false">Regex</button>
   </nav>
   <button id="theme-toggle" title="切换夜间模式" style="background:none;border:1px solid var(--border);border-radius:4px;cursor:pointer;font-size:0.9em;padding:1px 6px;line-height:1;color:var(--muted);">🌙</button>
   <button id="sidebar-toggle" title="打开工具面板" aria-label="打开工具面板" aria-expanded="false" onclick="toggleSidebar()">☰</button>

@@ -9,8 +9,8 @@
 
   var host = document.getElementById('studio-drawer-host');
   var mount = document.getElementById('worldbook-drawer-mount') || host;
-  var studioLink = document.getElementById('studio-link');
-  if (!host || !studioLink) return;
+  var toggle = document.getElementById('studio-worldbooks-toggle');
+  if (!host || !toggle) return;
 
   var endpoint = '/v1/studio/worldbooks';
   var projectEndpoint = '/v1/studio/projects/';
@@ -31,7 +31,7 @@
   var workspace = global.AIRPWorkspace || null;
   var drawerMarkup = [
     '<div class="worldbook-drawer-backdrop" data-worldbook-drawer-close="true"></div>',
-    '<section class="worldbook-drawer-panel" role="dialog" aria-modal="true" aria-labelledby="worldbook-drawer-title" data-airp-drawer-view="worldbooks">',
+    '<section class="worldbook-drawer-panel" role="dialog" aria-modal="true" aria-labelledby="worldbook-drawer-title" data-airp-drawer-view="worldbooks" data-studio-drawer-panel="worldbooks">',
       '<header class="worldbook-drawer-header">',
         '<div><div class="worldbook-drawer-kicker">AIRP Studio</div><div class="worldbook-drawer-title" id="worldbook-drawer-title">Worldbook Definitions</div></div>',
         '<button class="worldbook-drawer-close" id="worldbook-drawer-close" type="button" data-worldbook-drawer-close="true" aria-label="Close Studio drawer">Close</button>',
@@ -599,9 +599,12 @@
   }
 
   async function openDrawer() {
+    if (global.AIRPGameDrawer && typeof global.AIRPGameDrawer.close === 'function') global.AIRPGameDrawer.close();
+    if (global.AIRPStudioAgentsDrawer && typeof global.AIRPStudioAgentsDrawer.close === 'function') global.AIRPStudioAgentsDrawer.close();
     ensureMarkup();
     host.hidden = false;
     host.setAttribute('aria-hidden', 'false');
+    toggle.setAttribute('aria-expanded', 'true');
     setWorkspaceState(true, 'worldbooks');
     if (!state.ready) {
       state.ready = true;
@@ -622,14 +625,14 @@
   function closeDrawer() {
     host.hidden = true;
     host.setAttribute('aria-hidden', 'true');
+    toggle.setAttribute('aria-expanded', 'false');
     setWorkspaceState(false, null);
   }
 
   function bind() {
-    studioLink.addEventListener('click', function(event) {
-      if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
-      event.preventDefault();
-      openDrawer();
+    toggle.addEventListener('click', function() {
+      if (host.hidden) openDrawer();
+      else closeDrawer();
     });
     host.addEventListener('click', function(event) {
       var close = event.target.closest('[data-worldbook-drawer-close="true"]');

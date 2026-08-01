@@ -103,11 +103,19 @@
 
   function openDrawer(view) {
     var nextView = view || state.view || 'agents';
+    if (global.AIRPGameDrawer && typeof global.AIRPGameDrawer.close === 'function') global.AIRPGameDrawer.close();
+    if (global.AIRPWorldbookDrawer && typeof global.AIRPWorldbookDrawer.close === 'function') global.AIRPWorldbookDrawer.close();
     state.view = nextView;
     host.hidden = false;
     host.setAttribute('aria-hidden', 'false');
     var toggle = $('studio-agents-toggle');
     if (toggle) toggle.setAttribute('aria-expanded', 'true');
+    var modelToggle = $('studio-model-toggle');
+    if (modelToggle) modelToggle.setAttribute('aria-expanded', nextView === 'model' ? 'true' : 'false');
+    var worldbookToggle = $('studio-worldbooks-toggle');
+    if (worldbookToggle) worldbookToggle.setAttribute('aria-expanded', 'false');
+    var regexToggle = $('studio-regex-toggle');
+    if (regexToggle) regexToggle.setAttribute('aria-expanded', nextView === 'regex-collections' ? 'true' : 'false');
     patchWorkspace({ open: true, view: 'agents-orchestration:' + nextView });
     emit('studio:drawer-opened', { view: nextView });
     renderDrawerView();
@@ -121,6 +129,10 @@
     host.setAttribute('aria-hidden', 'true');
     var toggle = $('studio-agents-toggle');
     if (toggle) toggle.setAttribute('aria-expanded', 'false');
+    var modelToggle = $('studio-model-toggle');
+    if (modelToggle) modelToggle.setAttribute('aria-expanded', 'false');
+    var regexToggle = $('studio-regex-toggle');
+    if (regexToggle) regexToggle.setAttribute('aria-expanded', 'false');
     patchWorkspace({ open: false, view: null });
     emit('studio:drawer-closed');
   }
