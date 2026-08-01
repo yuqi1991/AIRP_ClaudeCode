@@ -46,7 +46,10 @@ success/degraded/failed 语义；原型已验证三类报告形状。仍需把 e
 
 **状态：Working**
 
-已知行为包括未知变量路径放行、MVU server 不可用时回退放行；`round_prepare` 对 checklist 异常采取吞错回退。需要明确 schema 严格度、错误展示和安全的修复策略。
+兼容 handler 仍对未知变量路径宽松，正式 Runtime commit 已有独立 strict validator。
+[`ADR-0025`](../adr/0025-mvu-and-local-security-boundary.md) 进一步锁定：只有卡片 schema
+显式 wildcard 才能创建动态子键；其余未知路径拒绝并审计。仍需把 wildcard 语义、稳定错误码
+和浏览器可见的失败详情接入实现。
 
 ## P2：自动化测试不足
 
@@ -63,4 +66,7 @@ Provider 发布边界已由 [ADR-0022](../adr/0022-provider-release-qualificatio
 
 **状态：Working**
 
-服务器仅绑定本机，但 CORS 与前端脚本执行面需要重新审计；不可信卡片内容和本机恶意页面不应能无约束触发操作。此项不应阻塞本地原型，但独立 runtime 前必须明确威胁模型。
+[`ADR-0025`](../adr/0025-mvu-and-local-security-boundary.md) 已固定威胁模型和目标边界：
+默认 loopback、Origin allowlist、per-process capability、卡片脚本禁用、Markdown/HTML
+allowlist、静态路径和 body 限制，以及 secret 不出 Store。当前 CLI 的 `0.0.0.0`、CORS `*`
+和主页面 script 重执行仍需实现级修复；在这些 enforcement 完成前不能宣称本地安全边界 Proven。

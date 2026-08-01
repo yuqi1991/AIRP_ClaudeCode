@@ -7,6 +7,7 @@
 - 维护 engine 深模块边界；
 - 为现有导入、MVU、context、render 和 server API 建最小自动化测试；
 - 建卡片兼容测试集并实现 [`ADR-0024`](../adr/0024-import-diagnostics-report.md) 定义的导入诊断报告；
+- 按 [`ADR-0025`](../adr/0025-mvu-and-local-security-boundary.md) 收回卡片脚本、MVU 和本地 HTTP 的安全边界；
 - 记录当前人工 E2E 路径。
 
 **完成标志**：现有 Claude Code 原型可被可靠回归验证，不再只靠手工经验。

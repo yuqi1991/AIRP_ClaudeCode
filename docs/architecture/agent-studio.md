@@ -90,6 +90,10 @@ Monitor 的存档区展示当前存档名称、Revision 和最后保存时间，
 
 导入边界同时产生 [`airp.import-diagnostics` v1 报告](../adr/0024-import-diagnostics-report.md)。报告记录源路径、目标路径、导入/规范化/默认/跳过/失败状态，以及内嵌 Worldbook 的条目计数和绑定结果；`success`、`degraded`、`failed` 只描述本次导入结果，不替代 Project 或 Worldbook 事实。没有 AIRP 运行时映射的 SillyTavern extensions 只能作为兼容性 finding 展示，不能静默伪装成已执行能力。
 
+角色卡内容和 Studio API 遵循 [`ADR-0025`](../adr/0025-mvu-and-local-security-boundary.md)：
+卡片脚本默认不在主页面执行，Runtime commit 只接受 schema wildcard 允许的动态 MVU
+路径；本地服务默认 loopback，并以受控 Origin/capability 保护 API、SSE 和动态投影。
+
 ## Provider Profiles
 
 Provider Profile 只管理连接与模型目录，不拥有 Agent 的生成参数。第一阶段支持多个真正可调用的 OpenAI-compatible Provider，并明确区分两种 API format：
