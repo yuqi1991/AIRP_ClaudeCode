@@ -94,6 +94,10 @@ Monitor 的存档区展示当前存档名称、Revision 和最后保存时间，
 卡片脚本默认不在主页面执行，Runtime commit 只接受 schema wildcard 允许的动态 MVU
 路径；本地服务默认 loopback，并以受控 Origin/capability 保护 API、SSE 和动态投影。
 
+游玩中的配置修改遵循 [`ADR-0026`](../adr/0026-project-editing-and-trace-semantics.md)：
+Project/Library revision 只影响后续 Task，Session revision 只记录故事提交；Task 创建时
+冻结配置来源和 hash，未保存表单在切换时直接丢弃，运行中保存不会替换当前 Execution Plan。
+
 ## Provider Profiles
 
 Provider Profile 只管理连接与模型目录，不拥有 Agent 的生成参数。第一阶段支持多个真正可调用的 OpenAI-compatible Provider，并明确区分两种 API format：

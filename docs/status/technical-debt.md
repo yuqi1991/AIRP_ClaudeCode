@@ -42,6 +42,16 @@ success/degraded/failed 语义；原型已验证三类报告形状。仍需把 e
 `import_card.py`/`import_prepare.py`，建立 PNG/JSON/TXT 和变量/正则/美化兼容 fixture，
 并在游戏抽屉展示可定位的修复建议。
 
+## P1：设定编辑缺少 revision 与 audit
+
+**状态：Working**
+
+Project/Library 保存目前主要依赖 `updated_at`，`ProjectRuntimeStore.refresh()` 和 Graph
+选择会即时 materialize/rebind，无法向玩家证明运行中 Task 仍使用旧配置。
+[`ADR-0026`](../adr/0026-project-editing-and-trace-semantics.md) 已锁定三类 revision、
+expected revision 冲突、不可变 audit、Task source snapshot provenance 和“回退配置产生
+新 revision”语义。仍需实现持久化 revision/audit、延迟 rebind 和对应回归测试。
+
 ## P1：MVU 校验过宽
 
 **状态：Working**

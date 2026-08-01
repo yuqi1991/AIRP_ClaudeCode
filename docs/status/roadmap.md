@@ -47,6 +47,7 @@ commit、projection 和 durable events 的回合生命周期。真实 Provider�
 - 修改进入可追溯的设定层，并立即影响后续回合；
 - 提供结构化卡片/世界书调试器；
 - 接入 [`ADR-0024`](../adr/0024-import-diagnostics-report.md) 的导入兼容报告、错误定位和修复建议。
+- 按 [`ADR-0026`](../adr/0026-project-editing-and-trace-semantics.md) 为游玩中设定编辑增加 revision、冲突、审计和配置快照追溯。
 
 ## Phase 4 — 数据与多会话重构
 

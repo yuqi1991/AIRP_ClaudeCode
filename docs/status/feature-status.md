@@ -28,6 +28,7 @@
 | Provider 发布 qualification / 浏览器真实长会话 | ADR-0022 已锁定能力契约；DeepSeek 单回合 opt-in smoke 存在 | 仍需每个发布 route 的 20 回合 soak、2 次 SSE 重连和 1 次 Runtime 重启证据 |
 | 卡片/世界书兼容诊断 | [`ADR-0024`](../adr/0024-import-diagnostics-report.md) 已锁定 `airp.import-diagnostics` v1、逐字段 provenance 和 success/degraded/failed 语义；原型已验证完整/降级/失败三类输入 | `import_card.py`/`import_prepare.py` 尚未发出正式报告；缺真实 fixture、API 返回和游戏抽屉展示 |
 | MVU 与本地安全边界 | [`ADR-0025`](../adr/0025-mvu-and-local-security-boundary.md) 已锁定 strict commit、schema wildcard、脚本禁用、loopback/Origin/capability 和 secret/HTML 边界 | 现有 strict validator、路径约束和 SecretStore 已有证据；wildcard、host/CORS/auth、sanitizer 与脚本移除仍待实现 |
+| 游玩中设定编辑与追溯 | [`ADR-0026`](../adr/0026-project-editing-and-trace-semantics.md) 已锁定 Project/Library revision 与 Session revision 分离、Task 配置快照、未保存丢弃和冲突语义 | 当前只有 `updated_at` 和即时 materialize/rebind；缺 revision token、audit、延迟 rebind 和配置来源注入 |
 | 后台 NPC 与剧情规划 | 作为用户 Agent instruction/Worldbook 内容运行 | 引擎不提供内置叙事规则，质量取决于用户配置 |
 
 ## 明确不属于引擎
