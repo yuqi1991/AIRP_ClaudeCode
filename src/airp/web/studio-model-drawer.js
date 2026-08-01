@@ -77,9 +77,13 @@
 
   function setHeader(model) {
     var title = $('studio-drawer-title');
-    var tabs = document.querySelector('.studio-drawer-tabs');
-    if (title) title.textContent = model ? '模型' : 'Agents 与编排';
-    if (tabs) tabs.setAttribute('aria-label', model ? 'Studio 模型视图' : 'Agents 与编排视图');
+    if (!title) return;
+    if (model) {
+      title.textContent = '模型';
+      return;
+    }
+    var agentsState = global.AIRPStudioAgentsDrawer && global.AIRPStudioAgentsDrawer.state;
+    title.textContent = agentsState && agentsState.view === 'orchestration' ? '编排' : 'Agents';
   }
 
   function renderModelView() {
@@ -88,11 +92,6 @@
     var agentsToggle = $('studio-agents-toggle');
     if (modelToggle) modelToggle.setAttribute('aria-expanded', active ? 'true' : 'false');
     if (agentsToggle) agentsToggle.setAttribute('aria-expanded', 'false');
-    document.querySelectorAll('[data-studio-drawer-view]').forEach(function (button) {
-      var isActive = button.getAttribute('data-studio-drawer-view') === 'model';
-      button.classList.toggle('is-active', isActive);
-      button.setAttribute('aria-selected', isActive ? 'true' : 'false');
-    });
     document.querySelectorAll('[data-studio-drawer-panel]').forEach(function (panel) {
       var isActive = panel.getAttribute('data-studio-drawer-panel') === 'model';
       panel.classList.toggle('is-active', isActive);
@@ -364,11 +363,6 @@
   }
 
   function bind() {
-    var modelTab = document.querySelector('[data-studio-drawer-view="model"]');
-    if (modelTab) modelTab.addEventListener('click', function () {
-      renderModelView();
-      if (!state.loaded) loadProfiles();
-    });
     var toggle = $('studio-model-toggle');
     if (toggle) toggle.addEventListener('click', openModel);
     $('studio-provider-new').addEventListener('click', function () {

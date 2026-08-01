@@ -324,9 +324,6 @@
 .studio-drawer-status { color: var(--airp-color-accent-muted); font-size: .72rem; }
 .studio-icon-button { width: 28px; height: 28px; padding: 0; border: 1px solid var(--airp-color-border); border-radius: 4px; background: var(--airp-color-input); color: var(--airp-color-text); font-size: 1.15rem; line-height: 1; cursor: pointer; }
 .studio-icon-button:hover, .studio-icon-button:focus-visible { color: var(--airp-color-accent); border-color: var(--airp-color-accent); outline: none; }
-.studio-drawer-tabs { display: flex; align-items: center; gap: 2px; padding: 0 18px; background: var(--airp-color-surface); border-bottom: 1px solid var(--airp-color-border); }
-.studio-drawer-tab { border: 0; border-bottom: 2px solid transparent; padding: 9px 13px 8px; background: transparent; color: var(--airp-color-muted); font-size: .8rem; cursor: pointer; }
-.studio-drawer-tab:hover, .studio-drawer-tab.is-active { color: var(--airp-color-text); border-bottom-color: var(--airp-color-accent); }
 .studio-drawer-view { min-height: 0; overflow: auto; }
 .studio-drawer-grid { display: grid; min-height: 0; }
 .studio-agent-grid { grid-template-columns: minmax(150px, .75fr) minmax(270px, 1.5fr) minmax(210px, 1fr); }

@@ -116,6 +116,14 @@
     if (worldbookToggle) worldbookToggle.setAttribute('aria-expanded', 'false');
     var regexToggle = $('studio-regex-toggle');
     if (regexToggle) regexToggle.setAttribute('aria-expanded', nextView === 'regex-collections' ? 'true' : 'false');
+    var modeToggle = $('studio-drawer-mode-toggle');
+    if (modeToggle) {
+      modeToggle.hidden = nextView !== 'agents' && nextView !== 'orchestration';
+      modeToggle.setAttribute('aria-label', nextView === 'agents' ? '切换到编排' : '切换到 Agents');
+      modeToggle.title = nextView === 'agents' ? '切换到编排' : '切换到 Agents';
+    }
+    var title = $('studio-drawer-title');
+    if (title) title.textContent = nextView === 'orchestration' ? '编排' : (nextView === 'agents' ? 'Agents' : (nextView === 'model' ? '模型' : 'Regex Collections'));
     patchWorkspace({ open: true, view: 'agents-orchestration:' + nextView });
     emit('studio:drawer-opened', { view: nextView });
     renderDrawerView();
@@ -133,6 +141,8 @@
     if (modelToggle) modelToggle.setAttribute('aria-expanded', 'false');
     var regexToggle = $('studio-regex-toggle');
     if (regexToggle) regexToggle.setAttribute('aria-expanded', 'false');
+    var modeToggle = $('studio-drawer-mode-toggle');
+    if (modeToggle) modeToggle.hidden = true;
     patchWorkspace({ open: false, view: null });
     emit('studio:drawer-closed');
   }
@@ -143,11 +153,6 @@
   }
 
   function renderDrawerView() {
-    qa('[data-studio-drawer-view]').forEach(function (button) {
-      var active = button.getAttribute('data-studio-drawer-view') === state.view;
-      button.classList.toggle('is-active', active);
-      button.setAttribute('aria-selected', active ? 'true' : 'false');
-    });
     qa('[data-studio-drawer-panel]').forEach(function (panel) {
       var active = panel.getAttribute('data-studio-drawer-panel') === state.view;
       panel.classList.toggle('is-active', active);
@@ -768,13 +773,13 @@
     $('studio-agents-toggle').addEventListener('click', function() {
       var current = global.AIRPWorkspace && global.AIRPWorkspace.state && global.AIRPWorkspace.state.studioDrawer;
       var currentView = current && current.view || '';
-      var agentsView = currentView === 'agents-orchestration:agents' || currentView === 'agents-orchestration:orchestration';
+      var agentsView = currentView === 'agents-orchestration:agents';
       if (!host.hidden && agentsView) closeDrawer();
       else openDrawer('agents');
     });
     $('studio-drawer-close').addEventListener('click', closeDrawer);
-    qa('[data-studio-drawer-view]').forEach(function (button) {
-      button.addEventListener('click', function () { openDrawer(button.getAttribute('data-studio-drawer-view')); });
+    $('studio-drawer-mode-toggle').addEventListener('click', function () {
+      openDrawer(state.view === 'agents' ? 'orchestration' : 'agents');
     });
     qa('[data-agent-editor-view]').forEach(function (button) {
       button.addEventListener('click', function () { editorView(button.getAttribute('data-agent-editor-view')); });

@@ -51,6 +51,9 @@ def test_game_page_uses_airp_nav_order_and_dark_reading_surface():
     assert "--bg: #061326" in page
     assert "--accent: #d8b76a" in page
     assert "airp-markdown-table" in page
+    assert '<span class="sep">' not in page
+    assert '<span class="tag" id="tb-world">—</span>' not in page
+    assert 'setText(\'tb-time\', S.time || \'—\')' not in page
 
 
 def test_workspace_contract_exports_state_and_event_boundaries():
@@ -112,8 +115,9 @@ def test_agents_orchestration_drawer_exposes_linear_editor_contract():
 
     assert '<script src="studio-agents-drawer.js"></script>' in page
     for marker in (
-        'data-studio-drawer-view="agents"',
-        'data-studio-drawer-view="orchestration"',
+        'data-studio-drawer-panel="agents"',
+        'data-studio-drawer-panel="orchestration"',
+        'id="studio-drawer-mode-toggle"',
         'id="studio-agent-search"',
         'id="studio-agent-instruction"',
         'id="studio-agent-preview"',
@@ -125,6 +129,9 @@ def test_agents_orchestration_drawer_exposes_linear_editor_contract():
         'id="studio-graph-output"',
     ):
         assert marker in page
+    assert 'class="studio-drawer-tabs"' not in page
+    assert 'data-studio-drawer-view="agents"' not in page
+    assert 'data-studio-drawer-view="orchestration"' not in page
     for api_path in (
         "/v1/studio/agents",
         "/prompt-preview",
@@ -192,7 +199,7 @@ def test_model_drawer_exposes_redacted_provider_profile_contract():
     assert '<script src="studio-model-drawer.js"></script>' in page
     for marker in (
         'id="studio-model-toggle"',
-        'data-studio-drawer-view="model"',
+        'data-studio-drawer-panel="model"',
         'id="studio-model-view"',
         'id="studio-provider-list"',
         'id="studio-provider-format"',
@@ -204,6 +211,8 @@ def test_model_drawer_exposes_redacted_provider_profile_contract():
         'id="studio-provider-delete-key"',
     ):
         assert marker in page
+    assert 'class="studio-drawer-tabs"' not in page
+    assert 'data-studio-drawer-view="model"' not in page
     for api_path in (
         "/v1/studio/providers",
         "/test",

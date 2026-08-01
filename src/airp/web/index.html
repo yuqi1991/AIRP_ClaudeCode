@@ -81,8 +81,8 @@ body {
   padding: 1px 10px; border-radius: 10px;
   font-size: 0.8em; font-weight: 600; white-space: nowrap;
 }
-#topbar .sep { color: var(--border); }
 #topbar .dim { color: var(--muted); }
+#topbar .topbar-context-value:empty { display: none; }
 #topbar .spacer { flex: 1; }
 #sidebar-toggle {
   display: none; width: 28px; height: 26px; padding: 0;
@@ -367,7 +367,6 @@ body {
     position: relative; z-index: 70; overflow: hidden;
   }
   #topbar > .dot:not(#conn-dot),
-  #topbar > .sep,
   #topbar > .dim { display: none; }
   #topbar .tag { max-width: 110px; overflow: hidden; text-overflow: ellipsis; }
   #sidebar-toggle { display: inline-grid; place-items: center; flex-shrink: 0; }
@@ -992,13 +991,10 @@ html, body { color-scheme: dark; }
   <span class="dot green"></span>
   <span class="dot yellow"></span>
   <span class="dot red"></span>
-  <span class="tag" id="tb-world">—</span>
-  <span class="sep">|</span>
-  <span id="tb-stage">—</span>
-  <span class="sep">|</span>
-  <span class="dim" id="tb-time">—</span>
-  <span class="sep">|</span>
-  <span class="dim" id="tb-location">—</span>
+  <span class="tag topbar-context-value" id="tb-world"></span>
+  <span class="topbar-context-value" id="tb-stage"></span>
+  <span class="dim topbar-context-value" id="tb-time"></span>
+  <span class="dim topbar-context-value" id="tb-location"></span>
   <span class="spacer"></span>
   <span class="dim" style="font-size:0.75em;" id="conn-label">桥接:</span>
   <span id="conn-dot" class="dot red" title="服务器未连接"></span>
@@ -1023,14 +1019,10 @@ html, body { color-scheme: dark; }
       </div>
       <div class="studio-drawer-header-actions">
         <span class="studio-drawer-status" id="studio-drawer-status" aria-live="polite"></span>
+        <button class="studio-icon-button" id="studio-drawer-mode-toggle" type="button" aria-label="切换 Agents 与编排" title="切换 Agents 与编排" hidden>⇄</button>
         <button class="studio-icon-button" id="studio-drawer-close" type="button" aria-label="关闭 Agents 与编排 抽屉" title="关闭">×</button>
       </div>
     </header>
-    <nav class="studio-drawer-tabs" aria-label="Agents 与编排视图">
-      <button class="studio-drawer-tab is-active" type="button" data-studio-drawer-view="agents" aria-selected="true">Agents</button>
-      <button class="studio-drawer-tab" type="button" data-studio-drawer-view="orchestration" aria-selected="false">编排</button>
-      <button class="studio-drawer-tab" type="button" data-studio-drawer-view="model" aria-selected="false">模型</button>
-    </nav>
 
     <section class="studio-drawer-view is-active" id="studio-agents-view" data-studio-drawer-panel="agents" aria-label="Agents 管理">
       <div class="studio-drawer-grid studio-agent-grid">
@@ -1490,10 +1482,10 @@ function render() {
   document.title = (S.world || 'RP') + ' — ' + (S.stage || '');
 
   // Top bar (only update if changed to avoid DOM flicker)
-  setText('tb-world', replaceUser(S.world || '—'));
-  setText('tb-stage', S.stage || '—');
-  setText('tb-time', S.time || '—');
-  setText('tb-location', S.location || '—');
+  setText('tb-world', replaceUser(S.world || ''));
+  setText('tb-stage', S.stage || '');
+  setText('tb-time', S.time || '');
+  setText('tb-location', S.location || '');
   setText('tb-count', '已生成: ' + (S.generatedCount || 0));
 
   // Content — only replace DOM when the source string actually

@@ -74,7 +74,7 @@
 
   function integratedPanel() {
     var currentPanel = document.getElementById('studio-drawer-panel');
-    return currentPanel && currentPanel.querySelector('.studio-drawer-tabs') ? currentPanel : null;
+    return currentPanel && currentPanel.querySelector('[data-studio-drawer-panel="agents"]') ? currentPanel : null;
   }
 
   function legacyPanel() {
@@ -121,17 +121,6 @@
     var currentPanel = panel();
     var integrated = integratedPanel();
     if (integrated) {
-      var integratedTabs = integrated.querySelector('.studio-drawer-tabs');
-      if (!integratedTabs || integratedTabs.querySelector('[data-regex-drawer-view="regex-collections"]')) return;
-      var integratedButton = document.createElement('button');
-      integratedButton.type = 'button';
-      integratedButton.className = 'studio-drawer-tab regex-drawer-tab';
-      integratedButton.dataset.regexDrawerView = 'regex-collections';
-      integratedButton.dataset.studioDrawerView = 'regex-collections';
-      integratedButton.setAttribute('aria-selected', 'false');
-      integratedButton.textContent = 'Regex Collections';
-      integratedButton.addEventListener('click', function() { setView('regex-collections'); });
-      integratedTabs.appendChild(integratedButton);
       return;
     }
     if (!currentPanel || currentPanel.querySelector('.regex-drawer-tabs')) return;
@@ -194,11 +183,6 @@
       if (mount) mount.hidden = view !== 'worldbooks';
       var title = document.getElementById('studio-drawer-title');
       if (title) title.textContent = isRegex ? 'Regex Collections' : (view === 'orchestration' ? 'Agents 与编排' : (view === 'model' ? '模型' : 'Agents 与编排'));
-      integrated.querySelectorAll('[data-studio-drawer-view]').forEach(function(tab) {
-        var active = tab.getAttribute('data-studio-drawer-view') === view;
-        tab.classList.toggle('is-active', active);
-        tab.setAttribute('aria-selected', active ? 'true' : 'false');
-      });
       var worldbook = legacyPanel();
       if (worldbook) worldbook.hidden = view !== 'worldbooks';
       if (isRegex) {
