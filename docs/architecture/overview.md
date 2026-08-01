@@ -25,6 +25,10 @@ Browser ── HTTP commands / SSE ──► airp.server
 
 `airp-runtime` 负责导入或恢复卡片、恢复活动 session、交付 opening 并启动 `0.0.0.0:8765`。Studio 是 Provider、Agent、Graph、Project、Worldbook 和 Regex Collection 的唯一编辑入口；游戏页只选择激活 Graph。
 
+Provider 的 canonical 入口是 OpenAI-compatible `chat_completions`/`responses` adapter。默认
+CI 使用 FakeProvider 和 loopback 协议 fixture；真实 Provider 只有通过 ADR-0022 的 opt-in
+qualification 才能列入已支持清单，未通过的配置必须显式标为 Experimental。
+
 ## 深模块
 
 | Module | 职责 |

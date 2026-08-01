@@ -23,6 +23,10 @@
 commit、projection 和 durable events 的回合生命周期。#17 继续验证真实 Provider、断线和
 长会话恢复；这不等同于任意 DAG 或多 Agent 世界模拟已经决定。
 
+**已锁定的 Provider 发布边界**：ADR-0022 采用 OpenAI-compatible 能力契约；默认 CI 使用
+无密钥 fixture，真实发布 route 需要 opt-in qualification，包括 20 回合 bounded soak、
+两次 SSE 重连和一次 Runtime 重启。未通过的 Provider 保持 Experimental。
+
 **历史研究**：[`Pi Agent Execution Layer 可行性研究`](../research/pi-runtime-evaluation.md)。该候选已由 ADR-0019 否决，当前执行层是 AIRP 自有 Graph Runtime + OpenAI-compatible Provider Adapter。
 
 **已完成决策**：Graph/Provider/Tool/Worldbook 边界已在 AIRP 内部验证；真实 DeepSeek 路径通过 OpenAI-compatible adapter 接入，Pi sidecar、Pi package 和第二套 agent loop 已删除。

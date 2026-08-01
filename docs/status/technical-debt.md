@@ -47,6 +47,10 @@ Studio 配置。`state.js`/`content.js` 仍是单张卡的可重建兼容 projec
 Python 回归、Studio API、Graph trace、浏览器黄金路径和 opt-in Provider 测试已集中在
 `tests/`，默认 `pytest` 可运行。跨 provider、断线/代理 SSE 和长会话故障注入仍待补齐。
 
+Provider 发布边界已由 [ADR-0022](../adr/0022-provider-release-qualification.md) 固定：
+默认 CI 不使用真实 key；每个准备发布的 route 仍需 20 回合 bounded soak、两次 SSE 重连
+和一次 Runtime 重启 qualification。
+
 ## P2：本地安全边界需审视
 
 **状态：Working**
