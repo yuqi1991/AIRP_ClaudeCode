@@ -34,7 +34,7 @@
     '<section class="worldbook-drawer-panel" role="dialog" aria-modal="true" aria-labelledby="worldbook-drawer-title" data-airp-drawer-view="worldbooks" data-studio-drawer-panel="worldbooks">',
       '<header class="worldbook-drawer-header">',
         '<div><div class="worldbook-drawer-kicker">AIRP Studio</div><div class="worldbook-drawer-title" id="worldbook-drawer-title">Worldbook Definitions</div></div>',
-        '<button class="worldbook-drawer-close" id="worldbook-drawer-close" type="button" data-worldbook-drawer-close="true" aria-label="Close Studio drawer">Close</button>',
+        '<button class="worldbook-drawer-close" id="worldbook-drawer-close" type="button" data-worldbook-drawer-close="true" aria-label="关闭世界书抽屉" title="关闭">×</button>',
       '</header>',
       '<div class="worldbook-drawer-toolbar">',
         '<input class="worldbook-drawer-search" id="worldbook-drawer-library-search" type="search" placeholder="Search Worldbooks" aria-label="Search Worldbooks">',

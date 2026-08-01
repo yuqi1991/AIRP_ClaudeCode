@@ -104,6 +104,17 @@
   font-weight: 600;
 }
 
+.worldbook-drawer-close {
+  width: 30px;
+  height: 30px;
+  min-height: 30px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  font-size: 1.15rem;
+  line-height: 1;
+}
+
 .worldbook-drawer-close:hover,
 .worldbook-drawer-button:hover,
 .worldbook-drawer-close:focus-visible,

@@ -193,6 +193,8 @@ def test_game_page_mounts_worldbook_definition_drawer_and_api_actions():
     assert "worldbook-drawer-panel" in styles
     assert "worldbook-drawer-body" in styles
     assert "worldbook-entry-card" in styles
+    assert 'aria-label="关闭世界书抽屉"' in script
+    assert ".worldbook-drawer-close" in styles
 
 
 def test_model_drawer_exposes_redacted_provider_profile_contract():
@@ -235,3 +237,10 @@ def test_model_drawer_exposes_redacted_provider_profile_contract():
     ):
         assert behavior in script or behavior in page
     assert ".studio-provider-grid" in styles
+
+
+def test_regex_view_cannot_leak_into_other_integrated_drawer_views():
+    styles = (WEB_ROOT / "regex-drawer.css").read_text(encoding="utf-8")
+
+    assert ".regex-drawer-view[hidden]" in styles
+    assert "display: none !important" in styles
