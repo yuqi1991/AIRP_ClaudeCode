@@ -75,7 +75,9 @@ Python 映射：
 - **默认 model**：`deepseek-v4-flash`（`RealProviderAdapter.DEFAULT_MODEL` / `model=` 构造参数）
 - **默认 base_url**：`https://api.deepseek.com`（构造参数 / metadata 覆盖，供代理）
 - **Mock**：`RealProviderAdapter(mock=True)` 或 env `PI_SIDECAR_MOCK=1` 或 sidecar `--mock` — 无网络/无 key 的 IPC 单测路径
-- **Sidecar 脚本**：`src/airp/resources/sidecar/pi_provider_sidecar.mjs`（`skills/sidecar/` 仅为兼容副本）
+- **当前实现**：真实 Provider 由 `src/airp/engine/provider.py` 的 OpenAI-compatible
+  adapter 直接调用；Pi sidecar 与 `skills/sidecar/` 兼容副本均已删除，相关
+  历史内容保留在本 ADR 作为决策记录。
 - **Adapter**：`src/airp/engine/provider.py` → `RealProviderAdapter`
 
 ### 5. 凭证纪律
@@ -88,18 +90,18 @@ Python 映射：
 
 | 层 | 内容 | 门禁 |
 |---|---|---|
-| Fast | 既有 78 + mock sidecar IPC / director commit / no-leak | 默认 `pytest` 必绿 |
-| Opt-in | `skills/tests/test_real_deepseek_e2e.py` | `skip` unless `DEEPSEEK_API_KEY` |
+| Fast | 既有测试 + OpenAI-compatible provider / director commit / no-leak | 默认 `pytest` 必绿 |
+| Opt-in | `tests/test_real_deepseek_e2e.py` | `skip` unless `DEEPSEEK_API_KEY` |
 
 ### 7. E2E 状态
 
-**PASSED（真实 DeepSeek，2026-07-26）** — 主 agent 在本机 `DEEPSEEK_API_KEY` env 下跑了 `skills/tests/test_real_deepseek_e2e.py`，`deepseek-v4-flash` 真实流式中文叙事、多轮工具循环、`commit_turn_draft` 一次可见 commit、真实 `usage`/`cost_estimate`/`latency`/`stop_reason` 均验证通过（89 passed，含该 opt-in 测试）。
+**PASSED（真实 DeepSeek，2026-07-26）** — 主 agent 在本机 `DEEPSEEK_API_KEY` env 下跑了根目录 `tests/test_real_deepseek_e2e.py`，`deepseek-v4-flash` 真实流式中文叙事、多轮工具循环、一次可见 commit、真实 `usage`/`cost_estimate`/`latency`/`stop_reason` 均验证通过。
 
 复跑：
 
 ```bash
 source ~/.zshrc  # 或确保 DEEPSEEK_API_KEY 在 env
-python -m pytest -q skills/tests/test_real_deepseek_e2e.py
+python -m pytest -q tests/test_real_deepseek_e2e.py
 ```
 
 #### E2E 暴露并修复的两个真实 bug（FakeProvider 未覆盖）

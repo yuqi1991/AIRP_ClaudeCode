@@ -10,6 +10,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from airp.host.rp.session_runtime import SessionTurnRuntime
 from airp.engine.active_graph import ActiveGraphSelectionStore
+from airp.engine.agent_definitions import AgentDefinitionStore
+from airp.engine.graph_definitions import GraphDefinitionStore
+from airp.engine.project_library import ProjectLibrary
+from airp.engine.secret_store import LocalSecretStore
+from airp.engine.studio_library import ProviderProfileStore
+from airp.engine.worldbook_library import WorldbookLibrary
+from airp.compat.studio_migration import migrate_legacy_studio_directory
 from airp.workspace import Workspace
 from airp.server import SessionRuntimeServer
 
@@ -99,6 +106,86 @@ def test_server_bootstraps_legacy_runtime_into_studio_and_binds_project(tmp_path
         assert active["selected"]["graph_id"] == "default"
         assert active["graphs"][0]["id"] == "default"
         assert server.active_graphs.graph_id_for(runtime.project_id) == "default"
+
+
+def test_migrate_legacy_studio_directory_is_idempotent_and_preserves_worldbooks(tmp_path: Path):
+    source = tmp_path / "old-styles"
+    studio = source / "studio"
+    for name in ("providers", "agents", "graphs", "worldbooks", "projects"):
+        (studio / name).mkdir(parents=True)
+    (studio / "providers" / "provider-a.json").write_text(
+        json.dumps({"id": "provider-a", "name": "Provider A", "base_url": "https://example.test"}),
+        encoding="utf-8",
+    )
+    (studio / "agents" / "agent-a.json").write_text(
+        json.dumps({"id": "agent-a", "name": "Agent A", "instruction": "debug"}),
+        encoding="utf-8",
+    )
+    (studio / "graphs" / "graph-a.json").write_text(
+        json.dumps(
+            {
+                "id": "graph-a",
+                "name": "Graph A",
+                "nodes": [{"id": "node-a", "agent_id": "agent-a"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (studio / "worldbooks" / "book-a.json").write_text(
+        json.dumps(
+            {
+                "id": "book-a",
+                "name": "Book A",
+                "entries": [{"id": "entry-a", "title": "Facts", "content": "text"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (studio / "projects" / "project-a.json").write_text(
+        json.dumps(
+            {
+                "id": "project-a",
+                "name": "Project A",
+                "description": "card",
+                "worldbook_ids": ["book-a"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (studio / "secrets.json").write_text(json.dumps({"provider-a": "secret-value"}), encoding="utf-8")
+
+    workspace = Workspace.from_root(tmp_path / "workspace").ensure()
+    provider_store = ProviderProfileStore(source, workspace=workspace)
+    agent_store = AgentDefinitionStore(source, workspace=workspace)
+    graph_store = GraphDefinitionStore(source, agent_store=agent_store, workspace=workspace)
+    worldbook_store = WorldbookLibrary(source, workspace=workspace)
+    project_store = ProjectLibrary(source, worldbooks=worldbook_store, workspace=workspace)
+    secret_store = LocalSecretStore(workspace.secrets_path)
+    stores = {
+        "source_root": source,
+        "provider_store": provider_store,
+        "secret_store": secret_store,
+        "agent_store": agent_store,
+        "graph_store": graph_store,
+        "worldbook_store": worldbook_store,
+        "project_store": project_store,
+    }
+
+    first = migrate_legacy_studio_directory(**stores)
+    second = migrate_legacy_studio_directory(**stores)
+
+    assert first["providers"] == 1
+    assert first["agents"] == 1
+    assert first["graphs"] == 1
+    assert first["worldbooks"] == 1
+    assert first["projects"] == 1
+    assert first["secrets"] == 1
+    assert not first["errors"]
+    assert second["providers"] == 0
+    assert second["worldbooks"] == 0
+    assert worldbook_store.get_worldbook("book-a")["entries"][0]["content"] == "text"
+    assert project_store.get_project("project-a")["worldbook_ids"] == ["book-a"]
+    assert secret_store.get("provider-a") == "secret-value"
 
 
 def test_game_page_only_exposes_graph_activation_selector():

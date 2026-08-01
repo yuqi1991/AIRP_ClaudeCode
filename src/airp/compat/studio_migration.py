@@ -187,6 +187,96 @@ def bootstrap_legacy_runtime_library(
     }
 
 
+def migrate_legacy_studio_directory(
+    *,
+    source_root: str | Path,
+    provider_store,
+    secret_store=None,
+    agent_store=None,
+    graph_store=None,
+    worldbook_store=None,
+    project_store=None,
+) -> dict[str, Any]:
+    """Import the old ``styles/studio`` library into the Workspace stores.
+
+    The old runtime kept Studio JSON beside generated web projections.  The
+    active application now owns those objects under :class:`Workspace`; this
+    explicit migration keeps the old files readable without making the new
+    runtime depend on ``skills``.  Existing IDs are left untouched, making a
+    repeated migration safe.
+    """
+
+    studio_root = Path(source_root).expanduser().resolve() / "studio"
+    summary: dict[str, Any] = {
+        "providers": 0,
+        "agents": 0,
+        "graphs": 0,
+        "worldbooks": 0,
+        "projects": 0,
+        "secrets": 0,
+        "skipped": 0,
+        "errors": [],
+    }
+    if not studio_root.is_dir():
+        return summary
+
+    def import_directory(folder: str, store, create_name: str, counter: str) -> None:
+        if store is None:
+            return
+        directory = studio_root / folder
+        if not directory.is_dir():
+            return
+        create = getattr(store, create_name)
+        for path in sorted(directory.glob("*.json")):
+            payload = _read_object(path)
+            if not payload:
+                summary["errors"].append(f"{path}: invalid JSON object")
+                continue
+            object_id = payload.get("id") or payload.get("agent_id") or payload.get("project_id")
+            try:
+                if object_id:
+                    getter_name = {
+                        "providers": "get_profile",
+                        "agents": "get_agent",
+                        "graphs": "get_graph",
+                        "worldbooks": "get_worldbook",
+                        "projects": "get_project",
+                    }[counter]
+                    try:
+                        getattr(store, getter_name)(object_id)
+                        summary["skipped"] += 1
+                        continue
+                    except Exception:
+                        pass
+                create(payload)
+                summary[counter] += 1
+            except Exception as exc:
+                summary["errors"].append(f"{path.name}: {exc}")
+
+    import_directory("providers", provider_store, "create_profile", "providers")
+    import_directory("agents", agent_store, "create_agent", "agents")
+    import_directory("graphs", graph_store, "create_graph", "graphs")
+    import_directory("worldbooks", worldbook_store, "create_worldbook", "worldbooks")
+    import_directory("projects", project_store, "create_project", "projects")
+
+    secrets_path = studio_root / "secrets.json"
+    if secret_store is not None and secrets_path.is_file():
+        raw_secrets = _read_object(secrets_path)
+        for key, value in raw_secrets.items():
+            if not isinstance(key, str) or not isinstance(value, str) or not value.strip():
+                summary["errors"].append(f"{secrets_path.name}: invalid secret entry")
+                continue
+            try:
+                if not secret_store.has(key):
+                    secret_store.set(key, value)
+                    summary["secrets"] += 1
+                else:
+                    summary["skipped"] += 1
+            except Exception as exc:
+                summary["errors"].append(f"{secrets_path.name}:{key}: {exc}")
+    return summary
+
+
 def _legacy_agent_instruction(settings: dict[str, Any]) -> str:
     """Turn the removed game-side writing controls into editable Agent text."""
     preferences: list[str] = []

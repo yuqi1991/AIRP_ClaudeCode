@@ -54,6 +54,31 @@ def _ensure_web_assets(styles: Path) -> None:
     shutil.copytree(assets, styles, dirs_exist_ok=True)
 
 
+def _migrate_legacy_studio(root: Path, styles: Path, workspace) -> dict | None:
+    """Import a pre-Workspace Studio library once, when one is present."""
+    candidates = (root / "skills" / "styles", root / "styles")
+    source = next(
+        (candidate for candidate in candidates if (candidate / "studio").is_dir()),
+        None,
+    )
+    if source is None:
+        return None
+
+    from airp.application import Application
+    from airp.compat.studio_migration import migrate_legacy_studio_directory
+
+    application = Application.assemble(static_root=styles, workspace=workspace)
+    return migrate_legacy_studio_directory(
+        source_root=source,
+        provider_store=application.provider_profile_store,
+        secret_store=application.provider_secret_store,
+        agent_store=application.agent_store,
+        graph_store=application.graph_store,
+        worldbook_store=application.worldbooks,
+        project_store=application.projects,
+    )
+
+
 def _die(msg: str, code: int = 1) -> None:
     print(json.dumps({"ok": False, "error": msg}, ensure_ascii=False), file=sys.stderr)
     sys.exit(code)
@@ -195,6 +220,9 @@ def main() -> None:
     workspace = Workspace.default().ensure()
     styles = _resolve_styles_root(root, workspace)
     _ensure_web_assets(styles)
+    migrated = _migrate_legacy_studio(root, styles, workspace)
+    if migrated and any(migrated.get(key) for key in ("providers", "agents", "graphs", "worldbooks", "projects")):
+        print(f"[start_runtime] 已迁移旧 Studio 配置: {migrated}", file=sys.stderr)
     os.environ.setdefault("AIRP_STATIC_ROOT", str(styles))
 
     # 1. Environment checks. Provider credentials belong to Studio's local

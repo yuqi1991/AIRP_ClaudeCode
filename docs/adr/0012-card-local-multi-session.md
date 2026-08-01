@@ -28,6 +28,6 @@ SQLite runtime 已能持久化一个 session 的 task、event、commit、revisio
 ## Evidence
 
 - `src/airp/host/rp/session_manager.py`
-- `skills/tests/test_studio_runtime_bootstrap.py`
-- `skills/tests/test_import_compatibility.py`
+- `tests/test_studio_runtime_bootstrap.py`
+- `tests/test_import_compatibility.py`
 - `刻晴.json` 的 JSON v2 导入、双存档游玩、浏览器切换、进程重启与桌面/390px 移动端验证（2026-07-28）

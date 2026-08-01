@@ -12,7 +12,8 @@ AIRP 当前的主要瓶颈不在角色卡、世界书、MVU 或渲染，而在�
 - `round_prepare.py` 虽能预组装本轮材料，Claude Code 的追加式 transcript 仍会保留旧对话、文件读取和世界书 Grep 结果，AIRP 无法完整决定实际模型上下文；
 - token 统计依赖解析 Claude Code 本地 transcript，而不是本轮模型调用的原生 telemetry；
 - session、事件、任务、中断、恢复、多 Agent 通信和状态写权限都不是 AIRP 的一等模型；
-- `skills/styles/` 中仍有当前激活卡的全局单例运行态。
+- 旧版 `skills/styles/` 曾保存当前激活卡的全局单例运行态；该目录现已迁移并删除，
+  当前 session state 位于 Workspace 和卡片本地 SQLite。
 
 这与 [ADR-0001](../adr/0001-claude-code-direct-drive-is-prototype.md) 已接受的判断一致：Claude Code 直驱是可运行原型，不是长期产品 runtime。
 
@@ -595,7 +596,7 @@ Existing AIRP engine owns:
 - 直接嵌入 Pi coding-agent CLI；
 - 只换 Agent loop，却继续保留 `.pending` 和无限 transcript；
 - 一开始就上多 Agent，而没有稳定的 context、commit 和 trace；
-- 继续把全局 `skills/styles/` 文件当长期 session state。
+- 继续把生成的静态投影目录当长期 session state。
 
 最重要的判断不是“Pi 功能是否比 Claude Code 多”，而是：**Pi 的 library seam 是否足够薄，使 AIRP 能拿回 runtime 所有权。** 从官方 API 看，答案足以支持最小原型；但 durable runtime、领域协议和 DeepSeek 兼容性仍必须由原型验证。
 

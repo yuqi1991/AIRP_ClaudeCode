@@ -35,6 +35,8 @@ Browser ── HTTP commands / SSE ──► airp.server
 | `airp.engine.context_compiler` | 将 revision snapshot 编译成可重放 Context Manifest |
 | `airp.engine.regex_collections` | 按 Agent 绑定的顺序规则处理 input/output/both |
 | `airp.host.rp.session_runtime` | task、event、revision、opening、commit、projection |
+| `airp.host.rp.trace` | Graph Run/Node Run 生命周期、模型/工具调用 trace 和凭证脱敏 |
+| `airp.host.rp.types` | transport/runtime 共用的 Turn、Event、Commit value objects |
 | `airp.host.rp.session_manager` | card-local session 创建、切换、重命名、删除 |
 | `airp.host.rp.tools` | Session、memory、Worldbook 的显式只读 capability |
 | `airp.import_card` / `airp.import_prepare` | PNG/JSON/TXT 导入和卡片初始化 |

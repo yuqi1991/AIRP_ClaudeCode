@@ -1,6 +1,6 @@
 # 实时运行状态
 
-当前运行状态不再由 Claude 手工编辑 HTML，也不再依赖 `skills/styles/status.html`。游戏页通过 AIRP server 的 snapshot、SSE event stream 和 `state.js/content.js` projection 显示当前 session。
+当前运行状态不再由 Claude 手工编辑 HTML，也不再依赖旧的 `skills/styles` 目录。游戏页通过 AIRP server 的 snapshot、SSE event stream 和 Workspace runtime projection 显示当前 session。
 
 ## 可观察入口
 

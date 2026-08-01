@@ -9,7 +9,8 @@
 
 ## Decision
 
-提取 `skills/engine/` 深模块：
+当时从 `skills/engine/` 提取深模块；当前实现位于 `src/airp/engine/`，旧
+`skills/engine/` 目录已删除：
 
 - `card`：卡片状态和回合编辑；
 - `render`：前端渲染；
@@ -24,4 +25,5 @@
 
 - 调用者面对更小的 interface，文件格式和 HTML/MVU 复杂度集中在 engine 内；
 - 模块可单独验证；
-- 数据目录尚未重组，styles/与卡片目录的双写问题留给后续阶段。
+- 用户数据已迁移到 Workspace；旧 `styles/` 只作为一次性兼容输入，不再是
+  AIRP 的代码或长期 session state。

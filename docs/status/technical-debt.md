@@ -2,15 +2,19 @@
 
 ## P0：独立 runtime 缺失
 
-**状态：Broken**
+**状态：Resolved**
 
-当前依赖 Claude Code session、ScheduleWakeup 和 `wait_pending`。它限制了产品独立性、上下文控制和多 agent 编排。下一代第一优先级是独立 harness/runtime。
+canonical runtime 已由 `airp.launcher`/`SessionRuntimeServer` 独立驱动，不再依赖
+Claude Code session、ScheduleWakeup、`wait_pending` 或 `skills` 目录。
 
 ## P0：全局单例运行态
 
-**状态：Broken**
+**状态：Working**
 
-兼容 projection root 中的 `.card_path`、`state.js`、`content.js` 和输入/上下文文件仍是当前激活卡的全局单例；多卡并发会互相覆盖。`state.js/content.js` 同时写在 projection 与卡片目录，缺乏单一事实源。独立 runtime 已通过 Workspace/session SQLite 降低该风险，但 legacy Claude Code loop 仍受此限制。
+Session、事件、revision 和事实状态已进入卡片本地 SQLite；Workspace 持有可复用
+Studio 配置。`state.js`/`content.js` 仍是单张卡的可重建兼容 projection，不能作为
+事实源，但不再依赖仓库级 `skills/styles` 单例。多卡并发隔离和更彻底的 projection
+替换仍是后续工作。
 
 ## P1：上下文仍不可精确控制
 
@@ -38,9 +42,10 @@
 
 ## P2：自动化测试不足
 
-**状态：Broken**
+**状态：Working**
 
-当前主要依赖人工 E2E。没有可用项目测试套件，`npm test` 不提供通过路径。应为 import、MVU、context、render、server API 和跨回合场景建立测试。
+Python 回归、Studio API、Graph trace、浏览器黄金路径和 opt-in Provider 测试已集中在
+`tests/`，默认 `pytest` 可运行。跨 provider、断线/代理 SSE 和长会话故障注入仍待补齐。
 
 ## P2：本地安全边界需审视
 
