@@ -97,6 +97,17 @@
     }
   }
 
+  function activateSharedPanel() {
+    var panels = host.querySelectorAll('[data-studio-drawer-panel]');
+    var worldbookPanel = host.querySelector('.worldbook-drawer-panel');
+    Array.prototype.forEach.call(panels, function(panel) {
+      var active = panel === worldbookPanel;
+      panel.hidden = !active;
+      panel.classList.toggle('is-active', active);
+    });
+    if (worldbookPanel) worldbookPanel.hidden = false;
+  }
+
   function ensureMarkup() {
     if (!$('worldbook-drawer-title')) mount.insertAdjacentHTML('beforeend', drawerMarkup);
   }
@@ -606,6 +617,7 @@
     host.setAttribute('aria-hidden', 'false');
     toggle.setAttribute('aria-expanded', 'true');
     setWorkspaceState(true, 'worldbooks');
+    activateSharedPanel();
     if (!state.ready) {
       state.ready = true;
       try {
@@ -631,8 +643,9 @@
 
   function bind() {
     toggle.addEventListener('click', function() {
-      if (host.hidden) openDrawer();
-      else closeDrawer();
+      var current = workspace && workspace.state && workspace.state.studioDrawer;
+      if (current && current.open && current.view === 'worldbooks') closeDrawer();
+      else openDrawer();
     });
     host.addEventListener('click', function(event) {
       var close = event.target.closest('[data-worldbook-drawer-close="true"]');

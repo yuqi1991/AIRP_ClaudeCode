@@ -729,7 +729,8 @@
   if (regexToggle) {
     regexToggle.addEventListener('click', function () {
       var current = workspace && workspace.state && workspace.state.studioDrawer;
-      if (current && current.open && current.view === 'regex-collections') {
+      var currentView = current && current.view ? String(current.view).split(':').pop() : '';
+      if (current && current.open && currentView === 'regex-collections') {
         if (global.AIRPStudioAgentsDrawer && typeof global.AIRPStudioAgentsDrawer.close === 'function') global.AIRPStudioAgentsDrawer.close();
         else if (global.AIRPWorldbookDrawer && typeof global.AIRPWorldbookDrawer.close === 'function') global.AIRPWorldbookDrawer.close();
       } else {

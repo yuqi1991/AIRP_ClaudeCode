@@ -1,18 +1,18 @@
 /*
  * AIRP workspace tokens are kept outside the legacy page stylesheet so the
- * integrated shell can evolve without coupling Studio modules to the old
- * card CSS. The aliases deliberately resolve to the current values; this
- * file does not change the existing appearance by itself.
+ * integrated shell can evolve without coupling Studio modules to card CSS.
+ * The page owns the palette; these aliases keep every drawer and monitor
+ * surface on the same visual contract.
  */
 :root {
-  --airp-color-bg: var(--bg, #f5f0e8);
-  --airp-color-surface: var(--surface, #ede6d8);
-  --airp-color-border: var(--border, #d4c9b0);
-  --airp-color-accent: var(--accent, #b06a3d);
-  --airp-color-accent-muted: var(--accent2, #5a7a5a);
-  --airp-color-text: var(--text, #3a3028);
-  --airp-color-muted: var(--muted, #8a7a65);
-  --airp-color-input: var(--input-bg, #fdfaf4);
+  --airp-color-bg: var(--bg, #061326);
+  --airp-color-surface: var(--surface, #0b1b33);
+  --airp-color-border: var(--border, #263a56);
+  --airp-color-accent: var(--accent, #d8b76a);
+  --airp-color-accent-muted: var(--accent2, #8fb3cf);
+  --airp-color-text: var(--text, #f4ead8);
+  --airp-color-muted: var(--muted, #9fafc1);
+  --airp-color-input: var(--input-bg, #08182f);
   --airp-font-ui: var(--font-ui, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif);
   --airp-font-reading: var(--font-body, "SimSun", "宋体", serif);
   --airp-radius-panel: var(--radius-md, 12px);

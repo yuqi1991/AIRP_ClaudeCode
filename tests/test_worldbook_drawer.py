@@ -50,8 +50,8 @@ def test_game_worldbook_drawer_reads_edits_and_binds_existing_api(tmp_path: Path
         assert status == 201
 
         with _HeadlessBrowser(f"{server.base_url}/", tmp_path / "chrome-profile") as browser:
-            browser.wait_for('document.querySelector("#studio-link[href=\\"/studio\\"]")')
-            browser.click("#studio-link")
+            browser.wait_for('document.querySelector("#studio-worldbooks-toggle")')
+            browser.click("#studio-worldbooks-toggle")
             browser.wait_for('document.querySelector("[data-airp-drawer-view=\\"worldbooks\\"]")')
             browser.wait_for('document.querySelector("#worldbook-drawer-list [data-worldbook-id]")')
             assert browser.evaluate("document.getElementById('worldbook-drawer-list').textContent.includes('Harbor Lore')")

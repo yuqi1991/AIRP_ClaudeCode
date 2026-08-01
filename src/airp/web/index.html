@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Claude Code RP</title>
+<title>AIRP</title>
 <script src="lib/jquery-3.5.1.min.js"></script>
 <script src="lib/lodash-4.17.21.min.js"></script>
 <link rel="stylesheet" href="lib/toastr-2.1.4.min.css">
@@ -14,46 +14,46 @@
 <script src="_regex_engine.js"></script>
 <style>
 :root {
-  --bg: #f5f0e8;
-  --surface: #ede6d8;
-  --border: #d4c9b0;
-  --accent: #b06a3d;
-  --accent2: #5a7a5a;
-  --text: #3a3028;
-  --muted: #8a7a65;
-  --input-bg: #fdfaf4;
+  --bg: #061326;
+  --surface: #0b1b33;
+  --border: #263a56;
+  --accent: #d8b76a;
+  --accent2: #8fb3cf;
+  --text: #f4ead8;
+  --muted: #9fafc1;
+  --input-bg: #08182f;
   --font-ui: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
-  --font-display: 'STKaiti', 'SimSun', serif;
-  --font-body: 'SimSun', '宋体', serif;
-  --ink: #3a3028;
-  --line: #d4c9b0;
-  --soft: #ede6d8;
+  --font-display: Georgia, 'Noto Serif SC', 'Songti SC', serif;
+  --font-body: Georgia, 'Noto Serif SC', 'Songti SC', serif;
+  --ink: #f4ead8;
+  --line: #263a56;
+  --soft: #101f37;
   --radius-md: 12px;
   --radius-sm: 8px;
   --radius-full: 999px;
-  --color-ember: #d97706;
+  --color-ember: #d8b76a;
 }
 [data-theme="dark"] {
-  --bg: #1b1b26;
-  --surface: #24242f;
-  --border: #3a3a50;
-  --accent: #d4946a;
-  --accent2: #7aaa7a;
-  --text: #d4c5b9;
-  --muted: #9a9aac;
-  --input-bg: #1e1e2a;
-  --ink: #d4c5b9;
-  --line: #3a3a50;
-  --soft: #24242f;
-  --color-ember: #f59e0b;
+  --bg: #061326;
+  --surface: #0b1b33;
+  --border: #263a56;
+  --accent: #d8b76a;
+  --accent2: #8fb3cf;
+  --text: #f4ead8;
+  --muted: #9fafc1;
+  --input-bg: #08182f;
+  --ink: #f4ead8;
+  --line: #263a56;
+  --soft: #101f37;
+  --color-ember: #d8b76a;
 }
 * { margin:0; padding:0; box-sizing:border-box; }
 ::-webkit-scrollbar { width: 6px; }
 ::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: #c4b9a0; border-radius: 3px; }
-::-webkit-scrollbar-thumb:hover { background: #a89880; }
-[data-theme="dark"] ::-webkit-scrollbar-thumb { background: #4a4a60; }
-[data-theme="dark"] ::-webkit-scrollbar-thumb:hover { background: #5a5a75; }
+::-webkit-scrollbar-thumb { background: #30486a; border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: #42638e; }
+[data-theme="dark"] ::-webkit-scrollbar-thumb { background: #30486a; }
+[data-theme="dark"] ::-webkit-scrollbar-thumb:hover { background: #42638e; }
 html, body {
   height: 100vh; overflow: hidden;
   background: var(--bg); color: var(--text);
@@ -102,10 +102,10 @@ body {
   flex: 1; overflow-y: auto; padding: 20px 24px;
   display: flex; flex-direction: column; align-items: center;
   scroll-behavior: smooth;
-  background: linear-gradient(180deg, #faf7f0 0%, #f5f0e8 100%);
+  background: linear-gradient(180deg, #07172d 0%, #061326 100%);
 }
 [data-theme="dark"] #content-panel {
-  background: linear-gradient(180deg, #1e1e2a 0%, #1b1b26 100%);
+  background: linear-gradient(180deg, #07172d 0%, #061326 100%);
 }
 #content-panel #doc { width: 100%; max-width: 860px; }
 #content-panel #doc > * {
@@ -175,7 +175,7 @@ body {
   border: 1px solid var(--border);
   transition: background 0.15s, border-color 0.15s;
 }
-.chip-action:hover { background: #ede6d8; border-color: var(--accent); }
+.chip-action:hover { background: #101f37; border-color: var(--accent); }
 .chip-action:active { background: var(--accent); color: #fff; }
 .summary-text { color: var(--muted); font-size: 0.82em; line-height: 1.55; }
 /* settings controls */
@@ -321,9 +321,9 @@ body {
   transition: background 0.15s; font-family: var(--font-ui);
 }
 .btn-submit { background: var(--accent2); color: #fff; }
-.btn-submit:hover { background: #4a6a4a; }
+.btn-submit:hover { background: #b28f4e; }
 .btn-secondary { background: var(--border); color: var(--text); }
-.btn-secondary:hover { background: #c4b9a0; }
+.btn-secondary:hover { background: #142945; }
 .btn-reroll {
   font-size: 0.85em; padding: 1px 6px; border: 1px solid var(--border);
   border-radius: 4px; background: var(--bg); cursor: pointer;
@@ -410,20 +410,20 @@ body {
   color: #e8dcc8;
 }
 [data-theme="dark"] .turn-user .turn-text {
-  background: #1e1e2a;
-  border-left-color: #d4946a;
-  color: #c4bcaa;
+  background: #0d203a;
+  border-left-color: #d8b76a;
+  color: #d5dfeb;
 }
-[data-theme="dark"] #topbar .tag { color: #1b1b26; }
-[data-theme="dark"] .btn-submit { color: #1b1b26; }
-[data-theme="dark"] .chip-hot { color: #1b1b26; }
-[data-theme="dark"] .toggle-slider:before { background: #d4c5b9; }
+[data-theme="dark"] #topbar .tag { color: #061326; }
+[data-theme="dark"] .btn-submit { color: #061326; }
+[data-theme="dark"] .chip-hot { color: #061326; }
+[data-theme="dark"] .toggle-slider:before { background: #f4ead8; }
 [data-theme="dark"] input[type="range"] { accent-color: var(--accent); }
 [data-theme="dark"] #theme-toggle:hover { background: var(--surface); }
-[data-theme="dark"] .btn-reroll:hover { color: #1b1b26; }
+[data-theme="dark"] .btn-reroll:hover { color: #061326; }
 [data-theme="dark"] .btn-turn-del:hover,
 [data-theme="dark"] .btn-turn-del.confirming { color: #fff; }
-[data-theme="dark"] #toast { color: #1b1b26; }
+[data-theme="dark"] #toast { color: #061326; }
 
 /* ═══ MVU Variable Tree ═══ */
 #sb-mvu-vars {
@@ -942,11 +942,53 @@ body {
   height: 100%; border-radius: 2px;
   transition: width 0.5s ease;
 }
+
+/* AIRP's default workspace is the dark navy/gold surface shown in the
+ * product direction. These overrides also cover legacy card CSS that still
+ * contains the original light palette. */
+html, body { color-scheme: dark; }
+#content-panel { background: linear-gradient(180deg, #07172d 0%, #061326 100%); }
+#topbar, #input-panel, #sidebar { background: var(--surface); }
+.btn-secondary, .chip-action, .side-button:hover { color: var(--text); }
+.chip-action:hover, .btn-secondary:hover { background: var(--soft); border-color: var(--accent); }
+.airp-brand { color: var(--accent); font: 700 .78rem/1 Georgia, serif; letter-spacing: .16em; }
+.workspace-nav-button, .workspace-studio-action {
+  border-color: var(--border); background: var(--input-bg); color: var(--text);
+}
+.workspace-nav-button:hover, .workspace-nav-button[aria-expanded="true"],
+.workspace-studio-action:hover, .workspace-studio-action:focus-visible,
+.workspace-studio-action[aria-expanded="true"] { color: var(--accent); border-color: var(--accent); }
+.turn-user .turn-text { background: #0d203a; color: #d5dfeb; }
+.turn-ai .turn-text { color: #f4ead8; }
+.airp-markdown-table-wrap { max-width: 100%; margin: 10px 0; overflow-x: auto; }
+.airp-markdown-table { width: max-content; min-width: 100%; border-collapse: collapse; font-size: .92em; }
+.airp-markdown-table th, .airp-markdown-table td { border: 1px solid var(--border); padding: 7px 9px; min-width: 92px; text-align: left; vertical-align: top; }
+.airp-markdown-table th { background: #142945; color: var(--accent); font-weight: 700; }
+.airp-markdown-table td { background: rgba(8, 24, 47, .78); color: var(--text); }
+.airp-markdown-table tr:nth-child(even) td { background: rgba(16, 31, 55, .8); }
+@media (max-width: 760px) {
+  #workspace-navigation {
+    display: flex !important;
+    flex: 1 1 0;
+    min-width: 0;
+    max-width: 100%;
+    gap: 4px;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+  #workspace-navigation::-webkit-scrollbar { display: none; }
+  #workspace-navigation button { flex: 0 0 auto; max-width: none; white-space: nowrap; }
+  #workspace-navigation .workspace-studio-action,
+  #workspace-navigation .workspace-nav-button { padding-inline: 6px; font-size: .68em; }
+  #studio-agents-toggle { max-width: 108px; overflow: hidden; text-overflow: ellipsis; }
+  #studio-regex-toggle { max-width: 118px; overflow: hidden; text-overflow: ellipsis; }
+}
 </style>
 </head>
 <body data-airp-app="game-workspace">
 
 <div id="topbar" data-airp-region="topbar">
+  <span class="airp-brand" aria-label="AIRP">AIRP</span>
   <span class="dot green"></span>
   <span class="dot yellow"></span>
   <span class="dot red"></span>
@@ -960,16 +1002,12 @@ body {
   <span class="spacer"></span>
   <span class="dim" style="font-size:0.75em;" id="conn-label">桥接:</span>
   <span id="conn-dot" class="dot red" title="服务器未连接"></span>
-  <span class="dim" id="tb-count">已生成: 0</span>
-  <span class="sep">|</span>
-  <span class="dim" id="tb-tokens" title="本轮Token / 累计Token">Token: —</span>
-  <span class="sep">|</span>
   <nav id="workspace-navigation" data-airp-region="navigation" aria-label="工作区导航" style="display:contents;">
     <button id="game-drawer-toggle" class="workspace-nav-button" type="button" data-airp-action="game-open" aria-controls="studio-drawer-host" aria-expanded="false">游戏</button>
-    <button id="studio-agents-toggle" class="workspace-studio-action" type="button" data-airp-action="studio-agents" aria-controls="studio-drawer-host" aria-expanded="false">Agents 与编排</button>
-    <button id="studio-model-toggle" class="workspace-studio-action" type="button" data-airp-action="studio-model" aria-controls="studio-drawer-host" aria-expanded="false">模型</button>
     <button id="studio-worldbooks-toggle" class="workspace-studio-action" type="button" data-airp-action="studio-worldbooks" aria-controls="studio-drawer-host" aria-expanded="false">世界书</button>
-    <button id="studio-regex-toggle" class="workspace-studio-action" type="button" data-airp-action="studio-regex" aria-controls="studio-drawer-host" aria-expanded="false">Regex</button>
+    <button id="studio-agents-toggle" class="workspace-studio-action" type="button" data-airp-action="studio-agents" aria-controls="studio-drawer-host" aria-expanded="false">Agents 与编排</button>
+    <button id="studio-regex-toggle" class="workspace-studio-action" type="button" data-airp-action="studio-regex" aria-controls="studio-drawer-host" aria-expanded="false">Regex Collections</button>
+    <button id="studio-model-toggle" class="workspace-studio-action" type="button" data-airp-action="studio-model" aria-controls="studio-drawer-host" aria-expanded="false">模型</button>
   </nav>
   <button id="theme-toggle" title="切换夜间模式" style="background:none;border:1px solid var(--border);border-radius:4px;cursor:pointer;font-size:0.9em;padding:1px 6px;line-height:1;color:var(--muted);">🌙</button>
   <button id="sidebar-toggle" title="打开工具面板" aria-label="打开工具面板" aria-expanded="false" onclick="toggleSidebar()">☰</button>
@@ -1149,6 +1187,12 @@ body {
         <button class="session-tool" id="session-delete" title="删除存档" aria-label="删除存档" onclick="deleteSession()">×</button>
       </div>
       <div class="side-note" id="session-meta">正在读取存档…</div>
+    </div>
+    <div class="side-card" id="generation-card" data-airp-slot="monitor-generation">
+      <h4>生成与 Token</h4>
+      <div class="kv" id="monitor-generation-state">等待生成</div>
+      <div class="kv" id="tb-count">已生成: 0</div>
+      <div class="side-note" id="tb-tokens" title="本轮 Token / 累计 Token">Token: —</div>
     </div>
     <div class="side-card" id="active-graph-card" data-airp-slot="monitor-runtime">
       <h4>🧩 Active Graph</h4>
@@ -1635,11 +1679,9 @@ function setHtml(id, val) {
 }
 
 // Preserve card-authored HTML while enhancing plain text inside message
-// bubbles. Only **bold** / __bold__ and line breaks are intentionally supported.
-function formatMessageTextNode(node) {
-  const text = node.nodeValue || '';
-  if (!text || (!/[\r\n]/.test(text) && !/\\n/.test(text) && !/(\*\*[^*\r\n]+?\*\*|__[^_\r\n]+?__)/.test(text))) return;
-  const fragment = document.createDocumentFragment();
+// bubbles. The reader supports the small Markdown subset needed in a live
+// conversation: **bold**, __bold__, line breaks, and horizontally scrollable tables.
+function appendInlineMarkdown(fragment, text) {
   const tokenPattern = /(\r\n|\r|\n|\\n)|\*\*([^*\r\n]+?)\*\*|__([^_\r\n]+?)__/g;
   let cursor = 0;
   let match;
@@ -1655,7 +1697,77 @@ function formatMessageTextNode(node) {
     cursor = match.index + match[0].length;
   }
   if (cursor < text.length) fragment.appendChild(document.createTextNode(text.slice(cursor)));
-  node.replaceWith(fragment);
+}
+
+function markdownTableCells(line) {
+  const trimmed = String(line || '').trim();
+  if (!trimmed.includes('|')) return null;
+  const normalized = trimmed.replace(/^\|/, '').replace(/\|$/, '');
+  return normalized.split('|').map(function(cell) { return cell.trim(); });
+}
+
+function isMarkdownTableDivider(line) {
+  const cells = markdownTableCells(line);
+  return !!cells && cells.length > 0 && cells.every(function(cell) { return /^:?-{3,}:?$/.test(cell); });
+}
+
+function renderMarkdownText(text) {
+  const fragment = document.createDocumentFragment();
+  const lines = String(text).replace(/\r\n?/g, '\n').split('\n');
+  let wrote = false;
+  let index = 0;
+  while (index < lines.length) {
+    const header = markdownTableCells(lines[index]);
+    if (header && index + 1 < lines.length && isMarkdownTableDivider(lines[index + 1])) {
+      if (wrote) fragment.appendChild(document.createElement('br'));
+      const wrap = document.createElement('div');
+      wrap.className = 'airp-markdown-table-wrap';
+      const table = document.createElement('table');
+      table.className = 'airp-markdown-table';
+      const thead = document.createElement('thead');
+      const headRow = document.createElement('tr');
+      header.forEach(function(cell) {
+        const th = document.createElement('th');
+        appendInlineMarkdown(th, cell);
+        headRow.appendChild(th);
+      });
+      thead.appendChild(headRow);
+      table.appendChild(thead);
+      const tbody = document.createElement('tbody');
+      index += 2;
+      while (index < lines.length) {
+        const cells = markdownTableCells(lines[index]);
+        if (!cells || !cells.length) break;
+        const row = document.createElement('tr');
+        for (let column = 0; column < header.length; column += 1) {
+          const td = document.createElement('td');
+          appendInlineMarkdown(td, cells[column] || '');
+          row.appendChild(td);
+        }
+        tbody.appendChild(row);
+        index += 1;
+      }
+      table.appendChild(tbody);
+      wrap.appendChild(table);
+      fragment.appendChild(wrap);
+      wrote = true;
+      continue;
+    }
+    if (wrote) fragment.appendChild(document.createElement('br'));
+    appendInlineMarkdown(fragment, lines[index]);
+    wrote = true;
+    index += 1;
+  }
+  return fragment;
+}
+
+function formatMessageTextNode(node) {
+  const text = node.nodeValue || '';
+  if (!text) return;
+  const hasTable = /(^|\n)\s*\|?[^\n|]+\|[^\n]*\n\s*\|?\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)+\|?/.test(text);
+  const hasInline = /[\r\n]/.test(text) || /\\n/.test(text) || /(\*\*[^*\r\n]+?\*\*|__[^_\r\n]+?__)/.test(text);
+  if (!hasTable && !hasInline) return;
+  node.replaceWith(renderMarkdownText(text));
 }
 
 function formatMessageTextNodes(root) {
@@ -2264,6 +2376,7 @@ function setRuntimeTaskStatus(task) {
   if (task && task.message) meta.push('说明: ' + task.message);
   if (task && typeof task.retryable === 'boolean') meta.push(task.retryable ? '可重试' : '不可重试');
   setText('runtime-task-status', '任务: ' + status);
+  setText('monitor-generation-state', status === 'idle' ? '等待生成' : '生成状态: ' + status);
   setText('runtime-task-id', 'Task ID: ' + taskId);
   setText('runtime-task-meta', meta.join(' · '));
   const cancel = document.getElementById('runtime-cancel-button');

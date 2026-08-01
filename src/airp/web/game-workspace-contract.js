@@ -26,6 +26,7 @@
     conversation: '[data-airp-slot="conversation"]',
     composerInput: '[data-airp-slot="composer-input"]',
     monitorSession: '[data-airp-slot="monitor-session"]',
+    monitorGeneration: '[data-airp-slot="monitor-generation"]',
     monitorGraph: '[data-airp-slot="monitor-graph"]',
     monitorRuntime: '[data-airp-slot="monitor-runtime"]',
     studioDrawerPanel: '[data-airp-slot="studio-drawer-panel"]',

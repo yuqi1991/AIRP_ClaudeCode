@@ -20,6 +20,7 @@ def test_game_page_exposes_stable_workspace_regions_and_slots():
     assert 'data-airp-region="studio-drawer"' in page
     assert 'data-airp-region="node-debug-overlay"' in page
     assert 'data-airp-slot="monitor-session"' in page
+    assert 'data-airp-slot="monitor-generation"' in page
     assert 'data-airp-slot="monitor-runtime"' in page
     assert 'data-airp-slot="monitor-graph"' in page
     assert 'data-airp-slot="composer-input"' in page
@@ -38,6 +39,18 @@ def test_game_page_loads_workspace_contract_and_visual_tokens():
     assert "nodeDebug" in contract
     assert "--airp-color-bg" in tokens
     assert "--airp-motion-panel" in tokens
+
+
+def test_game_page_uses_airp_nav_order_and_dark_reading_surface():
+    page = (WEB_ROOT / "index.html").read_text(encoding="utf-8")
+
+    navigation = page[page.index('id="workspace-navigation"'):page.index("</nav>", page.index('id="workspace-navigation"'))]
+    labels = ("游戏", "世界书", "Agents 与编排", "Regex Collections", "模型")
+    positions = [navigation.index(label) for label in labels]
+    assert positions == sorted(positions)
+    assert "--bg: #061326" in page
+    assert "--accent: #d8b76a" in page
+    assert "airp-markdown-table" in page
 
 
 def test_workspace_contract_exports_state_and_event_boundaries():
@@ -139,7 +152,11 @@ def test_game_page_mounts_worldbook_definition_drawer_and_api_actions():
     assert '<link rel="stylesheet" href="worldbook-drawer.css">' in page
     assert '<script src="worldbook-drawer.js"></script>' in page
     assert 'id="studio-drawer-host"' in page
-    assert 'id="studio-link"' in page
+    assert 'id="studio-worldbooks-toggle"' in page
+    assert 'id="studio-agents-toggle"' in page
+    assert 'id="studio-regex-toggle"' in page
+    assert 'id="studio-model-toggle"' in page
+    assert 'href="/studio"' not in page
     for control in (
         "worldbook-drawer-library-search",
         "worldbook-drawer-import",

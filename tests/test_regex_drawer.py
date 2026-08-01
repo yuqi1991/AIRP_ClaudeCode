@@ -99,10 +99,9 @@ def test_regex_drawer_reads_rules_tests_collection_and_agent_binding(tmp_path: P
         assert status == 201
 
         with _HeadlessBrowser(f"{server.base_url}/", tmp_path / "chrome-profile") as browser:
-            browser.wait_for('document.querySelector("#studio-link[href=\\"/studio\\"]")')
-            browser.click("#studio-link")
+            browser.wait_for('document.querySelector("#studio-regex-toggle")')
+            browser.click("#studio-regex-toggle")
             browser.wait_for('document.querySelector("[data-regex-drawer-view=\\"regex-collections\\"]")')
-            browser.click('[data-regex-drawer-view="regex-collections"]')
             browser.wait_for('document.querySelector("#regex-drawer-list [data-regex-collection-id]")')
             assert browser.evaluate("document.getElementById('regex-drawer-list').textContent.includes('Strip prose')")
 

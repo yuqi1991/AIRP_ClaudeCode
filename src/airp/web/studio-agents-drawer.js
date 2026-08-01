@@ -765,7 +765,13 @@
   }
 
   function bind() {
-    $('studio-agents-toggle').addEventListener('click', toggleDrawer);
+    $('studio-agents-toggle').addEventListener('click', function() {
+      var current = global.AIRPWorkspace && global.AIRPWorkspace.state && global.AIRPWorkspace.state.studioDrawer;
+      var currentView = current && current.view || '';
+      var agentsView = currentView === 'agents-orchestration:agents' || currentView === 'agents-orchestration:orchestration';
+      if (!host.hidden && agentsView) closeDrawer();
+      else openDrawer('agents');
+    });
     $('studio-drawer-close').addEventListener('click', closeDrawer);
     qa('[data-studio-drawer-view]').forEach(function (button) {
       button.addEventListener('click', function () { openDrawer(button.getAttribute('data-studio-drawer-view')); });

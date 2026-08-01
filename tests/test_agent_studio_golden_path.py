@@ -391,8 +391,8 @@ def test_studio_to_game_golden_path_drives_saved_configuration_live_trace_and_re
     shutil.which("google-chrome") is None or _connect is None,
     reason="requires google-chrome and websockets",
 )
-def test_browser_game_exposes_studio_link_and_trace_fallback_detail(tmp_path: Path):
-    """The game page must expose Studio and keep Trace nodes inspectable before a run id exists."""
+def test_browser_game_exposes_integrated_drawers_and_trace_fallback_detail(tmp_path: Path):
+    """The game page keeps its integrated drawers and Trace nodes inspectable before a run id exists."""
     styles = tmp_path / "styles"
     styles.mkdir()
     for name in ("studio.html", "index.html"):
@@ -411,7 +411,8 @@ def test_browser_game_exposes_studio_link_and_trace_fallback_detail(tmp_path: Pa
 
     with SessionRuntimeServer(runtime, static_root=styles) as server:
         with _HeadlessBrowser(f"{server.base_url}/", tmp_path / "chrome-profile") as browser:
-            browser.wait_for('document.querySelector("#studio-link[href=\\"/studio\\"]")')
+            browser.wait_for('document.querySelector("#game-drawer-toggle")')
+            assert browser.evaluate("!document.querySelector('#studio-link[href=\\\"/studio\\\"]')")
             browser.evaluate(
                 """(() => {
                     const originalFetch = window.fetch.bind(window);
