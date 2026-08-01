@@ -92,3 +92,40 @@ def test_monitor_debug_overlay_keeps_live_trace_model_and_tool_sections():
     assert "scheduleNodeDetailRefresh" in page
     assert "tool_calls" in page
     assert "model_calls" in page
+def test_agents_orchestration_drawer_exposes_linear_editor_contract():
+    page = (WEB_ROOT / "index.html").read_text(encoding="utf-8")
+    script = (WEB_ROOT / "studio-agents-drawer.js").read_text(encoding="utf-8")
+    styles = (WEB_ROOT / "game-workspace.css").read_text(encoding="utf-8")
+
+    assert '<script src="studio-agents-drawer.js"></script>' in page
+    for marker in (
+        'data-studio-drawer-view="agents"',
+        'data-studio-drawer-view="orchestration"',
+        'id="studio-agent-search"',
+        'id="studio-agent-instruction"',
+        'id="studio-agent-preview"',
+        'id="studio-agent-model"',
+        'id="studio-agent-tools"',
+        'id="studio-agent-regex"',
+        'id="studio-graph-topology"',
+        'id="studio-node-enabled"',
+        'id="studio-graph-output"',
+    ):
+        assert marker in page
+    for api_path in (
+        "/v1/studio/agents",
+        "/prompt-preview",
+        "/v1/studio/regex-collections",
+        "/v1/studio/graphs",
+        "/v1/session/runtime/graph",
+    ):
+        assert api_path in script
+    for behavior in (
+        "agentFilter",
+        "compilePreview",
+        "finalEnabledNodeId",
+        "ensureValidOutput",
+        "studio:runtime-graph-selected",
+    ):
+        assert behavior in script
+    assert ".studio-topology-node::after" in styles

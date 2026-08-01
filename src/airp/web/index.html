@@ -968,16 +968,124 @@ body {
   <span class="dim" id="tb-tokens" title="本轮Token / 累计Token">Token: —</span>
   <span class="sep">|</span>
   <nav id="workspace-navigation" data-airp-region="navigation" aria-label="工作区导航" style="display:contents;">
+    <button id="studio-agents-toggle" class="workspace-studio-action" type="button" data-airp-action="studio-agents" aria-controls="studio-drawer-host" aria-expanded="false">Agents 与编排</button>
     <a id="studio-link" href="/studio" aria-label="打开 Agent Studio" data-airp-action="studio-open">Studio</a>
   </nav>
   <button id="theme-toggle" title="切换夜间模式" style="background:none;border:1px solid var(--border);border-radius:4px;cursor:pointer;font-size:0.9em;padding:1px 6px;line-height:1;color:var(--muted);">🌙</button>
   <button id="sidebar-toggle" title="打开工具面板" aria-label="打开工具面板" aria-expanded="false" onclick="toggleSidebar()">☰</button>
 </div>
 
-<!-- Reserved for the integrated top-down Studio drawer host. The legacy link
-     remains functional until a drawer implementation owns this mount. -->
+<!-- The integrated Studio drawer keeps the game context mounted underneath. -->
 <div id="studio-drawer-host" data-airp-region="studio-drawer" hidden aria-hidden="true">
-  <div id="studio-drawer-panel" data-airp-slot="studio-drawer-panel"></div>
+  <section id="studio-drawer-panel" data-airp-slot="studio-drawer-panel" aria-labelledby="studio-drawer-title">
+    <header class="studio-drawer-header">
+      <div>
+        <p class="studio-drawer-kicker">Studio</p>
+        <h2 id="studio-drawer-title">Agents 与编排</h2>
+      </div>
+      <div class="studio-drawer-header-actions">
+        <span class="studio-drawer-status" id="studio-drawer-status" aria-live="polite"></span>
+        <button class="studio-icon-button" id="studio-drawer-close" type="button" aria-label="关闭 Agents 与编排 抽屉" title="关闭">×</button>
+      </div>
+    </header>
+    <nav class="studio-drawer-tabs" aria-label="Agents 与编排视图">
+      <button class="studio-drawer-tab is-active" type="button" data-studio-drawer-view="agents" aria-selected="true">Agents</button>
+      <button class="studio-drawer-tab" type="button" data-studio-drawer-view="orchestration" aria-selected="false">编排</button>
+    </nav>
+
+    <section class="studio-drawer-view is-active" id="studio-agents-view" data-studio-drawer-panel="agents" aria-label="Agents 管理">
+      <div class="studio-drawer-grid studio-agent-grid">
+        <aside class="studio-drawer-column studio-object-list" aria-label="Agent 列表">
+          <div class="studio-column-head">
+            <div><h3>Agents</h3><span id="studio-agent-count" class="studio-muted">读取中…</span></div>
+            <button class="studio-text-button" id="studio-agent-new" type="button">新建</button>
+          </div>
+          <label class="studio-search"><span class="studio-visually-hidden">搜索 Agent</span><input id="studio-agent-search" type="search" placeholder="搜索 Agent…" autocomplete="off"></label>
+          <div class="studio-object-items" id="studio-agent-list" aria-live="polite"></div>
+        </aside>
+        <section class="studio-drawer-column studio-editor-column" aria-label="Agent instruction 和 Prompt 预览">
+          <div class="studio-editor-toolbar">
+            <div class="studio-segmented" role="tablist" aria-label="Agent 内容">
+              <button class="is-active" type="button" data-agent-editor-view="instruction" role="tab" aria-selected="true">Instruction</button>
+              <button type="button" data-agent-editor-view="preview" role="tab" aria-selected="false">Prompt 预览</button>
+            </div>
+            <span class="studio-editor-id" id="studio-agent-id"></span>
+          </div>
+          <div class="studio-editor-pane is-active" id="studio-agent-instruction-pane" data-agent-editor-pane="instruction">
+            <label class="studio-field studio-field-grow" for="studio-agent-instruction"><span>Instruction</span><textarea id="studio-agent-instruction" placeholder="描述 Agent 的行为与输出边界…"></textarea></label>
+            <p class="studio-field-hint">支持运行时宏，例如 <code>{{player_input}}</code>、<code>{{handoff}}</code> 和 <code>{{current_state.phase}}</code>。</p>
+          </div>
+          <div class="studio-editor-pane" id="studio-agent-preview-pane" data-agent-editor-pane="preview" hidden>
+            <div class="studio-preview-inputs">
+              <label class="studio-field" for="studio-preview-input"><span>Project input</span><textarea id="studio-preview-input" rows="4" placeholder="用于编译 Prompt 的输入…"></textarea></label>
+              <label class="studio-field" for="studio-preview-context"><span>Runtime context JSON</span><textarea id="studio-preview-context" rows="4" placeholder='{"settings":{},"current_state":{}}'></textarea></label>
+              <label class="studio-field" for="studio-preview-handoff"><span>Handoff JSON</span><textarea id="studio-preview-handoff" rows="3" placeholder='{"source_node_id":"planner","artifact":"…"}'></textarea></label>
+              <label class="studio-field" for="studio-preview-contract"><span>Output contract JSON</span><textarea id="studio-preview-contract" rows="3" placeholder='{"kind":"text"}'></textarea></label>
+            </div>
+            <div class="studio-preview-actions"><button class="studio-button studio-button-primary" id="studio-agent-preview" type="button" disabled>编译预览</button></div>
+            <div class="studio-preview-list" id="studio-agent-preview-output" aria-live="polite"><p class="studio-empty">选择 Agent 后编译 Prompt 预览。</p></div>
+          </div>
+        </section>
+        <aside class="studio-drawer-column studio-settings-column" aria-label="Agent 设置">
+          <div class="studio-column-head studio-column-head-stacked"><div><h3>Agent 设置</h3><span id="studio-agent-selection" class="studio-muted">未选择 Agent</span></div></div>
+          <form id="studio-agent-form" class="studio-form">
+            <label class="studio-field" for="studio-agent-name"><span>名称</span><input id="studio-agent-name" required placeholder="Scene writer" autocomplete="off"></label>
+            <label class="studio-field" for="studio-agent-provider"><span>Provider Profile</span><select id="studio-agent-provider"><option value="">Runtime provider</option></select></label>
+            <label class="studio-field" for="studio-agent-model"><span>Model</span><input id="studio-agent-model" placeholder="provider-model-id" autocomplete="off"></label>
+            <div class="studio-field-row">
+              <label class="studio-field" for="studio-agent-temperature"><span>Temperature</span><input id="studio-agent-temperature" type="number" min="0" max="2" step="0.01" placeholder="默认"></label>
+              <label class="studio-field" for="studio-agent-max-tokens"><span>Max tokens</span><input id="studio-agent-max-tokens" type="number" min="1" step="1" placeholder="默认"></label>
+            </div>
+            <label class="studio-field" for="studio-agent-tools"><span>Tool allowlist</span><input id="studio-agent-tools" placeholder="get_recent_memory, load_worldbook_entry" autocomplete="off"></label>
+            <label class="studio-field" for="studio-agent-regex"><span>Regex Collection</span><select id="studio-agent-regex"><option value="">不绑定 Regex Collection</option></select></label>
+            <label class="studio-field" for="studio-agent-advanced"><span>Advanced JSON</span><textarea id="studio-agent-advanced" rows="4" placeholder='{"response_format":{"type":"json_object"}}'></textarea></label>
+            <div class="studio-form-actions"><button class="studio-button studio-button-primary" type="submit">保存 Agent</button><button class="studio-button studio-button-muted" id="studio-agent-copy" type="button" disabled>复制</button><button class="studio-button studio-button-danger" id="studio-agent-delete" type="button" disabled>删除</button></div>
+          </form>
+        </aside>
+      </div>
+    </section>
+
+    <section class="studio-drawer-view" id="studio-orchestration-view" data-studio-drawer-panel="orchestration" aria-label="编排管理" hidden>
+      <div class="studio-drawer-grid studio-graph-grid">
+        <aside class="studio-drawer-column studio-object-list" aria-label="Graph 列表">
+          <div class="studio-column-head">
+            <div><h3>Graphs</h3><span id="studio-graph-count" class="studio-muted">读取中…</span></div>
+            <button class="studio-text-button" id="studio-graph-new" type="button">新建</button>
+          </div>
+          <label class="studio-search"><span class="studio-visually-hidden">搜索 Graph</span><input id="studio-graph-search" type="search" placeholder="搜索 Graph…" autocomplete="off"></label>
+          <div class="studio-object-items" id="studio-graph-list" aria-live="polite"></div>
+        </aside>
+        <section class="studio-drawer-column studio-topology-column" aria-label="线性 Graph 拓扑">
+          <div class="studio-column-head">
+            <div><h3 id="studio-graph-title">Linear topology</h3><span id="studio-graph-runtime-state" class="studio-muted">Runtime 使用已保存配置</span></div>
+            <button class="studio-text-button" id="studio-graph-add-node" type="button">添加节点</button>
+          </div>
+          <div class="studio-runtime-note"><span class="studio-runtime-dot"></span><span>Runtime linear · 节点按从上到下顺序执行</span></div>
+          <div class="studio-topology" id="studio-graph-topology" aria-live="polite"></div>
+          <div class="studio-empty" id="studio-graph-empty" hidden>新建 Graph 后添加 Agent 节点。</div>
+        </section>
+        <aside class="studio-drawer-column studio-settings-column" aria-label="Graph 和节点设置">
+          <div class="studio-column-head studio-column-head-stacked"><div><h3>编排设置</h3><span id="studio-graph-selection" class="studio-muted">未选择 Graph</span></div></div>
+          <form id="studio-graph-form" class="studio-form">
+            <label class="studio-field" for="studio-graph-name"><span>Graph 名称</span><input id="studio-graph-name" required placeholder="Writing pipeline" autocomplete="off"></label>
+            <label class="studio-field" for="studio-graph-id"><span>Graph ID</span><input id="studio-graph-id" placeholder="保存时自动生成" autocomplete="off"></label>
+            <fieldset class="studio-node-settings"><legend>当前节点</legend>
+              <label class="studio-field" for="studio-node-id"><span>Node ID</span><input id="studio-node-id" placeholder="writer-node" autocomplete="off"></label>
+              <label class="studio-field" for="studio-node-label"><span>显示名称</span><input id="studio-node-label" placeholder="Draft" autocomplete="off"></label>
+              <label class="studio-field" for="studio-node-agent"><span>Agent</span><select id="studio-node-agent"><option value="">选择 Agent</option></select></label>
+              <label class="studio-check"><input id="studio-node-enabled" type="checkbox" checked><span>节点启用</span></label>
+              <div class="studio-node-actions"><button class="studio-button studio-button-muted" id="studio-node-agent-open" type="button" disabled>打开 Agent</button><button class="studio-button studio-button-danger" id="studio-node-remove" type="button" disabled>移除节点</button></div>
+            </fieldset>
+            <fieldset class="studio-node-settings"><legend>输出节点</legend>
+              <label class="studio-field" for="studio-graph-output"><span>Output node</span><select id="studio-graph-output"><option value="">选择输出节点</option></select></label>
+              <p class="studio-field-hint">Output 必须是最后一个启用节点，Runtime 只提交该节点的 Artifact。</p>
+            </fieldset>
+            <div class="studio-form-actions"><button class="studio-button studio-button-primary" type="submit">保存 Graph</button><button class="studio-button studio-button-muted" id="studio-graph-use" type="button" disabled>用于 Runtime</button><button class="studio-button studio-button-muted" id="studio-graph-copy" type="button" disabled>复制</button><button class="studio-button studio-button-danger" id="studio-graph-delete" type="button" disabled>删除</button></div>
+          </form>
+        </aside>
+      </div>
+    </section>
+  </section>
 </div>
 
 <div id="sidebar-backdrop" data-airp-region="monitor-backdrop" onclick="closeSidebar()"></div>
@@ -1109,6 +1217,7 @@ body {
 
 <script src="_st_shims.js?v=2"></script>
 <script src="game-workspace-contract.js"></script>
+<script src="studio-agents-drawer.js"></script>
 <script>
 // ═══ Dynamic script reloader (no page flash) ═══
 console.log('[RP-Frontend] Initialized. jQuery:', typeof jQuery, 'lodash:', typeof window._, 'toastr:', typeof toastr);
