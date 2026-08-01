@@ -36,6 +36,13 @@ Endpoints
     disconnects. Heartbeat comment lines (``: ping``) every
     :data:`SSE_HEARTBEAT_SECONDS` so proxies do not kill the stream.
 
+``GET /v1/session/project``
+    Active Project, Project catalog and its last active Session.
+
+``POST /v1/session/project/switch``
+    Body ``{project_id}``. Refuses to switch while generation is active, then
+    restores the target Project's last active Session and returns its snapshot.
+
 SSE quiet / lifetime policy
 ---------------------------
 The stream stays open until the client disconnects (or the server is shut
@@ -75,6 +82,7 @@ from airp.engine.project_library import ProjectLibraryError
 from airp.engine.regex_collections import RegexCollectionError
 from airp.host.rp.session_runtime import RuntimeEvent, SessionTurnRuntime
 from airp.host.rp.session_manager import SessionManager, SessionManagerError
+from airp.host.rp.project_runtime import ProjectRuntimeStore
 from airp.engine.studio_library import ProviderProfileError
 from airp.compat.studio_migration import bootstrap_legacy_runtime_library
 from airp.engine.worldbook_library import WorldbookLibraryError
@@ -90,6 +98,8 @@ STUDIO_WORLDBOOK_PATHS = ("/v1/studio/worldbooks",)
 STUDIO_REGEX_COLLECTION_PATHS = ("/v1/studio/regex-collections",)
 STUDIO_PROJECT_PATHS = ("/v1/studio/projects",)
 STUDIO_PROJECT_CONTEXT_PATHS = ("/v1/studio/project-context",)
+PROJECT_RUNTIME_PATHS = ("/v1/session/project", "/v1/session/projects")
+PROJECT_SWITCH_PATHS = ("/v1/session/project/switch", "/v1/session/projects/switch")
 STUDIO_GRAPH_RUN_PATHS = ("/v1/studio/graph-runs",)
 STUDIO_NODE_RUN_PATHS = ("/v1/studio/node-runs",)
 STUDIO_DEBUG_REPLAY_PATHS = ("/v1/studio/debug-replays",)
@@ -179,6 +189,22 @@ class SessionRuntimeServer:
         self.projects = self.application.projects
         self.active_graphs = self.application.active_graphs
         self._bootstrap_legacy_studio_library()
+        self.project_runtimes = None
+        if self.projects is not None:
+            self.project_runtimes = ProjectRuntimeStore(
+                self.projects,
+                workspace=self.workspace,
+                static_root=self.static_root,
+                projection_root=self.static_root or self.runtime.projection.projection_root,
+                initial_runtime=self.runtime,
+                initial_sessions=self.session_manager,
+            )
+            preferred = self.project_runtimes.restore_project_id(self.runtime.project_id)
+            if preferred is not None:
+                context = self.project_runtimes.get(preferred)
+                self.runtime = context.runtime
+                self.session_manager = context.sessions
+                self.project_runtimes.remember(preferred)
         self._studio_graph_configured = False
         self._configure_runtime_worldbooks()
         self._configure_runtime_studio_graph()
@@ -431,6 +457,89 @@ class SessionRuntimeServer:
             "active_session_id": self.session_manager.active_session_id,
             "sessions": self.session_manager.list_sessions(),
         }
+
+    def _project_runtime_payload(self, project: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Return the small cross-Project state consumed by the game drawer."""
+        active_id = self.runtime.project_id
+        projects = []
+        if self.projects is not None:
+            try:
+                for item in self.projects.list_projects():
+                    entry = dict(item)
+                    entry["active"] = item.get("id") == active_id
+                    if self.project_runtimes is not None:
+                        try:
+                            entry.update(self.project_runtimes.session_payload(item["id"]))
+                        except Exception:
+                            entry["last_session_id"] = None
+                    projects.append(entry)
+            except ProjectLibraryError:
+                projects = []
+        current = project
+        if current is None and self.projects is not None:
+            try:
+                current = self.projects.get_project(active_id)
+            except ProjectLibraryError:
+                current = None
+        session = self._sessions_payload()
+        return {
+            "ok": True,
+            "active_project_id": active_id if current is not None else None,
+            "runtime": {
+                "project_id": active_id if current is not None else None,
+                "session_id": session.get("active_session_id"),
+            },
+            "project": current,
+            "projects": projects,
+            "active_session_id": session.get("active_session_id"),
+            "sessions": session.get("sessions", []),
+            "snapshot": self._snapshot_payload(),
+        }
+
+    def _switch_active_project(self, project_id: Any) -> tuple[dict[str, Any], int]:
+        if self.projects is None or self.project_runtimes is None:
+            return {"ok": False, "error": "project_runtime_unavailable"}, 501
+        if not isinstance(project_id, str) or not project_id.strip():
+            return {"ok": False, "error": "invalid_project", "message": "project_id is required"}, 400
+        project_id = project_id.strip()
+        try:
+            project = self.projects.get_project(project_id)
+        except ProjectLibraryError as exc:
+            return self._studio_project_error(exc)
+        if self.runtime.generation_active():
+            return {
+                "ok": False,
+                "error": "generation_active",
+                "message": "生成进行中，完成或取消后才能切换游戏",
+            }, 409
+        try:
+            context = self.project_runtimes.get(project_id)
+            self.runtime = context.runtime
+            self.session_manager = context.sessions
+            self.project_runtimes.remember(project_id)
+            self._studio_graph_configured = False
+            self._configure_runtime_worldbooks()
+            self._configure_runtime_studio_graph()
+            self.runtime.resume_projection()
+            self.service = SessionCommandService(self.runtime)
+            with self._submit_lock:
+                self._submit_results.clear()
+            return self._project_runtime_payload(project), 200
+        except (ProjectLibraryError, SessionManagerError, ValueError) as exc:
+            if isinstance(exc, ProjectLibraryError):
+                return self._studio_project_error(exc)
+            return {"ok": False, "error": "project_switch_failed", "message": str(exc)}, 409
+
+    def _bind_project_runtime_if_active(self, project: dict[str, Any] | None) -> None:
+        """Attach the per-Project Session manager after a new Project appears."""
+        if not project or self.project_runtimes is None or project.get("id") != self.runtime.project_id:
+            return
+        context = self.project_runtimes.adopt(project["id"], self.runtime, self.session_manager)
+        if context.runtime is self.runtime and context.sessions is self.session_manager:
+            return
+        self.runtime = context.runtime
+        self.session_manager = context.sessions
+        self.service = SessionCommandService(self.runtime)
 
     def _sync_managed_runtime(self) -> None:
         if self.session_manager is None:
@@ -891,6 +1000,9 @@ class SessionRuntimeServer:
                     project = self.worldbooks.set_project_bindings(project_id, body)
             else:
                 project = self.worldbooks.get_project_bindings(project_id)
+            if self.project_runtimes is not None and isinstance(project, dict):
+                self.project_runtimes.refresh(project)
+            self._bind_project_runtime_if_active(project)
             self._configure_runtime_studio_graph()
             return {
                 "ok": True,
@@ -911,6 +1023,10 @@ class SessionRuntimeServer:
             return {"ok": False, "error": "studio_library_unavailable"}, 501
         try:
             project = action()
+            if key == "project" and isinstance(project, dict) and self.project_runtimes is not None:
+                self.project_runtimes.refresh(project)
+            self._configure_runtime_studio_graph()
+            self._bind_project_runtime_if_active(project if isinstance(project, dict) else None)
             self._configure_runtime_studio_graph()
             return {"ok": True, key: project}, status
         except ProjectLibraryError as exc:
@@ -920,7 +1036,11 @@ class SessionRuntimeServer:
         if self.projects is None:
             return {"ok": False, "error": "studio_library_unavailable"}, 501
         try:
-            return {"ok": True, "project": self.projects.import_card(body)}, 201
+            project = self.projects.import_card(body)
+            if self.project_runtimes is not None:
+                self.project_runtimes.refresh(project)
+            self._bind_project_runtime_if_active(project)
+            return {"ok": True, "project": project}, 201
         except ProjectLibraryError as exc:
             return self._studio_project_error(exc)
 
@@ -1182,6 +1302,9 @@ class SessionRuntimeServer:
                     )
                     self._send_json(status, payload)
                     return
+                if path in PROJECT_RUNTIME_PATHS:
+                    self._send_json(200, server_ref._project_runtime_payload())
+                    return
                 for prefix in STUDIO_PROJECT_PATHS:
                     if path.startswith(prefix + "/"):
                         parts = path[len(prefix) + 1:].split("/")
@@ -1382,6 +1505,10 @@ class SessionRuntimeServer:
                     return
                 if path in tuple(prefix + "/import" for prefix in STUDIO_PROJECT_PATHS):
                     payload, status = server_ref._studio_project_import(body)
+                    self._send_json(status, payload)
+                    return
+                if path in PROJECT_SWITCH_PATHS:
+                    payload, status = server_ref._switch_active_project(body.get("project_id"))
                     self._send_json(status, payload)
                     return
                 if path in STUDIO_PROJECT_PATHS:
@@ -1741,6 +1868,11 @@ class SessionRuntimeServer:
                 path = server_ref._canonical_compat_path(parsed.path.rstrip("/") or "/")
                 body = self._read_json()
 
+                if path in PROJECT_SWITCH_PATHS:
+                    payload, status = server_ref._switch_active_project(body.get("project_id"))
+                    self._send_json(status, payload)
+                    return
+
                 for prefix in STUDIO_AGENT_PATHS:
                     if path.startswith(prefix + "/"):
                         agent_id = path[len(prefix) + 1:]
@@ -1950,10 +2082,18 @@ class SessionRuntimeServer:
             return {"ok": False, "error": "invalid_payload"}, 400
         current = self._runtime_selection()
         graph_id = body.get("graph_id", current.get("graph_id"))
-        if not isinstance(graph_id, str) or not graph_id.strip():
-            return {"ok": False, "error": "graph_id_required"}, 400
         if self.graph_definitions is None or self.active_graphs is None:
             return {"ok": False, "error": "studio_library_unavailable"}, 501
+        if graph_id in (None, ""):
+            self.active_graphs.clear(self.runtime.project_id)
+            self._configure_runtime_studio_graph()
+            return {
+                "ok": True,
+                "runtime": {"graph_id": None},
+                "snapshot": self._snapshot_payload(),
+            }, 200
+        if not isinstance(graph_id, str) or not graph_id.strip():
+            return {"ok": False, "error": "graph_id_required"}, 400
         try:
             self.graph_definitions.get_graph(graph_id)
             self.active_graphs.select(self.runtime.project_id, graph_id)

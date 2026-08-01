@@ -969,6 +969,7 @@ body {
   <span class="dim" id="tb-tokens" title="本轮Token / 累计Token">Token: —</span>
   <span class="sep">|</span>
   <nav id="workspace-navigation" data-airp-region="navigation" aria-label="工作区导航" style="display:contents;">
+    <button id="game-drawer-toggle" class="workspace-nav-button" type="button" data-airp-action="game-open" aria-controls="studio-drawer-host" aria-expanded="false">游戏</button>
     <button id="studio-agents-toggle" class="workspace-studio-action" type="button" data-airp-action="studio-agents" aria-controls="studio-drawer-host" aria-expanded="false">Agents 与编排</button>
     <button id="studio-model-toggle" class="workspace-studio-action" type="button" data-airp-action="studio-model" aria-controls="studio-drawer-host" aria-expanded="false">模型</button>
     <a id="studio-link" href="/studio" aria-label="打开 Agent Studio" data-airp-action="studio-open">Studio</a>
@@ -1126,6 +1127,7 @@ body {
     </section>
   </section>
   <div id="worldbook-drawer-mount" data-airp-slot="worldbook-drawer-panel" data-airp-drawer-view="worldbooks" aria-label="Worldbook Definitions"></div>
+  <section id="game-drawer-panel" data-airp-slot="game-drawer-panel" data-studio-drawer-panel="game" aria-label="游戏 Project 管理" hidden></section>
 </div>
 
 <div id="sidebar-backdrop" data-airp-region="monitor-backdrop" onclick="closeSidebar()"></div>
@@ -1257,6 +1259,7 @@ body {
 
 <script src="_st_shims.js?v=2"></script>
 <script src="game-workspace-contract.js"></script>
+<script src="game-drawer.js"></script>
 <script src="studio-agents-drawer.js"></script>
 <script src="worldbook-drawer.js"></script>
 <script src="studio-model-drawer.js"></script>

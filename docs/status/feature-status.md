@@ -11,6 +11,7 @@
 | GraphRuntime 与顺序 Agent Graph | `src/airp/engine/graph_runtime.py`、`src/airp/engine/graph_definitions.py`、`tests/test_graph_execution.py` | 当前是稳定顺序 pipeline，不支持任意条件 DSL |
 | Provider Node Runner | `src/airp/engine/node_runner.py`、`src/airp/engine/provider.py`、`tests/test_provider_execution.py` | 支持流式 chat completions/responses、tool loop、abort、input/output Regex |
 | Studio 配置库 | `src/airp/engine/studio_library.py`、`src/airp/server.py`、`src/airp/web/studio.html` | Provider、Agent、Graph、Project、Worldbook、Regex Collection 由 Workspace 持有 |
+| 游戏抽屉与跨 Project 存档恢复 | `src/airp/host/rp/project_runtime.py`、`src/airp/web/game-drawer.js`、`tests/test_game_project_drawer.py` | 游戏页提供 Project 搜索/导入/编辑、活动 Project 切换与每个 Project 的最后 Session 恢复；导入入口当前接收 JSON |
 | Agent instruction 宏 | `src/airp/engine/macros.py`、`src/airp/engine/context_compiler.py`、`tests/test_agent_instruction_macros.py` | 宏只读显式 runtime snapshot，不扫描 filesystem |
 | 世界书按需 capability | `src/airp/engine/worldbook_library.py`、`src/airp/host/rp/tools.py`、`tests/test_studio_worldbooks.py` | Project 可绑定多本 Worldbook，Agent 通过 exact-title tool 读取正文 |
 | Regex Collection | `src/airp/engine/regex_collections.py`、`src/airp/engine/regex_transformer.py`、`tests/test_regex_collections.py` | 每个 Agent 可绑定集合；按顺序应用 input/output/both |

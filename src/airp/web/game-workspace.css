@@ -296,6 +296,9 @@
 @media (max-width: 760px) {
   #agent-trace.monitor-topology { max-height: 46vh; }
   .node-debug-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+/* Integrated Agents and model drawers. */
 /* Integrated Agents/Graph Studio drawer. It is positioned over the left
  * work area so the Runtime Monitor remains visible while editing. */
 .workspace-studio-action {
@@ -440,4 +443,339 @@
 }
 @media (prefers-reduced-motion: reduce) {
   [data-airp-region="studio-drawer"] { transition: none; }
+}
+
+/* Integrated game project drawer. */
+.workspace-nav-button {
+  border: 1px solid var(--airp-color-border);
+  border-radius: var(--airp-radius-control);
+  padding: 4px 10px;
+  background: var(--airp-color-input);
+  color: var(--airp-color-text);
+  font: 650 .78em var(--airp-font-ui);
+  cursor: pointer;
+}
+
+.workspace-nav-button:hover,
+.workspace-nav-button[aria-expanded="true"] {
+  border-color: var(--airp-color-accent);
+  color: var(--airp-color-accent);
+}
+
+[data-airp-region="studio-drawer"] {
+  position: absolute;
+  z-index: 30;
+  top: 35px;
+  left: 0;
+  width: min(860px, calc(100vw - 300px));
+  height: min(72vh, 640px);
+  background: var(--airp-color-bg);
+  border-right: 1px solid var(--airp-color-border);
+  border-bottom: 1px solid var(--airp-color-border);
+  box-shadow: 0 10px 24px rgba(0, 0, 0, .18);
+  overflow: hidden;
+}
+
+[data-airp-region="studio-drawer"][hidden] {
+  display: none;
+}
+
+.airp-game-drawer {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  font: .82rem/1.4 var(--airp-font-ui);
+  color: var(--airp-color-text);
+}
+
+.airp-game-drawer-header,
+.airp-game-drawer-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--airp-color-border);
+  background: var(--airp-color-surface);
+}
+
+.airp-game-drawer-header h2 {
+  flex: 1;
+  font-size: 1rem;
+  font-weight: 700;
+}
+
+.airp-game-drawer-close,
+.airp-game-icon-button {
+  width: 30px;
+  height: 30px;
+  border: 1px solid var(--airp-color-border);
+  border-radius: var(--airp-radius-control);
+  background: var(--airp-color-input);
+  color: var(--airp-color-text);
+  cursor: pointer;
+}
+
+.airp-game-drawer-close:hover,
+.airp-game-icon-button:hover {
+  border-color: var(--airp-color-accent);
+}
+
+.airp-game-drawer-body {
+  display: grid;
+  grid-template-columns: 220px minmax(0, 1fr);
+  min-height: 0;
+  flex: 1;
+}
+
+.airp-game-list {
+  min-width: 0;
+  padding: 10px;
+  border-right: 1px solid var(--airp-color-border);
+  overflow: auto;
+}
+
+.airp-game-list input,
+.airp-game-editor input,
+.airp-game-editor textarea,
+.airp-game-editor select {
+  width: 100%;
+  border: 1px solid var(--airp-color-border);
+  border-radius: 5px;
+  padding: 6px 8px;
+  background: var(--airp-color-input);
+  color: var(--airp-color-text);
+  font: inherit;
+}
+
+.airp-game-list input:focus,
+.airp-game-editor input:focus,
+.airp-game-editor textarea:focus,
+.airp-game-editor select:focus {
+  outline: none;
+  border-color: var(--airp-color-accent-muted);
+}
+
+.airp-game-list-actions {
+  display: flex;
+  gap: 6px;
+  margin: 8px 0;
+}
+
+.airp-game-button {
+  border: 1px solid var(--airp-color-border);
+  border-radius: 5px;
+  padding: 6px 9px;
+  background: var(--airp-color-input);
+  color: var(--airp-color-text);
+  font: 600 .78rem var(--airp-font-ui);
+  cursor: pointer;
+}
+
+.airp-game-button:hover,
+.airp-game-button[aria-selected="true"] {
+  border-color: var(--airp-color-accent);
+  color: var(--airp-color-accent);
+}
+
+.airp-game-button.primary {
+  background: var(--airp-color-accent);
+  border-color: var(--airp-color-accent);
+  color: #fff;
+}
+
+.airp-game-list-item {
+  display: block;
+  width: 100%;
+  margin: 4px 0;
+  padding: 8px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.airp-game-list-item:hover,
+.airp-game-list-item.active {
+  border-color: var(--airp-color-border);
+  background: var(--airp-color-surface);
+}
+
+.airp-game-list-item.active {
+  border-left: 3px solid var(--airp-color-accent);
+}
+
+.airp-game-list-item strong,
+.airp-game-list-item small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.airp-game-list-item small,
+.airp-game-empty,
+.airp-game-editor-note {
+  color: var(--airp-color-muted);
+  font-size: .76rem;
+}
+
+.airp-game-editor {
+  min-width: 0;
+  overflow: auto;
+}
+
+.airp-game-editor-inner {
+  padding: 14px 16px 24px;
+}
+
+.airp-game-project-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.airp-game-project-head h3 {
+  font-size: 1rem;
+}
+
+.airp-game-project-head small {
+  color: var(--airp-color-muted);
+}
+
+.airp-game-tabs {
+  display: flex;
+  gap: 5px;
+  margin-bottom: 14px;
+  overflow-x: auto;
+}
+
+.airp-game-form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.airp-game-field {
+  display: grid;
+  gap: 4px;
+}
+
+.airp-game-field.full {
+  grid-column: 1 / -1;
+}
+
+.airp-game-field label {
+  color: var(--airp-color-muted);
+  font-size: .75rem;
+}
+
+.airp-game-field textarea {
+  min-height: 76px;
+  resize: vertical;
+}
+
+.airp-game-field textarea.tall {
+  min-height: 128px;
+}
+
+.airp-game-form-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.airp-game-opening-row {
+  display: grid;
+  grid-template-columns: 150px minmax(0, 1fr) 32px;
+  gap: 8px;
+  align-items: start;
+  padding: 9px 0;
+  border-bottom: 1px solid var(--airp-color-border);
+}
+
+.airp-game-opening-row textarea {
+  min-height: 70px;
+}
+
+.airp-game-check-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+  color: var(--airp-color-muted);
+  font-size: .75rem;
+}
+
+.airp-game-check-row input {
+  width: auto;
+}
+
+.airp-game-checklist {
+  display: grid;
+  gap: 7px;
+}
+
+.airp-game-checklist label {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 8px;
+  border: 1px solid var(--airp-color-border);
+  border-radius: 5px;
+  background: var(--airp-color-input);
+}
+
+.airp-game-checklist input {
+  width: auto;
+}
+
+.airp-game-status {
+  min-height: 18px;
+  margin-top: 8px;
+  color: var(--airp-color-muted);
+  font-size: .76rem;
+}
+
+[data-airp-slot="game-drawer-panel"] {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  max-height: 72vh;
+}
+
+[data-airp-slot="game-drawer-panel"][hidden] {
+  display: none;
+}
+
+@media (max-width: 720px) {
+  [data-airp-region="studio-drawer"] {
+    top: 35px;
+    width: 100vw;
+    height: calc(100vh - 35px);
+    border-right: 0;
+  }
+
+  .airp-game-drawer-body {
+    grid-template-columns: 150px minmax(0, 1fr);
+  }
+
+  .airp-game-form-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .airp-game-field.full {
+    grid-column: auto;
+  }
+
+  .airp-game-opening-row {
+    grid-template-columns: 1fr 32px;
+  }
+
+  .airp-game-opening-row textarea {
+    grid-column: 1 / -1;
+  }
 }
