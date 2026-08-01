@@ -7,6 +7,7 @@
 <script src="lib/jquery-3.5.1.min.js"></script>
 <script src="lib/lodash-4.17.21.min.js"></script>
 <link rel="stylesheet" href="lib/toastr-2.1.4.min.css">
+<link rel="stylesheet" href="game-workspace.css">
 <script src="lib/toastr-2.1.4.min.js"></script>
 <script src="_regex_engine.js"></script>
 <style>
@@ -946,9 +947,9 @@ body {
 }
 </style>
 </head>
-<body>
+<body data-airp-app="game-workspace">
 
-<div id="topbar">
+<div id="topbar" data-airp-region="topbar">
   <span class="dot green"></span>
   <span class="dot yellow"></span>
   <span class="dot red"></span>
@@ -966,25 +967,33 @@ body {
   <span class="sep">|</span>
   <span class="dim" id="tb-tokens" title="本轮Token / 累计Token">Token: —</span>
   <span class="sep">|</span>
-  <a id="studio-link" href="/studio" aria-label="打开 Agent Studio">Studio</a>
+  <nav id="workspace-navigation" data-airp-region="navigation" aria-label="工作区导航" style="display:contents;">
+    <a id="studio-link" href="/studio" aria-label="打开 Agent Studio" data-airp-action="studio-open">Studio</a>
+  </nav>
   <button id="theme-toggle" title="切换夜间模式" style="background:none;border:1px solid var(--border);border-radius:4px;cursor:pointer;font-size:0.9em;padding:1px 6px;line-height:1;color:var(--muted);">🌙</button>
   <button id="sidebar-toggle" title="打开工具面板" aria-label="打开工具面板" aria-expanded="false" onclick="toggleSidebar()">☰</button>
 </div>
 
-<div id="sidebar-backdrop" onclick="closeSidebar()"></div>
+<!-- Reserved for the integrated top-down Studio drawer host. The legacy link
+     remains functional until a drawer implementation owns this mount. -->
+<div id="studio-drawer-host" data-airp-region="studio-drawer" hidden aria-hidden="true">
+  <div id="studio-drawer-panel" data-airp-slot="studio-drawer-panel"></div>
+</div>
 
-<div id="main">
-  <div id="content-panel">
-    <div id="doc">等待生成...</div>
+<div id="sidebar-backdrop" data-airp-region="monitor-backdrop" onclick="closeSidebar()"></div>
+
+<div id="main" data-airp-region="workspace">
+  <div id="content-panel" data-airp-region="conversation">
+    <div id="doc" data-airp-slot="conversation">等待生成...</div>
     <div id="beautify-container"></div>
   </div>
 
-  <div id="sidebar">
+  <div id="sidebar" data-airp-region="monitor">
     <div class="side-card" id="actions-card" style="display:none;">
       <h4>📂 可选项</h4>
       <div id="sb-actions"></div>
     </div>
-    <div class="side-card" id="sessions-card">
+    <div class="side-card" id="sessions-card" data-airp-slot="monitor-session">
       <h4>存档</h4>
       <div class="session-toolbar">
         <select id="session-select" aria-label="当前存档" onchange="switchSession(this.value)"></select>
@@ -994,7 +1003,7 @@ body {
       </div>
       <div class="side-note" id="session-meta">正在读取存档…</div>
     </div>
-    <div class="side-card" id="active-graph-card">
+    <div class="side-card" id="active-graph-card" data-airp-slot="monitor-runtime">
       <h4>🧩 Active Graph</h4>
       <div class="side-note" id="active-graph-status">活动 Graph 状态: 未连接</div>
       <div class="side-note" id="runtime-task-status">任务: —</div>
@@ -1010,7 +1019,7 @@ body {
         <button class="side-button" onclick="loadActiveGraphPanel()">刷新列表</button>
       </div>
     </div>
-    <div class="side-card" id="agent-trace-card">
+    <div class="side-card" id="agent-trace-card" data-airp-slot="monitor-graph">
       <h4>🧭 Agent Trace</h4>
       <div class="side-note" id="agent-trace-status">等待运行时事件</div>
       <div id="agent-trace" aria-live="polite"></div>
@@ -1044,15 +1053,15 @@ body {
   </div>
 </div>
 
-<div id="input-panel">
+<div id="input-panel" data-airp-region="composer">
   <div class="input-row">
-    <textarea id="user-input" placeholder="在此输入你的回复或指令..." rows="2"></textarea>
+    <textarea id="user-input" data-airp-slot="composer-input" placeholder="在此输入你的回复或指令..." rows="2"></textarea>
     <!-- 酒馆桥接元素：卡脚本期望的 send_textarea / send_but -->
     <textarea id="send_textarea" style="display:none"></textarea>
     <div id="send_but" style="display:none"></div>
     <div class="btn-group">
-      <button class="btn-submit" onclick="doSubmit()">▶ 提交</button>
-      <button class="btn-secondary" onclick="doClear()">清空</button>
+      <button class="btn-submit" data-airp-action="submit" onclick="doSubmit()">▶ 提交</button>
+      <button class="btn-secondary" data-airp-action="clear" onclick="doClear()">清空</button>
     </div>
   </div>
   <div class="meta-row">
@@ -1065,7 +1074,7 @@ body {
 
 <div id="toast">✓ 操作已发送</div>
 
-<div id="node-detail-modal" hidden role="dialog" aria-modal="true" aria-labelledby="node-detail-title" onclick="closeNodeDetail(event)">
+<div id="node-detail-modal" data-airp-region="node-debug-overlay" hidden role="dialog" aria-modal="true" aria-labelledby="node-detail-title" onclick="closeNodeDetail(event)">
   <div class="node-detail-panel" onclick="event.stopPropagation()">
     <div class="node-detail-head">
       <h3 id="node-detail-title">Node Run</h3>
@@ -1073,7 +1082,7 @@ body {
       <button class="node-detail-close" type="button" title="关闭详情" aria-label="关闭详情" onclick="closeNodeDetail()">×</button>
     </div>
     <div class="side-note">Debug Replay makes a new model call and never commits a story turn.</div>
-    <pre id="node-detail-body"></pre>
+    <pre id="node-detail-body" data-airp-slot="debug-body"></pre>
   </div>
 </div>
 
@@ -1083,6 +1092,7 @@ body {
 </div>
 
 <script src="_st_shims.js?v=2"></script>
+<script src="game-workspace-contract.js"></script>
 <script>
 // ═══ Dynamic script reloader (no page flash) ═══
 console.log('[RP-Frontend] Initialized. jQuery:', typeof jQuery, 'lodash:', typeof window._, 'toastr:', typeof toastr);
@@ -1400,6 +1410,9 @@ function render() {
   if (window.eventEmit && window.Mvu) {
     window.eventEmit(window.Mvu.events.VARIABLE_UPDATE_ENDED);
   }
+
+  workspacePatchState('conversation', { content: newContent });
+  workspaceEmit('conversation:rendered', { state: S, content: newContent });
 }
 
 function updateOpeningsCard(S) {
@@ -1557,9 +1570,37 @@ let agentTrace = { nodes: {}, events: [], graphMode: false };
 let graphRunState = { graphRunId: null, status: null };
 let nodeDetailState = { nodeRunId: null, data: null, debugReplay: null };
 
+// The legacy page still owns these values.  The workspace contract mirrors
+// them so future Studio/Monitor modules can subscribe without taking over the
+// existing runtime functions during the migration.
+const workspaceContract = window.AIRPWorkspace || null;
+function workspaceSetState(name, value) {
+  if (workspaceContract && typeof workspaceContract.setState === 'function') {
+    workspaceContract.setState(name, value);
+  }
+}
+function workspacePatchState(name, values) {
+  if (workspaceContract && typeof workspaceContract.patchState === 'function') {
+    workspaceContract.patchState(name, values);
+  }
+}
+function workspaceEmit(type, detail) {
+  if (workspaceContract && typeof workspaceContract.emit === 'function') {
+    workspaceContract.emit(type, detail);
+  }
+}
+workspaceSetState('activeGraph', activeGraphState);
+workspaceSetState('runtimeTask', runtimeTask);
+workspaceSetState('session', sessionState);
+workspaceSetState('conversation', { content: null, stream: streamingPreview });
+workspaceSetState('monitor', { sidebarOpen: false, trace: agentTrace });
+workspaceSetState('nodeDebug', { open: false, nodeRunId: null });
+
 function renderStreamingPreview() {
   const doc = document.getElementById("doc");
   if (!doc) return;
+  workspacePatchState('conversation', { stream: streamingPreview });
+  workspaceEmit('conversation:stream-render', streamingPreview);
   let preview = document.getElementById("streaming-preview");
   if (!streamingPreview.text) {
     if (preview) preview.remove();
@@ -1584,6 +1625,8 @@ function renderStreamingPreview() {
 function clearStreamingPreview(taskId) {
   if (taskId && streamingPreview.taskId && taskId !== streamingPreview.taskId) return;
   streamingPreview = { taskId: null, text: "" };
+  workspacePatchState('conversation', { stream: streamingPreview });
+  workspaceEmit('conversation:stream-cleared', { taskId: taskId || null });
   renderStreamingPreview();
 }
 
@@ -1611,6 +1654,8 @@ function renderAgentTrace() {
   status.textContent = entries.length ? "最近 " + entries.length + " 个运行节点" : "等待运行时事件";
   const retry = document.getElementById("graph-retry-button");
   if (retry) retry.hidden = !(graphRunState.graphRunId && graphRunState.status === "failed");
+  workspacePatchState('monitor', { trace: agentTrace, graphRun: graphRunState });
+  workspaceEmit('monitor:trace-rendered', { trace: agentTrace, graphRun: graphRunState });
 }
 
 function recordAgentTrace(type, payload, sequence) {
@@ -1718,6 +1763,8 @@ function renderNodeDetail(detail) {
   const view = Object.assign({}, detail);
   if (nodeDetailState.debugReplay) view.debug_replay = nodeDetailState.debugReplay;
   body.textContent = JSON.stringify(view, null, 2);
+  workspacePatchState('nodeDebug', { open: true, nodeRunId: nodeDetailState.nodeRunId, data: view });
+  workspaceEmit('node-debug:rendered', view);
 }
 
 async function openNodeDetail(nodeRunId, traceItem) {
@@ -1733,6 +1780,8 @@ async function openNodeDetail(nodeRunId, traceItem) {
     detail_source: nodeRunId ? 'live trace' : 'live trace (node run not created yet)'
   } : null;
   nodeDetailState = { nodeRunId: nodeRunId || null, data: fallback, debugReplay: null };
+  workspaceSetState('nodeDebug', { open: true, nodeRunId: nodeDetailState.nodeRunId, data: fallback });
+  workspaceEmit('node-debug:opened', { nodeRunId: nodeDetailState.nodeRunId, traceItem: traceItem || null });
   const modal = document.getElementById('node-detail-modal');
   const body = document.getElementById('node-detail-body');
   if (modal) modal.hidden = false;
@@ -1791,6 +1840,8 @@ function closeNodeDetail(event) {
   const modal = document.getElementById('node-detail-modal');
   if (modal) modal.hidden = true;
   nodeDetailState = { nodeRunId: null, data: null, debugReplay: null };
+  workspaceSetState('nodeDebug', { open: false, nodeRunId: null, data: null });
+  workspaceEmit('node-debug:closed');
 }
 
 async function retryGraphRun() {
@@ -1829,6 +1880,9 @@ function setActiveGraphStatus(msg) {
 
 function setRuntimeTaskStatus(task) {
   runtimeTask = task && (task.task_id || (task.status && RUNTIME_ACTIVE_STATUSES.has(task.status))) ? task : null;
+  workspaceSetState('runtimeTask', runtimeTask);
+  workspacePatchState('composer', { busy: !!(runtimeTask && RUNTIME_ACTIVE_STATUSES.has(runtimeTask.status)) });
+  workspaceEmit('runtime:task-status', runtimeTask);
   const status = task && task.status ? task.status : 'idle';
   const taskId = task && task.task_id ? task.task_id : '—';
   const meta = [];
@@ -1875,6 +1929,8 @@ function renderSessions() {
   setText('session-meta', current
     ? '当前: ' + current.title + ' · Revision ' + Number(current.active_revision || 0)
     : '暂无存档');
+  workspaceSetState('session', sessionState);
+  workspaceEmit('session:rendered', { current: current || null, sessions: sessionState.sessions });
   updateRuntimeControls();
 }
 
@@ -1883,6 +1939,8 @@ function applySessionsPayload(data) {
     active_session_id: data.active_session_id || null,
     sessions: Array.isArray(data.sessions) ? data.sessions : []
   };
+  workspaceSetState('session', sessionState);
+  workspaceEmit('session:changed', sessionState);
   renderSessions();
 }
 
@@ -1969,6 +2027,8 @@ async function mutateSession(path, method, body, successMessage, activate = true
 
 function setSidebarOpen(open) {
   document.body.classList.toggle('sidebar-open', !!open);
+  workspacePatchState('monitor', { sidebarOpen: !!open });
+  workspaceEmit('monitor:sidebar', { open: !!open });
   const toggle = document.getElementById('sidebar-toggle');
   if (toggle) {
     toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
@@ -2286,10 +2346,14 @@ async function loadActiveGraphPanel() {
     if (!r.ok) throw new Error('unavailable');
     const data = await r.json();
     activeGraphState = data;
+    workspaceSetState('activeGraph', activeGraphState);
+    workspaceEmit('graph:selection-loaded', activeGraphState);
     setSelectOptions('runtime-graph-select', data.graphs, data.selected && data.selected.graph_id, '未选择 Graph');
     setActiveGraphStatus('活动 Graph 接口已就绪');
   } catch(e) {
     activeGraphState = { graphs: [], selected: { graph_id: null } };
+    workspaceSetState('activeGraph', activeGraphState);
+    workspaceEmit('graph:selection-error', activeGraphState);
     setSelectOptions('runtime-graph-select', [], '', 'Graph 接口不可用');
     setActiveGraphStatus('活动 Graph 接口不可用');
   }
@@ -2319,6 +2383,9 @@ async function doSubmit() {
   const charNameEl = document.querySelector('#input-panel input[id*="char-name"]');
   const charName = charNameEl ? charNameEl.value.trim() : '';
   if (!input) return;
+
+  workspacePatchState('composer', { busy: true, value: input });
+  workspaceEmit('composer:submit', { text: input, charName: charName });
 
   const btn = document.querySelector('.btn-submit');
   btn.disabled = true; btn.textContent = '...';
@@ -2353,6 +2420,7 @@ async function doSubmit() {
   }
   if (!runtimeTask || !RUNTIME_ACTIVE_STATUSES.has(runtimeTask.status)) {
     btn.disabled = false; btn.textContent = '▶ 提交';
+    workspacePatchState('composer', { busy: false });
   }
 }
 
@@ -2396,6 +2464,8 @@ function showToast(msg) {
 function doClear() {
   document.getElementById('user-input').value = '';
   document.getElementById('user-input').focus();
+  workspacePatchState('composer', { value: '' });
+  workspaceEmit('composer:clear');
 }
 
 document.getElementById('user-input').addEventListener('keydown', function(e) {
