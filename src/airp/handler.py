@@ -1,12 +1,12 @@
 """
 RP Response Handler — parses Claude Code output and manages chat_log / content.js / state.js.
-Also provides reroll and delete-turn logic for the bridge server.
+The canonical server uses the Session Command Service for revision operations;
+this module only retains the legacy projection append/opening compatibility CLI.
 Usage:
   python handler.py <card_folder>          # process response.txt → append turn
   python handler.py <card_folder> --opening # first turn, no user input
 """
 import json
-import os
 import re
 import sys
 import urllib.request
@@ -14,9 +14,9 @@ from pathlib import Path
 
 from airp.engine.mvu import extract_commands, execute_commands, compute_current_variables, audit_variables, validate_command, generate_schema, SchemaNode
 from airp.engine.card import (read_chat_log, write_chat_log, read_state, write_state,
-                         _get_latest_variables, _get_latest_delta, _get_turn_variables, update_state)
-from airp.engine.render import (resolve_card_macros, resolve_macros, _stat_color, _stat_max_guess, _render_stat_bar,
-                           _html_escape, _build_beautify_panel, _escape_attr, _strip_tags,
+                         _get_latest_variables, _get_latest_delta, _get_turn_variables)
+from airp.engine.render import (resolve_card_macros, resolve_macros,
+                           _html_escape, _build_beautify_panel, _strip_tags,
                            _strip_mvu_commands, _text_to_p, _extract_options)
 from airp.resources import projection_root
 
@@ -476,49 +476,6 @@ def append_turn(card_folder, polished_input=None, content="", summary="", option
     write_state(state_raw, card_folder, projection_root=projection_root)
 
     return next_index
-
-
-def reroll_last(card_folder):
-    """Delete last turn, restore user input for regeneration. Returns the user text."""
-    log = read_chat_log(card_folder)
-    if not log:
-        return None
-
-    last = log[-1]
-
-    # Refuse to reroll an opening (no user field) — nothing to regenerate from
-    if not last.get("user"):
-        return None
-
-    log.pop()
-    write_chat_log(card_folder, log)
-    write_content_js(card_folder)
-
-    # Update generatedCount
-    state_raw = read_state()
-    new_count = len(log) + 2 if log else 1
-    state_raw = re.sub(r'(\s+generatedCount:\s*)\d+', rf'\g<1>{new_count}', state_raw)
-    write_state(state_raw, card_folder)
-
-    user_text = last.get("user", "")
-    (STYLES / "input.txt").write_text(user_text, encoding="utf-8")
-    (STYLES / ".pending").touch()
-    return user_text
-
-
-def delete_turns(card_folder, from_index):
-    """Delete turns with index >= from_index."""
-    log = read_chat_log(card_folder)
-    log = [t for t in log if t.get("index", 0) < from_index]
-    write_chat_log(card_folder, log)
-    write_content_js(card_folder)
-
-    # Update generatedCount and clear pending
-    (STYLES / ".pending").unlink(missing_ok=True)
-    state_raw = read_state()
-    new_count = len(log) + 2 if log else 1
-    state_raw = re.sub(r'(\s+generatedCount:\s*)\d+', rf'\g<1>{new_count}', state_raw)
-    write_state(state_raw, card_folder)
 
 
 # ═══ Bridge Calls ═══

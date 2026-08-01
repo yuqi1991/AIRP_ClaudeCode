@@ -330,23 +330,3 @@ def _validate_args(name: str, args) -> str | None:
         if key in args and not _TYPE_CHECKS[typ](args[key]):
             return f"tool_validation_error:type:{key}"
     return None
-
-
-def validate_draft_dict(draft_dict) -> None:
-    """Validate a structured draft dict before harness commit.
-
-    Raises :class:`_ToolError` with a stable code on any malformed shape so
-    that NO domain work runs before validation. Used by the harness commit
-    path (not a model-facing tool).
-    """
-    if not isinstance(draft_dict, dict):
-        raise _ToolError("tool_validation_error:draft_not_object")
-    content = draft_dict.get("content")
-    if not isinstance(content, str) or not content.strip():
-        raise _ToolError("tool_validation_error:draft_content_empty")
-    for key in ("summary", "options", "polished_input", "mvu_commands"):
-        value = draft_dict.get(key, "")
-        if value is None:
-            continue
-        if not isinstance(value, str):
-            raise _ToolError(f"tool_validation_error:type:{key}")

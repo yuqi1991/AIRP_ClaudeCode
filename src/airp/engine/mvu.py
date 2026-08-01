@@ -997,16 +997,6 @@ def compute_current_variables(chat_log: list) -> dict:
     return {}
 
 
-def apply_variables_to_turn(turn_entry: dict, stat_data: dict, delta: dict = None) -> dict:
-    """Attach variable data to a turn entry."""
-    turn_entry["variables"] = {
-        "stat_data": copy.deepcopy(stat_data),
-    }
-    if delta:
-        turn_entry["variables"]["delta"] = delta
-    return turn_entry
-
-
 # ═══ Variable Diff / Audit ═══
 
 def compute_var_diff(old_data: dict, new_data: dict, prefix: str = "") -> dict:

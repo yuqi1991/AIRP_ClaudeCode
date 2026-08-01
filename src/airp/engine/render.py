@@ -386,10 +386,6 @@ def _build_beautify_panel(stat_data, delta, beautify_data):
     return panel_html
 
 
-def _escape_attr(s):
-    return s.replace("&", "&amp;").replace('"', "&quot;").replace("<", "&lt;").replace(">", "&gt;")
-
-
 def _strip_tags(text, tag):
     return re.sub(rf"<{tag}>.*?</{tag}>", "", text, flags=re.DOTALL).strip()
 

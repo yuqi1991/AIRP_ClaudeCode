@@ -277,41 +277,7 @@ def compile_context(request):
     return _finalize_context(request, layout, sections)
 
 
-def compile_sequential_handoff_context(request, parent_manifest, source_node, target_node, text):
-    """Compile a persisted graph handoff as a distinct replayable manifest.
-
-    The handoff is a normal dynamic section, not an in-memory mutation of a
-    previous payload. Its provenance chains the receiving node to the exact
-    parent manifest and prior handoff hash.
-    """
-    layout = resolve_layout(request)
-    base = compile_context(request)
-    sections = list(base.manifest["sections"])
-    source = {"id": source_node.id, "role": source_node.role}
-    target = {"id": target_node.id, "role": target_node.role}
-    handoff = {"source": source, "target": target, "text": text or ""}
-    handoff_hash = _hash(handoff)
-    _add(
-        sections,
-        "sequential_handoff",
-        "dynamic",
-        handoff,
-        "sequential graph handoff",
-        {"id": f"graph_handoff:{source_node.id}:{target_node.id}", "version": handoff_hash},
-        role="user",
-    )
-    parent_provenance = parent_manifest.get("graph_provenance") or {}
-    provenance = {
-        "node": target,
-        "parent_manifest_id": parent_manifest["id"],
-        "parent_payload_hash": parent_manifest["payload_hash"],
-        "parent_handoff_hash": (parent_provenance.get("handoff") or {}).get("hash"),
-        "handoff": {"hash": handoff_hash, "source": source, "target": target},
-    }
-    return _finalize_context(request, layout, sections, graph_provenance=provenance)
-
-
-def _finalize_context(request, layout, sections, *, graph_provenance=None):
+def _finalize_context(request, layout, sections):
     budget_decisions = _fit_budget(sections, request.policy.token_budget)
     _fit_payload_budget(sections, request.policy.token_budget, budget_decisions)
     payload = _payload(sections)
@@ -338,19 +304,7 @@ def _finalize_context(request, layout, sections, *, graph_provenance=None):
         "context_layout": {"id": layout.id, "version": layout.version},
         "macros_version": MACROS_VERSION,
     }
-    if graph_provenance is not None:
-        manifest["graph_provenance"] = graph_provenance
     return CompiledContext(payload, manifest, payload_hash, stable_payload_hash)
-
-
-def replay_payload(manifest):
-    return [
-        {
-            "role": section.get("role") or ("system" if section["kind"] == "narrative_policy" else "user"),
-            "content": _canonical_json({"kind": section["kind"], "content": section["content"]}),
-        }
-        for section in manifest["sections"]
-    ]
 
 
 def _payload(sections):

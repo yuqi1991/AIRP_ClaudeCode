@@ -19,7 +19,6 @@ injected only into the concrete client; they NEVER travel through
 
 import hashlib
 import json
-import re
 import threading
 import time
 from dataclasses import dataclass, field

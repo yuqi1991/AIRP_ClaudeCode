@@ -22,8 +22,6 @@ from airp.engine.context_compiler import (
     ContextCompileRequest,
     ContextPolicy,
     compile_context,
-    compile_sequential_handoff_context,
-    replay_payload,
 )
 from airp.engine.graph_runtime import (
     AgentArtifact,
@@ -37,10 +35,10 @@ from airp.engine.graph_runtime import (
 from airp.engine.mvu import execute_commands, extract_commands, generate_schema, validate_command_strict
 from airp.engine.provider import AbortSignal
 from airp.engine.quality import DefaultQualityGate, QualityContext, QualityGate, QualityPolicy
-from airp.host.rp.tools import ToolRegistry, validate_draft_dict
+from airp.host.rp.tools import ToolRegistry
 from airp.host.card_projection import CardProjection
 from airp.host.graph_turn_commit import GraphTurnCommitExecutor, turn_draft_from_artifact
-from airp.host.rp.types import CommitLineage, RuntimeEvent, RuntimeResult, TurnCommit, TurnDraft
+from airp.host.rp.types import RuntimeEvent, RuntimeResult, TurnCommit, TurnDraft
 from airp.host.rp.trace import GraphRunObserver, _load_trace_json, _redact_trace, _trace_json
 from airp.engine.worldbook import load_worldbook_entry_from_texts
 
@@ -1233,13 +1231,6 @@ class SessionTurnRuntime:
                     (self.session_id,),
                 )
 
-    def projection_checkpoint(self, commit_id):
-        with self._connect() as connection:
-            row = connection.execute(
-                "SELECT state FROM projection_checkpoints WHERE commit_id = ?", (commit_id,)
-            ).fetchone()
-        return row["state"] if row else None
-
     def manifest_for_task(self, task_id, call_ordinal):
         with self._connect() as connection:
             row = connection.execute(
@@ -1248,28 +1239,6 @@ class SessionTurnRuntime:
                 (self.session_id, task_id, call_ordinal),
             ).fetchone()
         return self._manifest_row(row)
-
-    def manifests_for_task(self, task_id):
-        with self._connect() as connection:
-            rows = connection.execute(
-                "SELECT id, manifest_json, payload_json FROM context_manifests "
-                "WHERE session_id = ? AND task_id = ? ORDER BY call_ordinal",
-                (self.session_id, task_id),
-            ).fetchall()
-        return [self._manifest_row(row) for row in rows]
-
-    def replay_manifest(self, manifest_id):
-        with self._connect() as connection:
-            row = connection.execute(
-                "SELECT payload_json, payload_hash FROM context_manifests WHERE id = ? AND session_id = ?",
-                (manifest_id, self.session_id),
-            ).fetchone()
-        if not row:
-            return None
-        payload = json.loads(row["payload_json"])
-        if self._hash_bytes(self._canonical(payload).encode("utf-8")) != row["payload_hash"]:
-            raise RuntimeError("persisted manifest payload hash mismatch")
-        return payload
 
     def load_worldbook_for_task(self, task_id, title, reason):
         with self._lock:
@@ -1365,78 +1334,6 @@ class SessionTurnRuntime:
                     self._event(connection, "player_message.submitted", {"task_id": task_id, "text": text})
                 self._event(connection, "task.queued", {"task_id": task_id, "base_revision": base_revision})
                 return self._task_for_key(connection, idempotency_key)
-
-    def compile_follow_up_manifest(self, task_id, player_input):
-        with self._lock:
-            with self._connect() as connection:
-                connection.execute("BEGIN IMMEDIATE")
-                task = connection.execute(
-                    "SELECT id, text, base_revision, source_snapshot FROM tasks WHERE id = ? AND session_id = ?",
-                    (task_id, self.session_id),
-                ).fetchone()
-                if not task:
-                    raise ValueError("unknown task")
-                call_ordinal = connection.execute(
-                    "SELECT COUNT(*) AS count FROM context_manifests WHERE session_id = ? AND task_id = ?",
-                    (self.session_id, task_id),
-                ).fetchone()["count"]
-                snapshot = json.loads(task["source_snapshot"])
-                loads = self._worldbook_loads_in_connection(connection, task_id, call_ordinal)
-                policy = self._policy_for_snapshot(snapshot)
-                compiled = compile_context(ContextCompileRequest(
-                    session_id=self.session_id,
-                    task_id=task_id,
-                    base_revision=task["base_revision"],
-                    player_input=player_input,
-                    snapshot=snapshot,
-                    policy=policy,
-                    call_ordinal=call_ordinal,
-                    worldbook_loads=tuple(loads),
-                ))
-                return self._persist_manifest_in_connection(connection, task, compiled)
-
-    def compile_sequential_handoff_manifest(self, task_id, parent_compiled, source_node, target_node, text):
-        """Compile and persist the next graph-node context from a prior manifest.
-
-        Sequential nodes may only receive an immutable, persisted handoff. This
-        prevents a payload/hash pair from being reused after the handoff changes.
-        """
-        with self._lock:
-            with self._connect() as connection:
-                connection.execute("BEGIN IMMEDIATE")
-                task = connection.execute(
-                    "SELECT id, text, base_revision, source_snapshot FROM tasks WHERE id = ? AND session_id = ?",
-                    (task_id, self.session_id),
-                ).fetchone()
-                if not task:
-                    raise ValueError("unknown task")
-                parent_manifest = parent_compiled.manifest
-                parent_id = parent_manifest.get("id")
-                if not parent_id:
-                    raise ValueError("sequential handoff requires a persisted parent manifest")
-                call_ordinal = connection.execute(
-                    "SELECT COUNT(*) AS count FROM context_manifests WHERE session_id = ? AND task_id = ?",
-                    (self.session_id, task_id),
-                ).fetchone()["count"]
-                snapshot = json.loads(task["source_snapshot"])
-                loads = self._worldbook_loads_in_connection(connection, task_id, call_ordinal)
-                compiled = compile_sequential_handoff_context(
-                    ContextCompileRequest(
-                        session_id=self.session_id,
-                        task_id=task_id,
-                        base_revision=task["base_revision"],
-                        player_input=task["text"],
-                        snapshot=snapshot,
-                        policy=self._policy_for_snapshot(snapshot),
-                        call_ordinal=call_ordinal,
-                        worldbook_loads=tuple(loads),
-                    ),
-                    parent_manifest,
-                    source_node,
-                    target_node,
-                    text,
-                )
-                return self._persist_manifest_in_connection(connection, task, compiled)
 
     def _worldbook_loads(self, task_id, before_call_ordinal):
         with self._connect() as connection:
@@ -2067,10 +1964,6 @@ class SessionTurnRuntime:
     def _hash_bytes(value):
         import hashlib
         return hashlib.sha256(value).hexdigest()
-
-    def _task_text(self, task_id):
-        with self._connect() as connection:
-            return connection.execute("SELECT text FROM tasks WHERE id = ?", (task_id,)).fetchone()["text"]
 
     def _active_revision(self, connection):
         return connection.execute("SELECT active_revision FROM sessions WHERE id = ?", (self.session_id,)).fetchone()["active_revision"]
@@ -2818,36 +2711,3 @@ class SessionTurnRuntime:
     @staticmethod
     def _id():
         return str(uuid.uuid4())
-
-
-# ═══ Module-level helpers for state-proposal validation ═══
-
-
-def extract_commands_for_proposal(proposal):
-    """Translate a JSONPatch proposal (list of ops) into MVU commands.
-
-    The ``validate_state_proposal`` tool accepts the same JSONPatch op shape
-    the model emits inside ``<JSONPatch>`` blocks (op/path/value[/from]). We
-    synthesize a ``<JSONPatch>`` envelope and reuse :func:`extract_commands`
-    so the proposal path and the live commit path share one parser — no
-    duplicate MVU semantics.
-    """
-    if not isinstance(proposal, list):
-        raise ValueError("proposal must be a list of JSONPatch operations")
-    envelope = "<JSONPatch>\n" + json.dumps(proposal, ensure_ascii=False) + "\n</JSONPatch>"
-    return extract_commands(envelope)
-
-
-def _collect_changed_paths(before, after, prefix=""):
-    """Yield leaf paths whose values differ between ``before`` and ``after``."""
-    paths = set()
-    if isinstance(before, dict) and isinstance(after, dict):
-        for key in set(before.keys()) | set(after.keys()):
-            full = f"{prefix}.{key}" if prefix else key
-            if key not in before or key not in after:
-                paths.add(full)
-            elif isinstance(before[key], dict) and isinstance(after[key], dict):
-                paths.update(_collect_changed_paths(before[key], after[key], full))
-            elif before[key] != after[key]:
-                paths.add(full)
-    return paths

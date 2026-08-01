@@ -67,14 +67,3 @@ class TurnCommit:
     id: str
     revision: int
     task_id: str
-
-
-@dataclass(frozen=True)
-class CommitLineage:
-    """Public read model for a commit's place in the revision DAG."""
-
-    id: str
-    revision: int
-    task_id: str
-    parent_revision: int
-    text: str = ""
