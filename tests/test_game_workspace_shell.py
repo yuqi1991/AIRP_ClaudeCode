@@ -129,3 +129,39 @@ def test_agents_orchestration_drawer_exposes_linear_editor_contract():
     ):
         assert behavior in script
     assert ".studio-topology-node::after" in styles
+
+
+def test_game_page_mounts_worldbook_definition_drawer_and_api_actions():
+    page = (WEB_ROOT / "index.html").read_text(encoding="utf-8")
+    script = (WEB_ROOT / "worldbook-drawer.js").read_text(encoding="utf-8")
+    styles = (WEB_ROOT / "worldbook-drawer.css").read_text(encoding="utf-8")
+
+    assert '<link rel="stylesheet" href="worldbook-drawer.css">' in page
+    assert '<script src="worldbook-drawer.js"></script>' in page
+    assert 'id="studio-drawer-host"' in page
+    assert 'id="studio-link"' in page
+    for control in (
+        "worldbook-drawer-library-search",
+        "worldbook-drawer-import",
+        "worldbook-drawer-new",
+        "worldbook-drawer-copy",
+        "worldbook-drawer-rename",
+        "worldbook-drawer-delete",
+        "worldbook-drawer-export",
+        "worldbook-drawer-entry-search",
+        "worldbook-drawer-entry-sort",
+        "worldbook-drawer-save-bindings",
+    ):
+        assert control in script
+    for endpoint in (
+        "/v1/studio/worldbooks",
+        "/import",
+        "/copy",
+        "/export",
+        "/v1/studio/projects/",
+        "/worldbooks",
+    ):
+        assert endpoint in script
+    assert "worldbook-drawer-panel" in styles
+    assert "worldbook-drawer-body" in styles
+    assert "worldbook-entry-card" in styles

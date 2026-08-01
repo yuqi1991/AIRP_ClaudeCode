@@ -8,6 +8,7 @@
 <script src="lib/lodash-4.17.21.min.js"></script>
 <link rel="stylesheet" href="lib/toastr-2.1.4.min.css">
 <link rel="stylesheet" href="game-workspace.css">
+<link rel="stylesheet" href="worldbook-drawer.css">
 <script src="lib/toastr-2.1.4.min.js"></script>
 <script src="_regex_engine.js"></script>
 <style>
@@ -1086,6 +1087,7 @@ body {
       </div>
     </section>
   </section>
+  <div id="worldbook-drawer-mount" data-airp-slot="worldbook-drawer-panel" data-airp-drawer-view="worldbooks" aria-label="Worldbook Definitions"></div>
 </div>
 
 <div id="sidebar-backdrop" data-airp-region="monitor-backdrop" onclick="closeSidebar()"></div>
@@ -1218,6 +1220,7 @@ body {
 <script src="_st_shims.js?v=2"></script>
 <script src="game-workspace-contract.js"></script>
 <script src="studio-agents-drawer.js"></script>
+<script src="worldbook-drawer.js"></script>
 <script>
 // ═══ Dynamic script reloader (no page flash) ═══
 console.log('[RP-Frontend] Initialized. jQuery:', typeof jQuery, 'lodash:', typeof window._, 'toastr:', typeof toastr);

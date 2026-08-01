@@ -1,0 +1,455 @@
+/* Worldbook editor mounted in the game workspace's top-down Studio drawer. */
+[data-airp-region="studio-drawer"] {
+  position: fixed;
+  z-index: 80;
+  inset: 0;
+  pointer-events: none;
+}
+
+[data-airp-region="studio-drawer"][aria-hidden="false"] {
+  pointer-events: auto;
+}
+
+.worldbook-drawer-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(30, 25, 20, .34);
+}
+
+.worldbook-drawer-panel {
+  position: absolute;
+  top: 34px;
+  left: 0;
+  right: 0;
+  display: flex;
+  flex-direction: column;
+  width: min(1240px, 100%);
+  height: calc(100vh - 34px);
+  margin: 0 auto;
+  overflow: hidden;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  box-shadow: 0 12px 35px rgba(28, 24, 20, .25);
+  transform: translateY(-12px);
+  opacity: 0;
+  transition: transform var(--airp-motion-panel) ease, opacity var(--airp-motion-panel) ease;
+}
+
+[data-airp-region="studio-drawer"][aria-hidden="false"] .worldbook-drawer-panel {
+  transform: translateY(0);
+  opacity: 1;
+}
+
+.worldbook-drawer-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 58px;
+  padding: 10px 18px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.worldbook-drawer-kicker {
+  color: var(--muted);
+  font-size: .68rem;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+}
+
+.worldbook-drawer-title {
+  margin-top: 2px;
+  color: var(--text);
+  font-size: 1.05rem;
+  font-weight: 700;
+}
+
+.worldbook-drawer-header .worldbook-drawer-close {
+  margin-left: auto;
+}
+
+.worldbook-drawer-close,
+.worldbook-drawer-button {
+  min-height: 30px;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--input-bg);
+  color: var(--text);
+  cursor: pointer;
+  font: inherit;
+  font-size: .76rem;
+  font-weight: 600;
+}
+
+.worldbook-drawer-close:hover,
+.worldbook-drawer-button:hover,
+.worldbook-drawer-close:focus-visible,
+.worldbook-drawer-button:focus-visible {
+  border-color: var(--accent);
+  outline: none;
+}
+
+.worldbook-drawer-button.primary {
+  border-color: var(--accent2);
+  background: var(--accent2);
+  color: #fff;
+}
+
+.worldbook-drawer-button.danger {
+  border-color: #b0624a;
+  color: #b0624a;
+}
+
+.worldbook-drawer-button:disabled {
+  cursor: not-allowed;
+  opacity: .5;
+}
+
+.worldbook-drawer-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex-wrap: wrap;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg);
+}
+
+.worldbook-drawer-toolbar .worldbook-drawer-search {
+  flex: 1 1 210px;
+}
+
+.worldbook-drawer-search,
+.worldbook-drawer-select,
+.worldbook-drawer-input,
+.worldbook-drawer-textarea {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--input-bg);
+  color: var(--text);
+  font: inherit;
+  font-size: .78rem;
+  outline: none;
+}
+
+.worldbook-drawer-search,
+.worldbook-drawer-select,
+.worldbook-drawer-input {
+  min-height: 30px;
+  padding: 6px 8px;
+}
+
+.worldbook-drawer-textarea {
+  min-height: 96px;
+  padding: 7px 8px;
+  resize: vertical;
+  line-height: 1.45;
+}
+
+.worldbook-drawer-search:focus,
+.worldbook-drawer-select:focus,
+.worldbook-drawer-input:focus,
+.worldbook-drawer-textarea:focus {
+  border-color: var(--accent2);
+}
+
+.worldbook-drawer-body {
+  display: grid;
+  grid-template-columns: minmax(190px, .65fr) minmax(400px, 1.7fr) minmax(205px, .75fr);
+  min-height: 0;
+  flex: 1;
+}
+
+.worldbook-drawer-column {
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  padding: 14px;
+}
+
+.worldbook-drawer-column + .worldbook-drawer-column {
+  border-left: 1px solid var(--border);
+}
+
+.worldbook-drawer-column-heading,
+.worldbook-entry-toolbar,
+.worldbook-binding-heading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.worldbook-drawer-column-heading {
+  justify-content: space-between;
+  margin-bottom: 9px;
+}
+
+.worldbook-drawer-column-heading h2,
+.worldbook-entry-toolbar h2,
+.worldbook-binding-heading h2 {
+  color: var(--text);
+  font-size: .84rem;
+  font-weight: 700;
+}
+
+.worldbook-drawer-count,
+.worldbook-drawer-hint {
+  color: var(--muted);
+  font-size: .7rem;
+  line-height: 1.45;
+}
+
+.worldbook-library-list,
+.worldbook-entry-list,
+.worldbook-binding-list {
+  display: grid;
+  gap: 6px;
+}
+
+.worldbook-library-row {
+  display: grid;
+  gap: 3px;
+  width: 100%;
+  padding: 9px 10px;
+  border: 1px solid var(--border);
+  border-left: 3px solid transparent;
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+}
+
+.worldbook-library-row:hover,
+.worldbook-library-row:focus-visible {
+  border-color: var(--accent);
+  outline: none;
+}
+
+.worldbook-library-row.selected {
+  border-left-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 8%, var(--bg));
+}
+
+.worldbook-library-title {
+  overflow: hidden;
+  font-size: .78rem;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.worldbook-library-meta {
+  color: var(--muted);
+  font-size: .68rem;
+}
+
+.worldbook-empty {
+  padding: 14px 8px;
+  color: var(--muted);
+  font-size: .74rem;
+  text-align: center;
+}
+
+.worldbook-editor-header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 7px;
+  margin-bottom: 10px;
+}
+
+.worldbook-editor-header .worldbook-drawer-input {
+  font-size: .95rem;
+  font-weight: 650;
+}
+
+.worldbook-editor-actions,
+.worldbook-entry-actions,
+.worldbook-drawer-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.worldbook-editor-actions {
+  justify-content: flex-end;
+  margin-bottom: 12px;
+}
+
+.worldbook-entry-toolbar {
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.worldbook-entry-toolbar-controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.worldbook-entry-toolbar-controls .worldbook-drawer-search {
+  width: min(220px, 28vw);
+}
+
+.worldbook-entry-toolbar-controls .worldbook-drawer-select {
+  width: 112px;
+}
+
+.worldbook-entry-card {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+}
+
+.worldbook-entry-card.is-disabled {
+  opacity: .66;
+}
+
+.worldbook-entry-card-header {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.worldbook-entry-number {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font: 600 .68rem/1 "SFMono-Regular", Consolas, monospace;
+}
+
+.worldbook-entry-card-header strong {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text);
+  font-size: .77rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.worldbook-entry-card-header .worldbook-entry-enabled {
+  margin-left: auto;
+}
+
+.worldbook-entry-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.3fr) 90px;
+  gap: 7px;
+}
+
+.worldbook-entry-field {
+  display: grid;
+  gap: 4px;
+}
+
+.worldbook-entry-field.wide {
+  grid-column: 1 / -1;
+}
+
+.worldbook-entry-field label,
+.worldbook-binding-label {
+  color: var(--muted);
+  font-size: .67rem;
+}
+
+.worldbook-entry-enabled,
+.worldbook-binding-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text);
+  font-size: .72rem;
+}
+
+.worldbook-entry-enabled input,
+.worldbook-binding-row input {
+  accent-color: var(--accent2);
+}
+
+.worldbook-binding-column {
+  background: var(--bg);
+}
+
+.worldbook-binding-heading {
+  justify-content: space-between;
+  margin-bottom: 5px;
+}
+
+.worldbook-binding-project {
+  margin: 8px 0;
+}
+
+.worldbook-binding-row {
+  padding: 7px 6px;
+  border-bottom: 1px solid var(--border);
+}
+
+.worldbook-binding-row span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.worldbook-drawer-footer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  min-height: 52px;
+  padding: 9px 14px;
+  border-top: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.worldbook-drawer-footer .worldbook-drawer-actions:last-child {
+  margin-left: auto;
+}
+
+.worldbook-drawer-notice {
+  min-height: 18px;
+  color: var(--muted);
+  font-size: .72rem;
+}
+
+.worldbook-drawer-notice.success { color: var(--accent2); }
+.worldbook-drawer-notice.error { color: #b0624a; }
+
+@media (max-width: 920px) {
+  .worldbook-drawer-body {
+    grid-template-columns: minmax(170px, .55fr) minmax(340px, 1.45fr);
+  }
+
+  .worldbook-binding-column {
+    grid-column: 1 / -1;
+    max-height: 220px;
+    border-top: 1px solid var(--border);
+    border-left: 0 !important;
+  }
+}
+
+@media (max-width: 680px) {
+  .worldbook-drawer-panel { top: 34px; }
+  .worldbook-drawer-header { padding: 9px 12px; }
+  .worldbook-drawer-body { display: flex; flex-direction: column; overflow: auto; }
+  .worldbook-drawer-column { overflow: visible; }
+  .worldbook-drawer-column + .worldbook-drawer-column { border-top: 1px solid var(--border); border-left: 0; }
+  .worldbook-drawer-column:first-child { max-height: 230px; }
+  .worldbook-binding-column { max-height: none; }
+  .worldbook-entry-toolbar { align-items: flex-start; flex-direction: column; }
+  .worldbook-entry-toolbar-controls { width: 100%; }
+  .worldbook-entry-toolbar-controls .worldbook-drawer-search { width: auto; flex: 1; }
+  .worldbook-entry-toolbar-controls .worldbook-drawer-select { width: 112px; }
+  .worldbook-editor-header { grid-template-columns: 1fr; }
+  .worldbook-entry-grid { grid-template-columns: 1fr; }
+  .worldbook-drawer-footer .worldbook-drawer-actions:last-child { margin-left: 0; }
+}
