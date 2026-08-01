@@ -36,7 +36,11 @@ metadata；ADR-0023 已锁定该清理不变量，补齐实现和孤儿状态回
 
 **状态：Broken**
 
-导入支持多种资产，但失败和降级往往缺少面向玩家的报告。需要建立：支持矩阵、导入诊断、变量/正则/美化兼容报告和最小复现卡测试集。
+导入支持多种资产，但失败和降级往往缺少面向玩家的报告。`ADR-0024` 已锁定
+`airp.import-diagnostics` v1、逐字段 provenance、内嵌 Worldbook 绑定计数和
+success/degraded/failed 语义；原型已验证三类报告形状。仍需把 emitter 接入
+`import_card.py`/`import_prepare.py`，建立 PNG/JSON/TXT 和变量/正则/美化兼容 fixture，
+并在游戏抽屉展示可定位的修复建议。
 
 ## P1：MVU 校验过宽
 

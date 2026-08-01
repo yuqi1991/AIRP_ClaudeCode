@@ -34,6 +34,7 @@ AIRP 是面向玩家的本地独立角色扮演引擎：玩家可导入和游玩
 | 独立 Runtime/Harness 拥有从 submit 到唯一 commit、投影和事件的完整回合生命周期 | 已确认 | ADR-0021；Provider/长会话可靠性仍待验收 |
 | Provider 采用 OpenAI-compatible 能力契约；真实 Provider 需 opt-in qualification，默认 CI 无外部密钥 | 已确认 | ADR-0022；20 回合 soak、SSE 重连和重启是发布门槛 |
 | Project 拥有私有运行态；Workspace 可存多 Project/Session，但进程只维护一个 active projection | 已确认 | ADR-0023；Project 删除清理仍待实现 |
+| 角色卡与内嵌世界书导入使用 versioned `airp.import-diagnostics` 报告，区分 success/degraded/failed 与逐字段 provenance | 已确认 | ADR-0024；生产 emitter 和 UI 展示仍待实现 |
 | 多 agent 一等职责为叙事导演、世界模拟、文风润色和角色演化 | 已确认 | `docs/architecture/future-runtime.md` |
 | agent 可在角色资料明显不足时自主检索外部资料，并记录来源/摘要 | 已确认 | `docs/product/principles.md` |
 | 代码变更必须同步更新相应 wiki、状态表和 ADR | 已确认 | `docs/development/agent-guide.md` |

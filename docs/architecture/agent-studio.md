@@ -88,6 +88,8 @@ Monitor 的存档区展示当前存档名称、Revision 和最后保存时间，
 
 角色卡内嵌的世界书在导入时转换为独立 `Worldbook Definition` 并自动绑定到 Project。Project 还可以绑定任意多个全局世界书，例如角色专属设定、通用境界词汇、文风规则或资料库。
 
+导入边界同时产生 [`airp.import-diagnostics` v1 报告](../adr/0024-import-diagnostics-report.md)。报告记录源路径、目标路径、导入/规范化/默认/跳过/失败状态，以及内嵌 Worldbook 的条目计数和绑定结果；`success`、`degraded`、`failed` 只描述本次导入结果，不替代 Project 或 Worldbook 事实。没有 AIRP 运行时映射的 SillyTavern extensions 只能作为兼容性 finding 展示，不能静默伪装成已执行能力。
+
 ## Provider Profiles
 
 Provider Profile 只管理连接与模型目录，不拥有 Agent 的生成参数。第一阶段支持多个真正可调用的 OpenAI-compatible Provider，并明确区分两种 API format：

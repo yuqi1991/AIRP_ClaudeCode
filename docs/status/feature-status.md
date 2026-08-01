@@ -26,7 +26,7 @@
 | 功能 | 当前情况 | 主要缺口 |
 |---|---|---|
 | Provider 发布 qualification / 浏览器真实长会话 | ADR-0022 已锁定能力契约；DeepSeek 单回合 opt-in smoke 存在 | 仍需每个发布 route 的 20 回合 soak、2 次 SSE 重连和 1 次 Runtime 重启证据 |
-| 卡片/世界书兼容诊断 | 导入失败不阻断其它素材，变量来源有审计字段 | 缺统一可视化诊断报告与大规模 fixture |
+| 卡片/世界书兼容诊断 | [`ADR-0024`](../adr/0024-import-diagnostics-report.md) 已锁定 `airp.import-diagnostics` v1、逐字段 provenance 和 success/degraded/failed 语义；原型已验证完整/降级/失败三类输入 | `import_card.py`/`import_prepare.py` 尚未发出正式报告；缺真实 fixture、API 返回和游戏抽屉展示 |
 | 后台 NPC 与剧情规划 | 作为用户 Agent instruction/Worldbook 内容运行 | 引擎不提供内置叙事规则，质量取决于用户配置 |
 
 ## 明确不属于引擎

@@ -4,6 +4,10 @@
 
 每张卡运行在独立目录中。导入源可以是 PNG、JSON 或 TXT；导入后由引擎生成卡片事实、共享基线和 card-local session store。
 
+导入还应生成 [`airp.import-diagnostics` v1 报告](../adr/0024-import-diagnostics-report.md)，
+把源字段到 AIRP 事实的转换、默认值、跳过项和失败原因保留下来。报告是导入审计投影，
+不是卡片事实源；内嵌 `character_book` 的条目数量与 Project 绑定结果必须可见。
+
 | 文件/目录 | 用途 | 生命周期 |
 |---|---|---|
 | `.card_data.json` | 导入后的完整卡片元数据归档 | 导入时生成，卡片专属 |
