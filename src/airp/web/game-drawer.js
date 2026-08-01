@@ -22,7 +22,8 @@
     graphs: [],
     selectedGraph: null,
     stateRequestId: 0,
-    status: ''
+    status: '',
+    diagnostics: null
   };
 
   function api(path) {
@@ -171,6 +172,7 @@
     ];
     var html = '<div class="airp-game-project-head"><div><h3>' + esc(project.name || project.id) + '</h3><small>' + esc(project.id) + '</small></div>' +
       '<button class="airp-game-button danger" type="button" data-game-delete>删除游戏</button></div>' +
+      diagnosticMarkup() +
       '<div class="airp-game-tabs" role="tablist">' + tabs.map(function(tab) {
         return '<button class="airp-game-button" type="button" role="tab" aria-selected="' + (model.tab === tab[0] ? 'true' : 'false') + '" data-game-tab="' + tab[0] + '">' + tab[1] + '</button>';
       }).join('') + '</div>';
@@ -185,6 +187,22 @@
     if (model.tab === 'openings') renderOpeningsPane(pane);
     if (model.tab === 'worldbooks') renderWorldbooksPane(pane);
     if (model.tab === 'graph') renderGraphPane(pane);
+  }
+
+  function diagnosticMarkup() {
+    var report = model.diagnostics;
+    if (!report || !report.overall) return '';
+    var overall = report.overall;
+    var worldbook = report.worldbook || {};
+    var status = overall.status === 'success' ? '导入完成' : overall.status === 'degraded' ? '导入完成 · 有降级项' : '导入失败';
+    var counts = overall.counts || {};
+    var details = worldbook.embedded
+      ? '内嵌世界书: 已读取 ' + Number(worldbook.entries_seen || 0) + ' 条，导入 ' + Number(worldbook.entries_imported || 0) + ' 条，跳过 ' + Number(worldbook.entries_skipped || 0) + ' 条' + (worldbook.bound_to_project ? '，已绑定' : '')
+      : '内嵌世界书: 未发现';
+    return '<section class="airp-game-diagnostics ' + esc(overall.status) + '" aria-label="导入诊断摘要">' +
+      '<strong>' + esc(status) + '</strong><span>' + esc(details) + '</span>' +
+      '<small>提示 ' + Number(counts.info || 0) + ' · 警告 ' + Number(counts.warning || 0) + ' · 错误 ' + Number(counts.error || 0) + '</small>' +
+      '</section>';
   }
 
   function field(label, id, value, full, tall) {
@@ -489,9 +507,15 @@
         request('/v1/studio/projects/import', {
           method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ document: documentData })
         }).then(function(data) {
-          setStatus('已导入游戏');
+          model.diagnostics = data.diagnostics || null;
+          var diagnosticStatus = model.diagnostics && model.diagnostics.overall && model.diagnostics.overall.status;
+          setStatus(diagnosticStatus === 'degraded' ? '已导入游戏，但有降级项' : '已导入游戏');
           return loadState().then(function() { return selectProject(data.project.id); });
-        }).catch(function(error) { setStatus(error.message, true); });
+        }).catch(function(error) {
+          model.diagnostics = error.data && error.data.diagnostics || null;
+          setStatus(error.message, true);
+          renderEditor();
+        });
       } catch (error) {
         setStatus('只能导入有效的 JSON 角色卡文件', true);
       }

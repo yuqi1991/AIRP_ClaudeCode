@@ -1,6 +1,6 @@
 # ADR-0026：游玩中的设定编辑与追溯语义
 
-- **状态**：Accepted（编辑/运行隔离与追溯规则已锁定；revision enforcement 尚待实现）
+- **状态**：Accepted（编辑/运行隔离、revision、audit 与 provenance enforcement 已实现）
 - **日期**：2026-08-02
 - **关联**：Wayfinder #12、ADR-0016、ADR-0021、ADR-0023、`CONTEXT.md`
 
@@ -82,16 +82,17 @@ Project/Library revision 是配置事实；Session revision 是故事事实。�
 ## Current implementation status
 
 已有证据：Task 创建时的 source snapshot、Context Manifest、Node Run/Trace 持久化；Project
-和 Session 分层；Project/Worldbook/Graph 保存接口；未保存表单只存在浏览器内。尚未实现：
-Project/Library revision 表或文件、`expected_revision` 冲突响应、配置 audit record、
-revision id/hash 注入 source snapshot，以及 generation 期间延迟 materialization/rebind。
-现有 `updated_at` 不能替代这些语义，`ProjectRuntimeStore.refresh()` 和 Graph selection
-的即时重配需要按本 ADR 收紧。
+和 Session 分层；未保存表单只存在浏览器内。Project/Library 文件现在持久化 revision，保存
+支持 `expected_revision` 冲突，`.audit.jsonl` 追加对象类型、父子 revision、变更路径和
+before/after hash；Execution Plan/source snapshot 注入 Project、Graph、Agent、Provider 与
+Worldbook 的 revision/content hash provenance。运行中的 Task 使用已持久化的冻结 snapshot，
+保存后的配置从下一 Task 生效；Session revision 仍独立。多进程同时写同一 Workspace 和
+任意 DAG 运行语义仍不在本 ADR 范围内。
 
 ## Consequences
 
 - 玩家可以在游玩时编辑设定，但不会让当前回合“半途换 prompt”或污染历史 Trace。
 - 配置恢复和故事回退有清晰的不同入口，审计可解释但不会变成隐式版本管理系统。
-- 实现需要为保存接口增加 revision/token 和 audit 持久化，并让 Runtime 显式读取配置快照；
-  这是后续实现工作，不在本决策票中伪装成已完成。
+- 运行快照增加 provenance 字段会带来少量存储开销，但可让 Monitor/Trace 证明一次 Task
+  使用的配置来源；完整的配置恢复 UI 仍可在后续独立增加。
 - 本 ADR 不决定任意 DAG、多 Agent 世界模拟或 Session 级 Worldbook 覆盖。

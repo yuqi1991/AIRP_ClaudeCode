@@ -72,10 +72,6 @@ body {
   display: flex; align-items: center; gap: 12px;
   font-size: 0.82em; flex-shrink: 0; min-height: 34px;
 }
-#topbar .dot { width: 7px; height: 7px; border-radius: 50%; }
-#topbar .dot.green { background: #7b9c6e; }
-#topbar .dot.yellow { background: #cc9a56; }
-#topbar .dot.red { background: #b0624a; }
 #topbar .tag {
   background: var(--accent); color: #fff;
   padding: 1px 10px; border-radius: 10px;
@@ -366,7 +362,6 @@ body {
     min-height: 34px; height: 34px; padding: 4px 10px; gap: 8px;
     position: relative; z-index: 70; overflow: hidden;
   }
-  #topbar > .dot:not(#conn-dot),
   #topbar > .dim { display: none; }
   #topbar .tag { max-width: 110px; overflow: hidden; text-overflow: ellipsis; }
   #sidebar-toggle { display: inline-grid; place-items: center; flex-shrink: 0; }
@@ -418,7 +413,6 @@ body {
 [data-theme="dark"] .chip-hot { color: #061326; }
 [data-theme="dark"] .toggle-slider:before { background: #f4ead8; }
 [data-theme="dark"] input[type="range"] { accent-color: var(--accent); }
-[data-theme="dark"] #theme-toggle:hover { background: var(--surface); }
 [data-theme="dark"] .btn-reroll:hover { color: #061326; }
 [data-theme="dark"] .btn-turn-del:hover,
 [data-theme="dark"] .btn-turn-del.confirming { color: #fff; }
@@ -988,16 +982,8 @@ html, body { color-scheme: dark; }
 
 <div id="topbar" data-airp-region="topbar">
   <span class="airp-brand" aria-label="AIRP">AIRP</span>
-  <span class="dot green"></span>
-  <span class="dot yellow"></span>
-  <span class="dot red"></span>
   <span class="tag topbar-context-value" id="tb-world"></span>
-  <span class="topbar-context-value" id="tb-stage"></span>
-  <span class="dim topbar-context-value" id="tb-time"></span>
-  <span class="dim topbar-context-value" id="tb-location"></span>
   <span class="spacer"></span>
-  <span class="dim" style="font-size:0.75em;" id="conn-label">桥接:</span>
-  <span id="conn-dot" class="dot red" title="服务器未连接"></span>
   <nav id="workspace-navigation" data-airp-region="navigation" aria-label="工作区导航" style="display:contents;">
     <button id="game-drawer-toggle" class="workspace-nav-button" type="button" data-airp-action="game-open" aria-controls="studio-drawer-host" aria-expanded="false">游戏</button>
     <button id="studio-worldbooks-toggle" class="workspace-studio-action" type="button" data-airp-action="studio-worldbooks" aria-controls="studio-drawer-host" aria-expanded="false">世界书</button>
@@ -1005,7 +991,6 @@ html, body { color-scheme: dark; }
     <button id="studio-regex-toggle" class="workspace-studio-action" type="button" data-airp-action="studio-regex" aria-controls="studio-drawer-host" aria-expanded="false">正则集合</button>
     <button id="studio-model-toggle" class="workspace-studio-action" type="button" data-airp-action="studio-model" aria-controls="studio-drawer-host" aria-expanded="false">模型</button>
   </nav>
-  <button id="theme-toggle" title="切换夜间模式" style="background:none;border:1px solid var(--border);border-radius:4px;cursor:pointer;font-size:0.9em;padding:1px 6px;line-height:1;color:var(--muted);">🌙</button>
   <button id="sidebar-toggle" title="打开工具面板" aria-label="打开工具面板" aria-expanded="false" onclick="toggleSidebar()">☰</button>
 </div>
 
@@ -1228,7 +1213,8 @@ html, body { color-scheme: dark; }
       <div class="side-note" id="tb-tokens" title="本轮 Token / 累计 Token">Token: —</div>
     </div>
     <div class="side-card" id="active-graph-card" data-airp-slot="monitor-runtime">
-      <h4>🧩 Active Graph</h4>
+      <h4>运行时</h4>
+      <div class="side-note" id="monitor-connection">桥接: 正在连接…</div>
       <div class="side-note" id="active-graph-status">活动 Graph 状态: 未连接</div>
       <div class="side-note" id="runtime-task-status">任务: —</div>
       <div class="side-note" id="runtime-task-id">Task ID: —</div>
@@ -1244,10 +1230,11 @@ html, body { color-scheme: dark; }
       </div>
     </div>
     <div class="side-card" id="agent-trace-card" data-airp-slot="monitor-graph">
-      <h4>🧭 Graph Observation</h4>
+      <h4>编排观察</h4>
+      <span class="studio-visually-hidden" data-monitor-contract="Graph Observation">Graph Observation</span>
       <div class="side-note monitor-run-status" id="agent-trace-status">等待运行时事件</div>
       <div id="agent-trace" class="monitor-topology" aria-live="polite" aria-label="Graph 节点拓扑"></div>
-      <button class="side-button" id="graph-retry-button" type="button" onclick="retryGraphRun()" hidden>Retry complete Graph</button>
+      <button class="side-button" id="graph-retry-button" type="button" onclick="retryGraphRun()" hidden>重试编排</button>
     </div>
     <div class="side-card">
       <h4>📌 当前目标</h4>
@@ -1524,9 +1511,6 @@ function render() {
 
   // Top bar (only update if changed to avoid DOM flicker)
   setText('tb-world', replaceUser(S.world || ''));
-  setText('tb-stage', S.stage || '');
-  setText('tb-time', S.time || '');
-  setText('tb-location', S.location || '');
   setText('tb-count', '已生成: ' + (S.generatedCount || 0));
 
   // Content — only replace DOM when the source string actually
@@ -1546,21 +1530,8 @@ function render() {
   }
   if (_prevContentHtml !== newContent) {
     _prevContentHtml = newContent;
-    contentEl.innerHTML = newContent;
+    replaceElementContents(contentEl, newContent, { allowImages: false });
     formatMessageBubbles(contentEl);
-    // Re-execute embedded <script> tags (innerHTML doesn't run them).
-    // The _st_shims.js globals are already loaded, so card-author
-    // beautify scripts find their expected ST/MVU APIs.
-    var embScripts = contentEl.querySelectorAll('script');
-    for (var si = 0; si < embScripts.length; si++) {
-      var oldS = embScripts[si];
-      var newS = document.createElement('script');
-      if (oldS.textContent) {
-        newS.textContent = 'try {\n' + oldS.textContent + '\n} catch(e) { console.error("[card-script] Execution error:", e); if (typeof toastr !== "undefined") toastr.error("[card-script] " + e.message); }';
-      }
-      if (oldS.src) newS.src = oldS.src;
-      oldS.parentNode.replaceChild(newS, oldS);
-    }
     // Only auto-scroll if user is already near the bottom
     const panel = document.getElementById('content-panel');
     if (panel) {
@@ -1584,18 +1555,7 @@ function render() {
   newBeautify = replaceUser(newBeautify);
   if (_prevBeautifyHtml !== newBeautify) {
     _prevBeautifyHtml = newBeautify;
-    beautifyEl.innerHTML = newBeautify;
-    var embScriptsB = beautifyEl.querySelectorAll('script');
-    for (var sj = 0; sj < embScriptsB.length; sj++) {
-      var oldSB = embScriptsB[sj];
-      var newSB = document.createElement('script');
-      if (oldSB.textContent) {
-        newSB.textContent = 'try {\n' + oldSB.textContent + '\n} catch(e) { console.error("[beautify-script] Execution error:", e); }';
-      }
-      if (oldSB.src) newSB.src = oldSB.src;
-      oldSB.parentNode.replaceChild(newSB, oldSB);
-    }
-    console.log('[beautify] Re-executed ' + embScriptsB.length + ' script(s), jQuery=' + (typeof $) + ', _=' + (typeof _));
+    replaceElementContents(beautifyEl, newBeautify, { allowImages: true, allowStyles: true });
   }
 
   // Sidebar
@@ -1708,28 +1668,149 @@ function setText(id, val) {
 }
 function setHtml(id, val) {
   const el = document.getElementById(id);
-  if (el && el.innerHTML !== val) el.innerHTML = val;
+  const next = String(val || '');
+  if (!el || el.dataset.airpHtml === next) return;
+  el.dataset.airpHtml = next;
+  replaceElementContents(el, next, { allowImages: false });
 }
 
-// Preserve card-authored HTML while enhancing plain text inside message
-// bubbles. The reader supports the small Markdown subset needed in a live
-// conversation: **bold**, __bold__, line breaks, and horizontally scrollable tables.
+// Card and model text is data. Parse it through a small DOM allowlist before
+// attaching it; this prevents scripts, event attributes, unsafe URLs and
+// arbitrary elements from becoming part of the game page.
+const SAFE_MARKUP_TAGS = Object.freeze({
+  a: 1, blockquote: 1, br: 1, code: 1, content: 1, del: 1, details: 1,
+  div: 1, em: 1, h1: 1, h2: 1, h3: 1, hr: 1, img: 1, li: 1, ol: 1,
+  p: 1, pre: 1, span: 1, strong: 1, summary: 1, table: 1, tbody: 1,
+  td: 1, tfoot: 1, th: 1, thead: 1, tr: 1, ul: 1
+});
+const SAFE_MARKUP_ATTRS = Object.freeze({
+  'aria-label': 1, 'aria-hidden': 1, class: 1, colspan: 1, data: 1,
+  id: 1, rel: 1, role: 1, rowspan: 1, title: 1
+});
+
+function safeMarkupUrl(value, kind) {
+  const url = String(value || '').trim();
+  if (!url || /^(?:javascript|vbscript|data:text\/html):/i.test(url)) return '';
+  if (kind === 'src') {
+    return /^(?:\/|\.\.?\/|data:image\/(?:png|jpe?g|gif|webp);base64,)/i.test(url) ? url : '';
+  }
+  return /^(?:https?:|mailto:|\/|\.\.?\/|#)/i.test(url) ? url : '';
+}
+
+function safeMarkupStyle(value) {
+  const allowed = /^(?:color|background(?:-color)?|border(?:-[a-z-]+)?|border-radius|box-shadow|font(?:-[a-z-]+)?|line-height|letter-spacing|opacity|text-align|text-decoration|white-space|width|max-width|min-width|height|max-height|min-height|margin(?:-[a-z-]+)?|padding(?:-[a-z-]+)?|display|flex(?:-[a-z-]+)?|gap|align-items|justify-content|object-fit)$/i;
+  return String(value || '').split(';').map(function(part) {
+    const match = part.match(/^\s*([\w-]+)\s*:\s*([^;]+)\s*$/);
+    if (!match || !allowed.test(match[1]) || /url\s*\(|expression\s*\(|@import|javascript:/i.test(match[2])) return '';
+    return match[1].toLowerCase() + ':' + match[2].trim();
+  }).filter(Boolean).join(';');
+}
+
+function sanitizeMarkupNode(node, options) {
+  if (node.nodeType === Node.TEXT_NODE) return document.createTextNode(node.nodeValue || '');
+  if (node.nodeType !== Node.ELEMENT_NODE) return null;
+  const tag = node.tagName.toLowerCase();
+  if (tag === 'script' || tag === 'style' || tag === 'iframe' || tag === 'object' || tag === 'embed' || tag === 'form' || tag === 'link' || tag === 'meta') return null;
+  if (!SAFE_MARKUP_TAGS[tag] || (tag === 'img' && !options.allowImages)) {
+    return document.createTextNode(node.outerHTML || '');
+  }
+  const copy = document.createElement(tag);
+  Array.from(node.attributes).forEach(function(attr) {
+    const name = attr.name.toLowerCase();
+    if (name.indexOf('on') === 0) return;
+    if (name === 'href') {
+      const href = safeMarkupUrl(attr.value, 'href');
+      if (href) copy.setAttribute('href', href);
+      return;
+    }
+    if (name === 'src') {
+      const src = safeMarkupUrl(attr.value, 'src');
+      if (src) copy.setAttribute('src', src);
+      return;
+    }
+    if (name === 'style') {
+      const style = safeMarkupStyle(attr.value);
+      if (options.allowStyles && style) copy.setAttribute('style', style);
+      return;
+    }
+    if (SAFE_MARKUP_ATTRS[name] || name.indexOf('data-') === 0 || name.indexOf('aria-') === 0) copy.setAttribute(attr.name, attr.value);
+  });
+  if (tag === 'a' && copy.hasAttribute('href')) {
+    copy.setAttribute('rel', 'noreferrer noopener');
+    copy.setAttribute('target', '_blank');
+  }
+  Array.from(node.childNodes).forEach(function(child) {
+    const clean = sanitizeMarkupNode(child, options);
+    if (clean) copy.appendChild(clean);
+  });
+  return copy;
+}
+
+function replaceElementContents(element, html, options) {
+  if (!element) return;
+  const config = Object.assign({ allowImages: false, allowStyles: false }, options || {});
+  const template = document.createElement('template');
+  template.innerHTML = String(html || '');
+  const fragment = document.createDocumentFragment();
+  Array.from(template.content.childNodes).forEach(function(child) {
+    const clean = sanitizeMarkupNode(child, config);
+    if (clean) fragment.appendChild(clean);
+  });
+  element.replaceChildren(fragment);
+}
+
 function appendInlineMarkdown(fragment, text) {
-  const tokenPattern = /(\r\n|\r|\n|\\n)|\*\*([^*\r\n]+?)\*\*|__([^_\r\n]+?)__/g;
+  fragment.appendChild(renderInlineMarkdown(text));
+}
+
+function renderInlineMarkdown(text) {
+  const fragment = document.createDocumentFragment();
+  const source = String(text || '').replace(/\\n/g, '\n');
+  const tokenPattern = /(\r\n|\r|\n)|\\([\\`*_\[\]{}()#+.!|~-])|`([^`\n]+)`|!\[([^\]]*)\]\(([^)\s]+)\)|\[([^\]]+)\]\(([^)\s]+)\)|(\*\*|__)([^\n]+?)\8|~~([^~\n]+?)~~|\*([^*\n]+?)\*|_([^_\n]+?)_/g;
   let cursor = 0;
   let match;
-  while ((match = tokenPattern.exec(text)) !== null) {
-    if (match.index > cursor) fragment.appendChild(document.createTextNode(text.slice(cursor, match.index)));
+  while ((match = tokenPattern.exec(source)) !== null) {
+    if (match.index > cursor) fragment.appendChild(document.createTextNode(source.slice(cursor, match.index)));
     if (match[1]) {
       fragment.appendChild(document.createElement('br'));
-    } else {
+    } else if (match[2]) {
+      fragment.appendChild(document.createTextNode(match[2]));
+    } else if (match[3]) {
+      const code = document.createElement('code');
+      code.textContent = match[3];
+      fragment.appendChild(code);
+    } else if (match[4]) {
+      // Markdown images are deliberately disabled; retain accessible alt text.
+      fragment.appendChild(document.createTextNode(match[4]));
+    } else if (match[6]) {
+      const link = document.createElement('a');
+      const href = safeMarkupUrl(match[7], 'href');
+      if (!href) {
+        fragment.appendChild(document.createTextNode(match[0]));
+      } else {
+        link.href = href;
+        link.target = '_blank';
+        link.rel = 'noreferrer noopener';
+        link.textContent = match[6];
+        fragment.appendChild(link);
+      }
+    } else if (match[9]) {
       const strong = document.createElement('strong');
-      strong.textContent = match[2] || match[3] || '';
+      strong.appendChild(renderInlineMarkdown(match[9]));
       fragment.appendChild(strong);
+    } else if (match[10]) {
+      const del = document.createElement('del');
+      del.appendChild(renderInlineMarkdown(match[10]));
+      fragment.appendChild(del);
+    } else if (match[11] || match[12]) {
+      const em = document.createElement('em');
+      em.appendChild(renderInlineMarkdown(match[11] || match[12]));
+      fragment.appendChild(em);
     }
     cursor = match.index + match[0].length;
   }
-  if (cursor < text.length) fragment.appendChild(document.createTextNode(text.slice(cursor)));
+  if (cursor < source.length) fragment.appendChild(document.createTextNode(source.slice(cursor)));
+  return fragment;
 }
 
 function markdownTableCells(line) {
@@ -1746,13 +1827,22 @@ function isMarkdownTableDivider(line) {
 
 function renderMarkdownText(text) {
   const fragment = document.createDocumentFragment();
-  const lines = String(text).replace(/\r\n?/g, '\n').split('\n');
+  const lines = String(text).replace(/\\n/g, '\n').replace(/\r\n?/g, '\n').split('\n');
   let wrote = false;
+  function appendBlock(node) {
+    if (wrote) {
+      const gap = document.createElement('div');
+      gap.className = 'airp-markdown-block-gap';
+      fragment.appendChild(gap);
+    }
+    fragment.appendChild(node);
+    wrote = true;
+  }
   let index = 0;
   while (index < lines.length) {
+    if (!lines[index].trim()) { index += 1; continue; }
     const header = markdownTableCells(lines[index]);
     if (header && index + 1 < lines.length && isMarkdownTableDivider(lines[index + 1])) {
-      if (wrote) fragment.appendChild(document.createElement('br'));
       const wrap = document.createElement('div');
       wrap.className = 'airp-markdown-table-wrap';
       const table = document.createElement('table');
@@ -1782,14 +1872,68 @@ function renderMarkdownText(text) {
       }
       table.appendChild(tbody);
       wrap.appendChild(table);
-      fragment.appendChild(wrap);
-      wrote = true;
+      appendBlock(wrap);
       continue;
     }
-    if (wrote) fragment.appendChild(document.createElement('br'));
-    appendInlineMarkdown(fragment, lines[index]);
-    wrote = true;
-    index += 1;
+    if (/^\s*```/.test(lines[index])) {
+      const language = (lines[index].trim().slice(3).trim().match(/^[A-Za-z0-9_-]+/) || [''])[0];
+      index += 1;
+      const codeLines = [];
+      while (index < lines.length && !/^\s*```\s*$/.test(lines[index])) codeLines.push(lines[index++]);
+      if (index < lines.length) index += 1;
+      const pre = document.createElement('pre');
+      const code = document.createElement('code');
+      if (language) code.className = 'language-' + language;
+      code.textContent = codeLines.join('\n');
+      pre.appendChild(code);
+      appendBlock(pre);
+      continue;
+    }
+    const heading = lines[index].match(/^\s*(#{1,3})\s+(.+?)\s*#*\s*$/);
+    if (heading) {
+      const h = document.createElement('h' + heading[1].length);
+      h.appendChild(renderInlineMarkdown(heading[2]));
+      appendBlock(h); index += 1; continue;
+    }
+    if (/^\s*(?:([-*_])\s*)\1(?:\s*\1){2,}\s*$/.test(lines[index])) {
+      appendBlock(document.createElement('hr')); index += 1; continue;
+    }
+    const quote = lines[index].match(/^\s*>\s?(.*)$/);
+    if (quote) {
+      const blockquote = document.createElement('blockquote');
+      while (index < lines.length) {
+        const line = lines[index].match(/^\s*>\s?(.*)$/);
+        if (!line) break;
+        if (blockquote.childNodes.length) blockquote.appendChild(document.createElement('br'));
+        blockquote.appendChild(renderInlineMarkdown(line[1])); index += 1;
+      }
+      appendBlock(blockquote); continue;
+    }
+    const list = lines[index].match(/^\s*([-+*]|\d+[.)])\s+(.+)$/);
+    if (list) {
+      const ordered = /^\d/.test(list[1]);
+      const listNode = document.createElement(ordered ? 'ol' : 'ul');
+      while (index < lines.length) {
+        const item = lines[index].match(/^\s*([-+*]|\d+[.)])\s+(.+)$/);
+        if (!item || /^\d/.test(item[1]) !== ordered) break;
+        const li = document.createElement('li');
+        li.appendChild(renderInlineMarkdown(item[2])); listNode.appendChild(li); index += 1;
+      }
+      appendBlock(listNode); continue;
+    }
+    const paragraphLines = [lines[index++]];
+    while (index < lines.length && lines[index].trim() &&
+      !/^\s*(?:#{1,3}\s|>|```|[-+*]\s+|\d+[.)]\s+)/.test(lines[index]) &&
+      !(markdownTableCells(lines[index]) && index + 1 < lines.length && isMarkdownTableDivider(lines[index + 1]))) {
+      paragraphLines.push(lines[index++]);
+    }
+    const paragraph = document.createElement('p');
+    paragraph.className = 'airp-markdown-paragraph';
+    paragraphLines.forEach(function(line, lineIndex) {
+      if (lineIndex) paragraph.appendChild(document.createElement('br'));
+      paragraph.appendChild(renderInlineMarkdown(line));
+    });
+    appendBlock(paragraph);
   }
   return fragment;
 }
@@ -1798,9 +1942,11 @@ function formatMessageTextNode(node) {
   const text = node.nodeValue || '';
   if (!text) return;
   const hasTable = /(^|\n)\s*\|?[^\n|]+\|[^\n]*\n\s*\|?\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)+\|?/.test(text);
-  const hasInline = /[\r\n]/.test(text) || /\\n/.test(text) || /(\*\*[^*\r\n]+?\*\*|__[^_\r\n]+?__)/.test(text);
+  const hasInline = /[\r\n]/.test(text) || /\\n/.test(text) || /(\*\*|__|~~|`[^`]+`|\[[^\]]+\]\([^)]*\)|^\s*(?:#{1,3}\s|>|```|[-+*]\s+|\d+[.)]\s+))/.test(text);
   if (!hasTable && !hasInline) return;
-  node.replaceWith(renderMarkdownText(text));
+  const bubble = node.parentElement && node.parentElement.closest('.turn-text');
+  const direct = bubble && node.parentElement === bubble;
+  node.replaceWith(direct ? renderMarkdownText(text) : renderInlineMarkdown(text));
 }
 
 function formatMessageTextNodes(root) {
@@ -1826,11 +1972,9 @@ function renderOptions(container, opts) {
   opts.forEach(function(optHtml) {
     const span = document.createElement('span');
     span.className = 'chip-action';
-    span.innerHTML = optHtml;
+    span.textContent = String(optHtml == null ? '' : optHtml);
     span.addEventListener('click', function() {
-      const tmp = document.createElement('div');
-      tmp.innerHTML = optHtml;
-      const plainText = (tmp.textContent || tmp.innerText || '').trim();
+      const plainText = String(optHtml == null ? '' : optHtml).trim();
       const ta = document.getElementById('user-input');
       ta.value = ta.value ? ta.value + '\n' + plainText : plainText;
       ta.focus();
@@ -1841,9 +1985,7 @@ function renderOptions(container, opts) {
 
 function pickAction(action) {
   const ta = document.getElementById('user-input');
-  const tmp = document.createElement('div');
-  tmp.innerHTML = action;
-  const plainText = (tmp.textContent || tmp.innerText || action).trim();
+  const plainText = String(action == null ? '' : action).trim();
   ta.value = ta.value ? ta.value + '\n' + plainText : plainText;
   ta.focus();
 }
@@ -2848,8 +2990,8 @@ async function checkBridge() {
     setActiveGraphStatus('活动 Graph 状态: 未连接');
     setRuntimeTaskStatus(null);
   }
-  document.getElementById('conn-dot').className = bridgeOk ? 'dot green' : 'dot red';
-  document.getElementById('conn-dot').title = bridgeOk ? '服务器已连接' : '服务器未连接 — 请启动当前运行时服务';
+  const connection = document.getElementById('monitor-connection');
+  if (connection) connection.textContent = bridgeOk ? '桥接: 已连接' : '桥接: 未连接';
 }
 
 function setSelectOptions(selectId, items, selectedId, emptyLabel) {
@@ -3392,27 +3534,6 @@ pollTimer = setInterval(reloadData, 3000);
 setInterval(checkBridge, 5000);
 setInterval(loadActiveGraphPanel, 20000);
 
-// ═══ Dark Mode Toggle ═══
-(function() {
-  var saved = localStorage.getItem('theme');
-  if (saved === 'dark') {
-    document.documentElement.setAttribute('data-theme', 'dark');
-    document.getElementById('theme-toggle').textContent = '☀️';
-  }
-  document.getElementById('theme-toggle').addEventListener('click', function() {
-    var isDark = document.documentElement.getAttribute('data-theme') === 'dark';
-    if (isDark) {
-      document.documentElement.removeAttribute('data-theme');
-      this.textContent = '🌙';
-      localStorage.setItem('theme', 'light');
-    } else {
-      document.documentElement.setAttribute('data-theme', 'dark');
-      this.textContent = '☀️';
-      localStorage.setItem('theme', 'dark');
-    }
-    if (typeof updateTokenCount === 'function') updateTokenCount();
-  });
-})();
 </script>
 </body>
 </html>

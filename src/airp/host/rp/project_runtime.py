@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import copy
 import json
+import shutil
 import tempfile
 import threading
 from dataclasses import dataclass
@@ -114,6 +115,17 @@ class ProjectRuntimeStore:
             context = self._contexts.get(project_id)
             if context is not None:
                 return context
+            # A legacy runtime may temporarily carry the same Project id after
+            # the server creates its first Project, but still point at the
+            # legacy card/database paths. Never adopt those paths into the
+            # Project-owned context; materialize the isolated context instead.
+            expected_card = (self.state_root / project_id).resolve()
+            expected_database = (self.sessions_root / f"{project_id}.sqlite3").resolve()
+            if Path(runtime.card_folder).resolve() != expected_card or Path(runtime.database_path).resolve() != expected_database:
+                project = self.project_store.get_project(project_id)
+                context = self._build(project)
+                self._contexts[project_id] = context
+                return context
             context = ProjectRuntimeContext(
                 project_id=project_id,
                 runtime=runtime,
@@ -136,6 +148,33 @@ class ProjectRuntimeStore:
             context = self._contexts.get(project.get("id"))
             if context is not None:
                 self._materialize_project(project, context.card_folder)
+
+    def discard(self, project_id: str) -> None:
+        """Remove all runtime artifacts owned by a deleted Project.
+
+        Project definitions live in ``Workspace.projects_root`` while the
+        materialized card and session database live under separate runtime
+        roots.  Deleting only the definition leaves stale saves that can be
+        restored later, so the server calls this method as part of the same
+        delete workflow.  Caller-provided ids have already passed the Project
+        library's stable-id validation; the containment checks below remain a
+        second guard before any recursive removal.
+        """
+        if not isinstance(project_id, str) or not project_id:
+            return
+        with self._lock:
+            context = self._contexts.pop(project_id, None)
+            card_folder = context.card_folder if context is not None else self.state_root / project_id
+            database_path = context.database_path if context is not None else self.sessions_root / f"{project_id}.sqlite3"
+            self._remove_owned_path(card_folder, self.state_root)
+            self._remove_owned_path(database_path, self.sessions_root)
+            state = self._read_state()
+            recent = [item for item in state.get("recent_project_ids", []) if item != project_id]
+            active = state.get("active_project_id")
+            self._write_state({
+                "active_project_id": None if active == project_id else active,
+                "recent_project_ids": recent[:32],
+            })
 
     def session_payload(self, project_id: str) -> dict:
         with self._lock:
@@ -257,6 +296,21 @@ class ProjectRuntimeStore:
     def _write_state(self, state: dict) -> None:
         self._active_path.parent.mkdir(parents=True, exist_ok=True)
         self._atomic_json(self._active_path, state)
+
+    @staticmethod
+    def _remove_owned_path(path: Path, root: Path) -> None:
+        """Delete a known Project artifact only when it is inside ``root``."""
+        try:
+            resolved = path.resolve()
+            resolved.relative_to(root.resolve())
+        except (OSError, ValueError):
+            return
+        if resolved == root.resolve() or not resolved.exists():
+            return
+        if resolved.is_dir():
+            shutil.rmtree(resolved)
+        else:
+            resolved.unlink()
 
     @staticmethod
     def _atomic_json(path: Path, value) -> None:

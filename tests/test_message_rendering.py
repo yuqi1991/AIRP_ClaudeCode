@@ -39,4 +39,32 @@ def test_index_declares_message_formatting_for_bubbles():
 
     assert "white-space: pre-wrap" in index
     assert "formatMessageBubbles(contentEl)" in index
-    assert "**bold**" in index
+    assert "renderInlineMarkdown" in index
+
+
+def test_index_supports_full_markdown_subset_without_card_script_execution():
+    index = (REPO_ROOT / "src" / "airp" / "web" / "index.html").read_text(encoding="utf-8")
+
+    for marker in (
+        "renderInlineMarkdown",
+        "createElement('h' + heading[1].length)",
+        "createElement('blockquote')",
+        "createElement(ordered ? 'ol' : 'ul')",
+        "createElement('pre')",
+        "createElement('hr')",
+        "createElement('del')",
+        "safeMarkupUrl",
+        "safeMarkupStyle",
+        "replaceElementContents",
+        "airp-markdown-table-wrap",
+    ):
+        assert marker in index
+
+    # The browser must never promote card-provided script nodes into executable
+    # nodes. Dynamic state/content.js loading is intentionally separate and is
+    # not part of the card/AI markup sink.
+    assert "Re-execute embedded" not in index
+    assert "oldS.parentNode.replaceChild" not in index
+    assert "oldSB.parentNode.replaceChild" not in index
+    assert "const oldS =" not in index
+    assert "const oldSB =" not in index

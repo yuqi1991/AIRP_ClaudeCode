@@ -17,6 +17,8 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from airp.engine.revisions import append_audit, conflict_payload, expected_revision, revision
+
 
 PROFILE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
 SUPPORTED_API_FORMATS = frozenset({"responses", "chat_completions"})
@@ -32,11 +34,13 @@ class ProviderProfileError(ValueError):
         *,
         status: int = 400,
         references: list[dict[str, str]] | None = None,
+        details: dict[str, Any] | None = None,
     ):
         super().__init__(message)
         self.code = code
         self.status = status
         self.references = references or []
+        self.details = details or None
 
     def to_dict(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
@@ -46,6 +50,8 @@ class ProviderProfileError(ValueError):
         }
         if self.references:
             payload["references"] = self.references
+        if self.details is not None:
+            payload.update(self.details)
         return payload
 
 
@@ -112,7 +118,13 @@ class ProviderProfileStore:
             now = int(time.time())
             profile["created_at"] = now
             profile["updated_at"] = now
+            profile["revision"] = 1
             self._write_profile(path, profile)
+            append_audit(
+                self.library_root, object_type="provider_profile", object_id=profile_id,
+                parent_revision=0, new_revision=1, before=None, after=profile,
+                source=payload.get("_source", "api"),
+            )
             return profile
 
     def update_profile(self, profile_id: str, payload: Any) -> dict[str, Any]:
@@ -127,6 +139,12 @@ class ProviderProfileStore:
                     status=404,
                 )
             current = self._read_profile(path)
+            expected = expected_revision(payload)
+            if expected is not None and expected != current.get("revision", 0):
+                raise ProviderProfileError(
+                    "revision_conflict", f"Provider Profile {profile_id!r} revision conflict", status=409,
+                    details=conflict_payload("provider_profile", profile_id, expected, current.get("revision", 0)),
+                )
             merged = {**current, **payload}
             if "api_format" not in payload and "protocol" in payload:
                 merged["api_format"] = payload["protocol"]
@@ -140,7 +158,13 @@ class ProviderProfileStore:
             profile = self._normalize(merged, profile_id=profile_id)
             profile["created_at"] = current.get("created_at", 0)
             profile["updated_at"] = int(time.time())
+            profile["revision"] = current.get("revision", 0) + 1
             self._write_profile(path, profile)
+            append_audit(
+                self.library_root, object_type="provider_profile", object_id=profile_id,
+                parent_revision=current.get("revision", 0), new_revision=profile["revision"],
+                before=current, after=profile, source=payload.get("_source", "api"),
+            )
             return profile
 
     def set_enabled(self, profile_id: str, enabled: bool) -> dict[str, Any]:
@@ -294,7 +318,7 @@ class ProviderProfileStore:
             ) from exc
         if not isinstance(raw, dict):
             raise ProviderProfileError("invalid_provider_profile", f"Provider Profile {path.stem!r} is not an object")
-        return self._normalize(raw, profile_id=path.stem)
+        return self._normalize(raw, profile_id=path.stem) | {"revision": revision(raw.get("revision"), 0)}
 
     def _write_profile(self, path: Path, profile: dict[str, Any]) -> None:
         self.library_root.mkdir(parents=True, exist_ok=True)

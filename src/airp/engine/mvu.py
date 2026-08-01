@@ -842,7 +842,11 @@ def generate_schema(data, strict_template: bool = False) -> SchemaNode:
             if k.startswith("$"):
                 continue
             props[k] = generate_schema(v, strict_template)
-        return SchemaNode(type="object", properties=props, extensible=True)
+        # Commit-time validation is closed by default.  A card may opt into
+        # dynamic object keys through an explicit ``*`` field in its exported
+        # schema; broad extensibility here would make unknown paths silently
+        # writable again.
+        return SchemaNode(type="object", properties=props, extensible=not strict_template)
     elif isinstance(data, list):
         if data:
             elem_type = generate_schema(data[0], strict_template)
@@ -974,6 +978,13 @@ def _get_schema_for_parts(schema: SchemaNode, parts: list) -> Optional[SchemaNod
         if current.type == "object":
             if isinstance(p, str) and p in current.properties:
                 current = current.properties[p]
+            elif isinstance(p, str) and "*" in current.properties:
+                # ``*`` is an explicit card-schema declaration for one
+                # arbitrary object key. It is intentionally different from
+                # ``extensible`` so strict validation never opens all paths.
+                current = current.properties["*"]
+            elif current.extensible:
+                current = SchemaNode(type="any", extensible=False)
             else:
                 return None
         elif current.type == "array":
@@ -984,6 +995,63 @@ def _get_schema_for_parts(schema: SchemaNode, parts: list) -> Optional[SchemaNod
         else:
             return None
     return current
+
+
+def schema_from_definition(schema_def: dict | None, fallback: SchemaNode | None = None) -> SchemaNode | None:
+    """Build a closed schema from the card runner's ``fields`` metadata.
+
+    Field paths may contain ``*`` segments (for example
+    ``互动对象.*.好感度``). The wildcard is stored as a dedicated child and
+    is only followed when the concrete key is absent. ``fallback`` supplies
+    the concrete types present in the frozen base state; declared metadata
+    wins where both sources describe the same node.
+    """
+    if not isinstance(schema_def, dict):
+        return fallback
+    fields = schema_def.get("fields")
+    if not isinstance(fields, dict) or not fields:
+        return fallback
+
+    root = SchemaNode(type="object", extensible=False)
+    for raw_path, info in fields.items():
+        if not isinstance(raw_path, str) or not raw_path:
+            continue
+        parts = raw_path.split(".")
+        current = root
+        for part in parts:
+            if not isinstance(part, str) or not part:
+                continue
+            if current.type != "object":
+                current.type = "object"
+                current.element_type = None
+            child = current.properties.get(part)
+            if child is None:
+                child = SchemaNode(type="any", extensible=False)
+                current.properties[part] = child
+            current = child
+        if isinstance(info, dict):
+            declared_type = info.get("type")
+            if declared_type in {"string", "number", "boolean", "array", "object", "any", "null"}:
+                current.type = declared_type
+            if info.get("nullable"):
+                current.type = "any" if current.type == "null" else current.type
+
+    def merge(base: SchemaNode | None, declared: SchemaNode) -> SchemaNode:
+        if base is None:
+            return declared
+        if declared.type != "any":
+            base.type = declared.type
+        base.extensible = False
+        for key, child in declared.properties.items():
+            if key in base.properties:
+                base.properties[key] = merge(base.properties[key], child)
+            else:
+                base.properties[key] = child
+        if declared.element_type is not None:
+            base.element_type = declared.element_type
+        return base
+
+    return merge(fallback, root) if fallback is not None else root
 
 
 # ═══ Utility ═══

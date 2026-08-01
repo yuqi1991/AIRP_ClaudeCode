@@ -18,6 +18,8 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from airp.engine.revisions import append_audit, conflict_payload, expected_revision, revision
+
 
 GRAPH_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 NODE_ID_RE = GRAPH_ID_RE
@@ -33,11 +35,13 @@ class GraphDefinitionError(ValueError):
         *,
         status: int = 400,
         references: list[dict[str, str]] | None = None,
+        details: dict[str, Any] | None = None,
     ) -> None:
         super().__init__(message)
         self.code = code
         self.status = status
         self.references = references or []
+        self.details = details or None
 
     def to_dict(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
@@ -47,6 +51,8 @@ class GraphDefinitionError(ValueError):
         }
         if self.references:
             payload["references"] = copy.deepcopy(self.references)
+        if self.details is not None:
+            payload.update(copy.deepcopy(self.details))
         return payload
 
 
@@ -105,7 +111,13 @@ class GraphDefinitionStore:
             now = int(time.time())
             graph["created_at"] = now
             graph["updated_at"] = now
+            graph["revision"] = 1
             self._write_graph(path, graph)
+            append_audit(
+                self.library_root, object_type="graph", object_id=graph_id,
+                parent_revision=0, new_revision=1, before=None, after=graph,
+                source=payload.get("_source", "api"),
+            )
             return copy.deepcopy(graph)
 
     def update_graph(self, graph_id: str, payload: Any) -> dict[str, Any]:
@@ -123,11 +135,23 @@ class GraphDefinitionStore:
             if "graph_id" in payload and payload["graph_id"] != graph_id:
                 raise GraphDefinitionError("graph_id_immutable", "graph_id cannot be changed")
             current = self._read_graph(path)
+            expected = expected_revision(payload)
+            if expected is not None and expected != current.get("revision", 0):
+                raise GraphDefinitionError(
+                    "revision_conflict", f"Graph Definition {graph_id!r} revision conflict", status=409,
+                    details=conflict_payload("graph", graph_id, expected, current.get("revision", 0)),
+                )
             merged = {**current, **copy.deepcopy(payload), "id": graph_id, "graph_id": graph_id}
             graph = self._normalize(merged, graph_id=graph_id)
             graph["created_at"] = current.get("created_at", 0)
             graph["updated_at"] = int(time.time())
+            graph["revision"] = current.get("revision", 0) + 1
             self._write_graph(path, graph)
+            append_audit(
+                self.library_root, object_type="graph", object_id=graph_id,
+                parent_revision=current.get("revision", 0), new_revision=graph["revision"],
+                before=current, after=graph, source=payload.get("_source", "api"),
+            )
             return copy.deepcopy(graph)
 
     def copy_graph(self, graph_id: str, payload: Any = None) -> dict[str, Any]:
@@ -301,6 +325,7 @@ class GraphDefinitionStore:
         return self._normalize(raw, graph_id=graph_id) | {
             "created_at": self._timestamp(raw.get("created_at")),
             "updated_at": self._timestamp(raw.get("updated_at")),
+            "revision": revision(raw.get("revision"), 0),
         }
 
     def _paths(self) -> list[Path]:

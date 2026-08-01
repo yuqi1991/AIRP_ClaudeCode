@@ -17,6 +17,8 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from airp.engine.revisions import append_audit, conflict_payload, expected_revision, revision
+
 
 LIBRARY_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 AIRP_FORMAT = "airp-worldbook"
@@ -31,16 +33,20 @@ class WorldbookLibraryError(ValueError):
         *,
         status: int = 400,
         references: list[dict[str, str]] | None = None,
+        details: dict[str, Any] | None = None,
     ):
         super().__init__(message)
         self.code = code
         self.status = status
         self.references = references or []
+        self.details = details or None
 
     def to_dict(self) -> dict[str, Any]:
         result: dict[str, Any] = {"ok": False, "error": self.code, "message": str(self)}
         if self.references:
             result["references"] = self.references
+        if self.details is not None:
+            result.update(self.details)
         return result
 
 
@@ -87,7 +93,13 @@ class WorldbookLibrary:
             worldbook, renamed = self._normalize_for_write(payload, worldbook_id=worldbook_id)
             now = int(time.time())
             worldbook.update(created_at=now, updated_at=now)
+            worldbook["revision"] = 1
             self._atomic_write(path, worldbook)
+            append_audit(
+                self.library_root, object_type="worldbook", object_id=worldbook_id,
+                parent_revision=0, new_revision=1, before=None, after=worldbook,
+                source=payload.get("_source", "api"),
+            )
             return worldbook, renamed
 
     def update_worldbook(
@@ -101,13 +113,25 @@ class WorldbookLibrary:
                     "worldbook_not_found", f"Worldbook {worldbook_id!r} was not found", status=404
                 )
             current = self._read_worldbook(path)
+            expected = expected_revision(payload)
+            if expected is not None and expected != current.get("revision", 0):
+                raise WorldbookLibraryError(
+                    "revision_conflict", f"Worldbook {worldbook_id!r} revision conflict", status=409,
+                    details=conflict_payload("worldbook", worldbook_id, expected, current.get("revision", 0)),
+                )
             merged = {**current, **payload, "id": worldbook_id}
             worldbook, renamed = self._normalize_for_write(
                 merged, worldbook_id=worldbook_id, exclude_worldbook_id=worldbook_id
             )
             worldbook["created_at"] = current["created_at"]
             worldbook["updated_at"] = int(time.time())
+            worldbook["revision"] = current.get("revision", 0) + 1
             self._atomic_write(path, worldbook)
+            append_audit(
+                self.library_root, object_type="worldbook", object_id=worldbook_id,
+                parent_revision=current.get("revision", 0), new_revision=worldbook["revision"],
+                before=current, after=worldbook, source=payload.get("_source", "api"),
+            )
             return worldbook, renamed
 
     def copy_worldbook(self, worldbook_id: str) -> tuple[dict[str, Any], list[dict[str, str]]]:
@@ -206,7 +230,14 @@ class WorldbookLibrary:
                 "id": project_id,
                 "name": project_id,
                 "worldbook_ids": [],
+                "revision": 0,
             }
+            expected = expected_revision(payload)
+            if expected is not None and expected != current.get("revision", 0):
+                raise WorldbookLibraryError(
+                    "revision_conflict", f"Project binding {project_id!r} revision conflict", status=409,
+                    details=conflict_payload("project_worldbooks", project_id, expected, current.get("revision", 0)),
+                )
             worldbook_ids: list[str] = []
             for worldbook_id in raw_ids:
                 self._validate_id(worldbook_id, "Worldbook")
@@ -224,8 +255,14 @@ class WorldbookLibrary:
                 "id": project_id,
                 "name": name.strip(),
                 "worldbook_ids": worldbook_ids,
+                "revision": current.get("revision", 0) + 1,
             }
             self._atomic_write(path, project)
+            append_audit(
+                self.project_root, object_type="project_worldbooks", object_id=project_id,
+                parent_revision=current.get("revision", 0), new_revision=project["revision"],
+                before=current, after=project, source=payload.get("_source", "api"),
+            )
             return project
 
     def effective_worldbooks(self, project_id: str) -> list[dict[str, Any]]:
@@ -412,6 +449,7 @@ class WorldbookLibrary:
             "entries": normalized,
             "created_at": self._timestamp(payload.get("created_at")),
             "updated_at": self._timestamp(payload.get("updated_at")),
+            "revision": revision(payload.get("revision"), 1),
         }, [])
 
     def _read_project(self, path: Path) -> dict[str, Any]:
@@ -425,6 +463,7 @@ class WorldbookLibrary:
             "id": path.stem,
             "name": name if isinstance(name, str) else path.stem,
             "worldbook_ids": ids,
+            "revision": revision(raw.get("revision"), 0),
         }
 
     @staticmethod

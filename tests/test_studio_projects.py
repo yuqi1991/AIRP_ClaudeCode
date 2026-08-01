@@ -173,6 +173,10 @@ def test_project_import_endpoint_uses_card_name_and_strips_source_only_fields(tm
         assert [opening["content"] for opening in project["openings"]] == ["First scene", "Another scene"]
         assert "example_messages" not in project
         assert "extensions" not in project
+        diagnostics = imported["diagnostics"]
+        assert diagnostics["overall"]["status"] == "success"
+        assert diagnostics["worldbook"]["embedded"] is False
+        assert any(item["code"] == "worldbook.embedded.not_present" for item in diagnostics["findings"])
 
 
 def test_project_import_creates_and_binds_embedded_sillytavern_worldbook(tmp_path: Path):
@@ -210,6 +214,10 @@ def test_project_import_creates_and_binds_embedded_sillytavern_worldbook(tmp_pat
         imported_book = next(book for book in worldbooks["worldbooks"] if book["id"] == project["worldbook_ids"][0])
         assert imported_book["name"] == "Embedded lore"
         assert imported_book["entries"][0]["title"] == "Harbor"
+        diagnostics = imported["diagnostics"]
+        assert diagnostics["worldbook"]["embedded"] is True
+        assert diagnostics["worldbook"]["entries_imported"] == 1
+        assert diagnostics["worldbook"]["bound_to_project"] is True
 
 
 def test_project_delete_endpoint_removes_imported_project(tmp_path: Path):

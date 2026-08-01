@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from airp.engine.worldbook_library import WorldbookLibrary, WorldbookLibraryError
+from airp.engine.revisions import append_audit, conflict_payload, expected_revision, revision
 
 
 PROJECT_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
@@ -34,16 +35,24 @@ class ProjectLibraryError(ValueError):
         *,
         status: int = 400,
         references: list[dict[str, str]] | None = None,
+        diagnostics: dict[str, Any] | None = None,
+        details: dict[str, Any] | None = None,
     ) -> None:
         super().__init__(message)
         self.code = code
         self.status = status
         self.references = references or []
+        self.diagnostics = copy.deepcopy(diagnostics) if diagnostics else None
+        self.details = copy.deepcopy(details) if details else None
 
     def to_dict(self) -> dict[str, Any]:
         payload: dict[str, Any] = {"ok": False, "error": self.code, "message": str(self)}
         if self.references:
             payload["references"] = copy.deepcopy(self.references)
+        if self.diagnostics is not None:
+            payload["diagnostics"] = copy.deepcopy(self.diagnostics)
+        if self.details is not None:
+            payload.update(copy.deepcopy(self.details))
         return payload
 
 
@@ -102,7 +111,13 @@ class ProjectLibrary:
             now = int(time.time())
             project["created_at"] = now
             project["updated_at"] = now
+            project["revision"] = 1
             self._write_project(path, project)
+            append_audit(
+                self.project_root, object_type="project", object_id=project_id,
+                parent_revision=0, new_revision=1, before=None, after=project,
+                source=payload.get("_source", "api"),
+            )
             return copy.deepcopy(project)
 
     def update_project(self, project_id: str, payload: Any) -> dict[str, Any]:
@@ -120,12 +135,24 @@ class ProjectLibrary:
             if "project_id" in payload and payload["project_id"] != project_id:
                 raise ProjectLibraryError("project_id_immutable", "Project id cannot be changed")
             current = self._read_project(path)
+            expected = expected_revision(payload)
+            if expected is not None and expected != current.get("revision", 0):
+                raise ProjectLibraryError(
+                    "revision_conflict", f"Project {project_id!r} revision conflict", status=409,
+                    details=conflict_payload("project", project_id, expected, current.get("revision", 0)),
+                )
             merged = {**current, **copy.deepcopy(payload), "id": project_id}
             merged["project_id"] = project_id
             project = self._normalize(merged, project_id=project_id)
             project["created_at"] = current.get("created_at", 0)
             project["updated_at"] = int(time.time())
+            project["revision"] = current.get("revision", 0) + 1
             self._write_project(path, project)
+            append_audit(
+                self.project_root, object_type="project", object_id=project_id,
+                parent_revision=current.get("revision", 0), new_revision=project["revision"],
+                before=current, after=project, source=payload.get("_source", "api"),
+            )
             return copy.deepcopy(project)
 
     def delete_project(self, project_id: str) -> None:
@@ -160,38 +187,150 @@ class ProjectLibrary:
             now = int(time.time())
             copied["created_at"] = now
             copied["updated_at"] = now
+            copied["revision"] = 1
             self._write_project(self._path_for(new_id), copied)
+            append_audit(
+                self.project_root, object_type="project", object_id=new_id,
+                parent_revision=0, new_revision=1, before=None, after=copied, source="api",
+            )
             return copy.deepcopy(copied)
 
     def import_card(self, payload: Any) -> dict[str, Any]:
+        project, _ = self.import_card_report(payload)
+        return project
+
+    def import_card_report(self, payload: Any) -> tuple[dict[str, Any], dict[str, Any]]:
+        """Import a card and return the normalized Project plus diagnostics."""
         self._require_object(payload, "Project import")
         document = payload.get("document", payload.get("card_data", payload.get("data")))
         if not isinstance(document, dict):
             raise ProjectLibraryError("invalid_project_import", "document must be a JSON object")
+        diagnostics = self._import_diagnostics(document)
         overrides = {key: copy.deepcopy(value) for key, value in payload.items() if key not in {"document", "card_data", "data"}}
         overrides["card_data"] = document
+        overrides["_source"] = "import"
         card_data = document.get("data") if isinstance(document.get("data"), dict) else document
         embedded = card_data.get("character_book") if isinstance(card_data, dict) else None
         imported_worldbook = None
         if isinstance(embedded, dict) and isinstance(embedded.get("entries"), (dict, list)):
             try:
-                imported_worldbook, _, _ = self.worldbooks.import_worldbook({"document": document})
+                imported_worldbook, source_format, _ = self.worldbooks.import_worldbook({"document": document})
             except WorldbookLibraryError as exc:
-                raise ProjectLibraryError(exc.code, str(exc), status=exc.status) from exc
+                self._diagnostic_finding(
+                    diagnostics,
+                    "worldbook.import.failed",
+                    "error",
+                    "failed",
+                    str(exc),
+                    source_path="data.character_book.entries",
+                    destination_path="project.worldbook_ids",
+                )
+                diagnostics["overall"]["status"] = "failed"
+                raise ProjectLibraryError(exc.code, str(exc), status=exc.status, diagnostics=diagnostics) from exc
+            diagnostics["worldbook"]["source_format"] = source_format
+            diagnostics["worldbook"]["entries_imported"] = len(imported_worldbook.get("entries", []))
+            diagnostics["worldbook"]["entries_skipped"] = max(
+                0, diagnostics["worldbook"]["entries_seen"] - diagnostics["worldbook"]["entries_imported"]
+            )
             existing_ids = overrides.get("worldbook_ids")
             existing_ids = list(existing_ids) if isinstance(existing_ids, list) else []
             if imported_worldbook["id"] not in existing_ids:
                 existing_ids.append(imported_worldbook["id"])
             overrides["worldbook_ids"] = existing_ids
         try:
-            return self.create_project(overrides)
-        except Exception:
+            project = self.create_project(overrides)
+        except Exception as exc:
             if imported_worldbook is not None:
                 try:
                     self.worldbooks.delete_worldbook(imported_worldbook["id"])
                 except WorldbookLibraryError:
                     pass
+            if isinstance(exc, ProjectLibraryError):
+                diagnostics["overall"]["status"] = "failed"
+                self._diagnostic_finding(
+                    diagnostics,
+                    "project.import.failed",
+                    "error",
+                    "failed",
+                    str(exc),
+                    source_path=None,
+                    destination_path="project",
+                )
+                raise ProjectLibraryError(
+                    exc.code, str(exc), status=exc.status,
+                    references=exc.references, diagnostics=diagnostics,
+                ) from exc
             raise
+        if imported_worldbook is not None:
+            diagnostics["worldbook"]["bound_to_project"] = imported_worldbook["id"] in project.get("worldbook_ids", [])
+            self._diagnostic_finding(
+                diagnostics,
+                "worldbook.embedded.imported",
+                "info",
+                "imported",
+                f"内嵌世界书已导入并绑定到游戏，共 {diagnostics['worldbook']['entries_imported']} 条。",
+                source_path="data.character_book.entries",
+                destination_path="project.worldbook_ids",
+            )
+        else:
+            self._diagnostic_finding(
+                diagnostics,
+                "worldbook.embedded.not_present",
+                "info",
+                "not_present",
+                "角色卡未包含内嵌世界书。",
+                source_path="data.character_book",
+                destination_path="project.worldbook_ids",
+            )
+        diagnostics["project"]["name"] = project.get("name")
+        return project, diagnostics
+
+    @classmethod
+    def _import_diagnostics(cls, document: dict[str, Any]) -> dict[str, Any]:
+        card = document.get("data") if isinstance(document.get("data"), dict) else document
+        embedded = card.get("character_book") if isinstance(card, dict) else None
+        raw_entries = embedded.get("entries") if isinstance(embedded, dict) else None
+        if isinstance(raw_entries, dict):
+            entries_seen = len(raw_entries)
+        elif isinstance(raw_entries, list):
+            entries_seen = len(raw_entries)
+        else:
+            entries_seen = 0
+        return {
+            "schema": {"id": "airp.import-diagnostics", "version": 1},
+            "overall": {"status": "success", "counts": {"info": 0, "warning": 0, "error": 0}},
+            "source": {
+                "file": None,
+                "format": document.get("spec") or document.get("format") or "json",
+            },
+            "project": {"name": card.get("name") if isinstance(card, dict) else None},
+            "worldbook": {
+                "embedded": isinstance(raw_entries, (dict, list)),
+                "source_format": "sillytavern-character-book" if isinstance(raw_entries, (dict, list)) else None,
+                "entries_seen": entries_seen,
+                "entries_imported": 0,
+                "entries_skipped": 0,
+                "bound_to_project": False,
+            },
+            "findings": [],
+        }
+
+    @staticmethod
+    def _diagnostic_finding(report, code, level, status, message, *, source_path=None, destination_path=None):
+        finding = {
+            "code": code,
+            "level": level,
+            "status": status,
+            "source_path": source_path,
+            "destination_path": destination_path,
+            "message": message,
+        }
+        report["findings"].append(finding)
+        report["overall"]["counts"][level] = report["overall"]["counts"].get(level, 0) + 1
+        if level == "error":
+            report["overall"]["status"] = "failed"
+        elif level == "warning" and report["overall"]["status"] != "failed":
+            report["overall"]["status"] = "degraded"
 
     def _normalize(self, payload: dict[str, Any], *, project_id: str) -> dict[str, Any]:
         self._validate_id(project_id)
@@ -412,6 +551,7 @@ class ProjectLibrary:
         return self._normalize(raw, project_id=path.stem) | {
             "created_at": self._timestamp(raw.get("created_at")),
             "updated_at": self._timestamp(raw.get("updated_at")),
+            "revision": revision(raw.get("revision"), 1),
         }
 
     def _copy_name(self, name: str) -> str:

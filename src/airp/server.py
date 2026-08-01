@@ -63,6 +63,9 @@ Thread model
 from __future__ import annotations
 
 import json
+import ipaddress
+import os
+import secrets
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -90,6 +93,7 @@ from airp.engine.worldbook_library import WorldbookLibraryError
 SSE_HEARTBEAT_SECONDS = 15.0
 SSE_POLL_INTERVAL_SECONDS = 0.05
 SUBMIT_ACCEPT_WAIT_SECONDS = 2.0
+MAX_REQUEST_BODY_BYTES = 2 * 1024 * 1024
 RUNNING_TASK_STATUSES = frozenset({"queued", "leased", "running", "projection_pending"})
 STUDIO_PROVIDER_PATHS = ("/v1/studio/providers",)
 STUDIO_AGENT_PATHS = ("/v1/studio/agents", "/v1/studio/agent-definitions")
@@ -150,12 +154,18 @@ class SessionRuntimeServer:
         graph_root: str | None = None,
         session_manager: SessionManager | None = None,
         workspace: Workspace | str | Path | None = None,
+        allowed_origins: list[str] | None = None,
     ):
         self.runtime = runtime
         self.service = command_service or SessionCommandService(runtime)
         self.session_manager = session_manager
         self.host = host
         self.port = port
+        self.capability = secrets.token_urlsafe(32)
+        configured_origins = allowed_origins
+        if configured_origins is None:
+            configured_origins = [item.strip() for item in os.environ.get("AIRP_ALLOWED_ORIGINS", "").split(",") if item.strip()]
+        self.allowed_origins = frozenset(configured_origins)
         self.heartbeat_seconds = heartbeat_seconds
         self.poll_interval_seconds = poll_interval_seconds
         if workspace is None:
@@ -250,6 +260,52 @@ class SessionRuntimeServer:
     @property
     def base_url(self) -> str:
         return f"http://{self.host}:{self.port}"
+
+    def _origin_allowed(self, origin: str, host_header: str) -> bool:
+        if origin in self.allowed_origins:
+            return True
+        parsed = urlparse(origin)
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+            return False
+        host = (host_header or "").split(":", 1)[0].strip("[]").lower()
+        origin_host = parsed.hostname.lower()
+        if host and origin_host == host:
+            return parsed.port in {None, self.port}
+        try:
+            return (
+                ipaddress.ip_address(origin_host).is_loopback
+                and ipaddress.ip_address(str(self.host)).is_loopback
+                and parsed.port in {None, self.port}
+            )
+        except ValueError:
+            return origin_host == "localhost" and str(self.host) in {"127.0.0.1", "localhost", "::1"} and parsed.port in {None, self.port}
+
+    def _is_exposed(self) -> bool:
+        try:
+            return not ipaddress.ip_address(str(self.host)).is_loopback
+        except ValueError:
+            return str(self.host).lower() not in {"localhost"}
+
+    def _guard_request(self, handler, path: str, *, preflight: bool = False) -> bool:
+        origin = handler.headers.get("Origin")
+        if origin and not self._origin_allowed(origin, handler.headers.get("Host", "")):
+            handler._send_json(403, {"ok": False, "error": "origin_not_allowed"})
+            return False
+        if preflight:
+            return True
+        dynamic = path.startswith("/v1/") or path.startswith("/api/")
+        if dynamic and self._is_exposed():
+            supplied = handler.headers.get("Authorization", "")
+            token = supplied[7:].strip() if supplied.lower().startswith("bearer ") else ""
+            cookie_header = handler.headers.get("Cookie", "")
+            cookie_token = next(
+                (item.split("=", 1)[1] for item in cookie_header.split(";") if item.strip().startswith("airp_capability=")),
+                "",
+            )
+            if not secrets.compare_digest(token or cookie_token, self.capability):
+                handler._send_json(401, {"ok": False, "error": "capability_required"})
+                return False
+        return True
 
     @staticmethod
     def _canonical_compat_path(path: str) -> str:
@@ -439,6 +495,15 @@ class SessionRuntimeServer:
         }
 
     def _sessions_payload(self) -> dict[str, Any]:
+        # The last Project may have just been deleted. Its runtime/database is
+        # intentionally cleaned up before the response is assembled, so do not
+        # ask the detached SessionManager to reopen a removed SQLite file.
+        if self.projects is not None:
+            try:
+                self.projects.get_project(self.runtime.project_id)
+            except ProjectLibraryError as exc:
+                if exc.code == "project_not_found":
+                    return {"ok": True, "active_session_id": None, "sessions": []}
         if self.session_manager is None:
             return {
                 "ok": True,
@@ -481,7 +546,18 @@ class SessionRuntimeServer:
                 current = self.projects.get_project(active_id)
             except ProjectLibraryError:
                 current = None
-        session = self._sessions_payload()
+        session = self._sessions_payload() if current is not None else {
+            "active_session_id": None,
+            "sessions": [],
+        }
+        snapshot = self._snapshot_payload() if current is not None else {
+            "session_id": None,
+            "active_revision": 0,
+            "last_event_sequence": 0,
+            "current_task": None,
+            "status": "idle",
+            "pending": False,
+        }
         return {
             "ok": True,
             "active_project_id": active_id if current is not None else None,
@@ -493,7 +569,7 @@ class SessionRuntimeServer:
             "projects": projects,
             "active_session_id": session.get("active_session_id"),
             "sessions": session.get("sessions", []),
-            "snapshot": self._snapshot_payload(),
+            "snapshot": snapshot,
         }
 
     def _switch_active_project(self, project_id: Any) -> tuple[dict[str, Any], int]:
@@ -532,9 +608,33 @@ class SessionRuntimeServer:
 
     def _bind_project_runtime_if_active(self, project: dict[str, Any] | None) -> None:
         """Attach the per-Project Session manager after a new Project appears."""
-        if not project or self.project_runtimes is None or project.get("id") != self.runtime.project_id:
+        if not project or self.project_runtimes is None:
             return
+        project_id = project.get("id")
+        if not isinstance(project_id, str):
+            return
+        try:
+            active_known = self.runtime.project_id in self.project_runtimes.project_ids()
+        except Exception:
+            active_known = True
+        # A new Project can become the first active Project after the previous
+        # one was deleted (or before a legacy runtime had a Project binding).
+        # Do not steal an already-active valid Project when editing another one.
+        if project_id != self.runtime.project_id and active_known:
+            return
+        previous_runtime = self.runtime
         context = self.project_runtimes.adopt(project["id"], self.runtime, self.session_manager)
+        # Keep the caller-visible runtime object stable when a legacy launch
+        # creates its first Project in place.  The new Project-owned storage
+        # has already been materialized by ``adopt``; copying the runtime
+        # state into the existing object avoids stale external references
+        # while retaining the ownership boundary on disk.
+        if context.runtime is not previous_runtime:
+            previous_runtime.__dict__.clear()
+            previous_runtime.__dict__.update(context.runtime.__dict__)
+            context.runtime = previous_runtime
+            context.sessions._runtime = previous_runtime
+            context.sessions.database_path = Path(previous_runtime.database_path)
         if context.runtime is self.runtime and context.sessions is self.session_manager:
             return
         self.runtime = context.runtime
@@ -927,6 +1027,7 @@ class SessionRuntimeServer:
             project_store=self.projects,
             worldbook_store=self.worldbooks,
             regex_collection_store=self.regex_collections,
+            provider_profile_store=self.provider_profiles,
         )
         runner = ProviderNodeRunner(self._provider_for_studio_graph_node)
         self.runtime.configure_execution_graph(
@@ -1036,11 +1137,11 @@ class SessionRuntimeServer:
         if self.projects is None:
             return {"ok": False, "error": "studio_library_unavailable"}, 501
         try:
-            project = self.projects.import_card(body)
+            project, diagnostics = self.projects.import_card_report(body)
             if self.project_runtimes is not None:
                 self.project_runtimes.refresh(project)
             self._bind_project_runtime_if_active(project)
-            return {"ok": True, "project": project}, 201
+            return {"ok": True, "project": project, "diagnostics": diagnostics}, 201
         except ProjectLibraryError as exc:
             return self._studio_project_error(exc)
 
@@ -1064,6 +1165,11 @@ class SessionRuntimeServer:
                 if status != 200:
                     return switched, status
             self.projects.delete_project(project_id)
+            if self.project_runtimes is not None:
+                self.project_runtimes.discard(project_id)
+            if deleting_active and fallback is None:
+                self.session_manager = None
+                self.service = SessionCommandService(self.runtime)
             payload = self._project_runtime_payload()
             return {"ok": True, "deleted_id": project_id, **payload}, 200
         except ProjectLibraryError as exc:
@@ -1104,12 +1210,27 @@ class SessionRuntimeServer:
                 return
 
             def _send_cors_headers(self) -> None:
-                self.send_header("Access-Control-Allow-Origin", "*")
+                origin = self.headers.get("Origin")
+                if origin and server_ref._origin_allowed(origin, self.headers.get("Host", "")):
+                    self.send_header("Access-Control-Allow-Origin", origin)
+                    self.send_header("Access-Control-Allow-Credentials", "true")
+                    self.send_header("Vary", "Origin")
                 self.send_header("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
-                self.send_header("Access-Control-Allow-Headers", "Content-Type")
+                self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization, Last-Event-ID")
 
-            def _read_json(self) -> dict:
-                length = int(self.headers.get("Content-Length") or 0)
+            def _read_json(self) -> dict | None:
+                try:
+                    length = int(self.headers.get("Content-Length") or 0)
+                except (TypeError, ValueError):
+                    self._send_json(400, {"ok": False, "error": "invalid_content_length"})
+                    return None
+                if length > MAX_REQUEST_BODY_BYTES:
+                    self._send_json(413, {
+                        "ok": False,
+                        "error": "request_body_too_large",
+                        "message": f"request body exceeds {MAX_REQUEST_BODY_BYTES} bytes",
+                    })
+                    return None
                 if length <= 0:
                     return {}
                 raw = self.rfile.read(length)
@@ -1132,6 +1253,9 @@ class SessionRuntimeServer:
                 self.wfile.write(payload)
 
             def do_OPTIONS(self):  # noqa: N802
+                parsed = urlparse(self.path)
+                if not server_ref._guard_request(self, parsed.path.rstrip("/") or "/", preflight=True):
+                    return
                 self.send_response(200)
                 self._send_cors_headers()
                 self.send_header("Content-Length", "0")
@@ -1140,6 +1264,8 @@ class SessionRuntimeServer:
             def do_GET(self):  # noqa: N802
                 parsed = urlparse(self.path)
                 path = server_ref._canonical_compat_path(parsed.path.rstrip("/") or "/")
+                if not server_ref._guard_request(self, path):
+                    return
                 query = parse_qs(parsed.query)
 
                 for prefix in STUDIO_DEBUG_REPLAY_PATHS:
@@ -1376,7 +1502,11 @@ class SessionRuntimeServer:
             def do_POST(self):  # noqa: N802
                 parsed = urlparse(self.path)
                 path = server_ref._canonical_compat_path(parsed.path.rstrip("/") or "/")
+                if not server_ref._guard_request(self, path):
+                    return
                 body = self._read_json()
+                if body is None:
+                    return
 
                 for prefix in STUDIO_GRAPH_RUN_PATHS:
                     if path.startswith(prefix + "/"):
@@ -1807,6 +1937,8 @@ class SessionRuntimeServer:
             def do_DELETE(self):  # noqa: N802
                 parsed = urlparse(self.path)
                 path = server_ref._canonical_compat_path(parsed.path.rstrip("/") or "/")
+                if not server_ref._guard_request(self, path):
+                    return
                 for prefix in STUDIO_AGENT_PATHS:
                     if path.startswith(prefix + "/"):
                         agent_id = path[len(prefix) + 1:]
@@ -1899,7 +2031,11 @@ class SessionRuntimeServer:
             def do_PUT(self):  # noqa: N802
                 parsed = urlparse(self.path)
                 path = server_ref._canonical_compat_path(parsed.path.rstrip("/") or "/")
+                if not server_ref._guard_request(self, path):
+                    return
                 body = self._read_json()
+                if body is None:
+                    return
 
                 if path in PROJECT_SWITCH_PATHS:
                     payload, status = server_ref._switch_active_project(body.get("project_id"))
@@ -1976,7 +2112,11 @@ class SessionRuntimeServer:
             def do_PATCH(self):  # noqa: N802
                 parsed = urlparse(self.path)
                 path = server_ref._canonical_compat_path(parsed.path.rstrip("/") or "/")
+                if not server_ref._guard_request(self, path):
+                    return
                 body = self._read_json()
+                if body is None:
+                    return
                 for prefix in STUDIO_AGENT_PATHS:
                     if path.startswith(prefix + "/"):
                         agent_id = path[len(prefix) + 1:]
@@ -2071,6 +2211,11 @@ class SessionRuntimeServer:
                 self.send_response(200)
                 self.send_header("Content-Type", ctype)
                 self._send_cors_headers()
+                if server_ref._is_exposed():
+                    self.send_header(
+                        "Set-Cookie",
+                        f"airp_capability={server_ref.capability}; HttpOnly; SameSite=Strict; Path=/",
+                    )
                 self.send_header("Content-Length", str(len(data)))
                 self.send_header("Cache-Control", "no-cache")
                 self.end_headers()

@@ -1,6 +1,6 @@
 # ADR-0023：Project 所有运行态与单 active projection
 
-- **状态**：Accepted（所有权与并发边界已锁定；删除清理仍需实现）
+- **状态**：Accepted（所有权、并发与删除清理均已实现；多进程并发仍不在范围内）
 - **日期**：2026-08-02
 - **关联**：Wayfinder #15、ADR-0012、ADR-0020、ADR-0021、`CONTEXT.md`
 
@@ -74,12 +74,10 @@ snapshot/Execution Plan；切换、删除和编辑不能修改已经开始的回
 
 已实现并有测试证据：Workspace/Project/Session 分层、每 Project Session DB、active Project
 恢复、active Session 恢复、单 active projection、生成期间拒绝切换、删除 active Project
-时切换剩余 Project、最后一个 Session 保护。
-
-尚未实现：`_studio_project_delete` 当前删除 Project 定义文件，但没有完整删除对应
-`runtime/projects/<project_id>` materialization、`sessions/projects/<project_id>.sqlite3`
-和 recent metadata。该缺口必须在将 ADR-0023 标为 Proven 前补齐，并加入删除后重启/孤儿状态
-回归测试；本 ADR 不把现有行为夸大为已完成清理。
+时切换剩余 Project、最后一个 Session 保护，以及删除时清理
+`runtime/projects/<project_id>`、`sessions/projects/<project_id>.sqlite3` 和
+active/recent metadata。删除后的重启/孤儿状态回归位于
+`tests/test_game_project_drawer.py`。
 
 ## Out of scope
 

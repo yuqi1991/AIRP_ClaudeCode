@@ -351,6 +351,7 @@ class GraphPlan:
     name: str
     nodes: tuple[GraphNodePlan, ...]
     output_node_id: str
+    revision: int = 0
 
     @classmethod
     def from_dict(cls, payload: Mapping[str, Any]) -> "GraphPlan":
@@ -359,6 +360,7 @@ class GraphPlan:
             name=str(payload.get("name") or payload.get("graph_id") or "Graph"),
             nodes=tuple(GraphNodePlan.from_dict(item) for item in payload.get("nodes") or []),
             output_node_id=str(payload.get("output_node_id") or ""),
+            revision=int(payload.get("revision") or 0),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -369,6 +371,7 @@ class GraphPlan:
             "mode": "sequential",
             "nodes": [node.to_dict() for node in self.nodes],
             "output_node_id": self.output_node_id,
+            "revision": self.revision,
         }
 
 
@@ -382,10 +385,12 @@ class ExecutionPlan:
     worldbooks: tuple[Mapping[str, Any], ...]
     graph: GraphPlan
     created_at: int = 0
+    provenance: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "project", _copy(dict(self.project)))
         object.__setattr__(self, "worldbooks", tuple(_copy(dict(book)) for book in self.worldbooks))
+        object.__setattr__(self, "provenance", _copy(dict(self.provenance)))
 
     @classmethod
     def from_dict(cls, payload: Mapping[str, Any]) -> "ExecutionPlan":
@@ -396,6 +401,7 @@ class ExecutionPlan:
             worldbooks=tuple(payload.get("worldbooks") or []),
             graph=GraphPlan.from_dict(payload.get("graph") or {}),
             created_at=int(payload.get("created_at") or 0),
+            provenance=payload.get("provenance") or {},
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -406,6 +412,7 @@ class ExecutionPlan:
             "worldbooks": [_copy(dict(book)) for book in self.worldbooks],
             "graph": self.graph.to_dict(),
             "created_at": self.created_at,
+            "provenance": _copy(dict(self.provenance)),
         }
 
 
@@ -420,12 +427,14 @@ class ExecutionPlanCompiler:
         project_store=None,
         worldbook_store=None,
         regex_collection_store=None,
+        provider_profile_store=None,
     ) -> None:
         self.agent_store = agent_store
         self.graph_store = graph_store
         self.project_store = project_store
         self.worldbook_store = worldbook_store
         self.regex_collection_store = regex_collection_store
+        self.provider_profile_store = provider_profile_store
 
     def compile(
         self,
@@ -453,6 +462,8 @@ class ExecutionPlanCompiler:
             raise ValueError("Execution Plan requires a non-empty graph")
         planned_nodes: list[GraphNodePlan] = []
         seen: set[str] = set()
+        agent_sources: dict[str, dict[str, Any]] = {}
+        provider_ids: set[str] = set()
         for index, raw_node in enumerate(raw_nodes):
             if not isinstance(raw_node, Mapping):
                 raise ValueError("graph nodes must be objects")
@@ -471,11 +482,19 @@ class ExecutionPlanCompiler:
             if definition is None:
                 raise ValueError(f"Agent Definition {agent_id!r} was not found")
             definition = self._freeze_regex_collection(definition)
+            safe_definition = _redact_secrets(definition)
+            agent_sources[agent_id] = {
+                "id": agent_id,
+                "revision": int(definition.get("revision") or 0),
+                "content_hash": _hash(safe_definition),
+            }
             preview = self._preview_agent(definition, player_input, context=context)
             resolved_agent = self._apply_node_overrides(
                 ResolvedAgent.from_definition(definition, preview),
                 raw_node,
             )
+            if resolved_agent.provider_profile_id:
+                provider_ids.add(str(resolved_agent.provider_profile_id))
             planned_nodes.append(
                 GraphNodePlan(
                     node_id=node_id,
@@ -509,12 +528,57 @@ class ExecutionPlanCompiler:
         output_node_id = graph.get("output_node_id") or graph.get("outputNodeId") or planned_nodes[-1].node_id
         if output_node_id != planned_nodes[-1].node_id:
             raise ValueError("output node must be the final enabled node")
-        graph_plan = GraphPlan(resolved_graph_id, str(graph.get("name") or resolved_graph_id), tuple(planned_nodes), output_node_id)
+        graph_plan = GraphPlan(
+            resolved_graph_id,
+            str(graph.get("name") or resolved_graph_id),
+            tuple(planned_nodes),
+            output_node_id,
+            revision=int(graph.get("revision") or 0),
+        )
+        provider_sources = []
+        if self.provider_profile_store is not None:
+            for provider_id in sorted(provider_ids):
+                try:
+                    profile = self.provider_profile_store.get_profile(provider_id)
+                except Exception:
+                    continue
+                safe_profile = _redact_secrets(profile)
+                provider_sources.append({
+                    "id": provider_id,
+                    "revision": int(profile.get("revision") or 0),
+                    "content_hash": _hash(safe_profile),
+                })
+        worldbook_sources = [
+            {
+                "id": str(book.get("id") or ""),
+                "revision": int(book.get("revision") or 0),
+                "content_hash": _hash(_redact_secrets(book)),
+            }
+            for book in books
+            if isinstance(book, Mapping)
+        ]
+        provenance = {
+            "schema": {"id": "airp.config-provenance", "version": 1},
+            "project": {
+                "id": resolved_project_id,
+                "revision": int(project.get("revision") or 0),
+                "content_hash": _hash(_redact_secrets(project)),
+            },
+            "graph": {
+                "id": resolved_graph_id,
+                "revision": int(graph.get("revision") or 0),
+                "content_hash": _hash(_redact_secrets(graph)),
+            },
+            "agents": sorted(agent_sources.values(), key=lambda item: item["id"]),
+            "providers": provider_sources,
+            "worldbooks": worldbook_sources,
+        }
         plan_data = {
             "player_input": player_input,
             "project": _redact_secrets({**project, "id": resolved_project_id}),
             "worldbooks": _redact_secrets(books),
             "graph": _redact_secrets(graph_plan.to_dict()),
+            "provenance": provenance,
         }
         plan_id = _hash(plan_data)
         return ExecutionPlan(
@@ -524,6 +588,7 @@ class ExecutionPlanCompiler:
             worldbooks=tuple(plan_data["worldbooks"]),
             graph=graph_plan,
             created_at=int(time.time()),
+            provenance=provenance,
         )
 
     @staticmethod

@@ -132,6 +132,30 @@ def test_deleting_active_project_switches_to_remaining_game(tmp_path: Path):
         assert {item["id"] for item in deleted["projects"]} == {"game-a"}
 
 
+def test_deleting_project_cleans_materialized_runtime_and_session_artifacts(tmp_path: Path):
+    with _server(tmp_path) as server:
+        _create_project(server, "game-a")
+        status, switched = _request(
+            "POST", f"{server.base_url}/v1/session/project/switch", {"project_id": "game-a"}
+        )
+        assert status == 200
+        runtime_card = tmp_path / "workspace" / "runtime" / "projects" / "game-a"
+        runtime_db = tmp_path / "workspace" / "sessions" / "projects" / "game-a.sqlite3"
+        assert runtime_card.is_dir()
+        assert runtime_db.is_file()
+
+        status, deleted = _request("DELETE", f"{server.base_url}/v1/studio/projects/game-a")
+        assert status == 200
+        assert deleted["active_project_id"] is None
+        assert not runtime_card.exists()
+        assert not runtime_db.exists()
+        active_state = json.loads(
+            (tmp_path / "workspace" / "runtime" / "active_project.json").read_text(encoding="utf-8")
+        )
+        assert active_state["active_project_id"] is None
+        assert "game-a" not in active_state["recent_project_ids"]
+
+
 def test_project_switch_rejects_active_generation_without_mutating_project(tmp_path: Path):
     with _server(tmp_path) as server:
         _create_project(server, "game-a")

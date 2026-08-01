@@ -32,7 +32,13 @@ from airp.engine.graph_runtime import (
     NodeExecutionContext,
     NodeResult,
 )
-from airp.engine.mvu import execute_commands, extract_commands, generate_schema, validate_command_strict
+from airp.engine.mvu import (
+    execute_commands,
+    extract_commands,
+    generate_schema,
+    schema_from_definition,
+    validate_command_strict,
+)
 from airp.engine.provider import AbortSignal
 from airp.engine.quality import DefaultQualityGate, QualityContext, QualityGate, QualityPolicy
 from airp.host.rp.tools import ToolRegistry
@@ -1564,7 +1570,7 @@ class SessionTurnRuntime:
         commands = extract_commands(source)
         if not commands:
             return None
-        schema = generate_schema(base_state, strict_template=True)
+        schema = self._commit_schema(base_state)
         for command in commands:
             ok, reason = validate_command_strict(command, schema)
             if not ok:
@@ -1584,6 +1590,18 @@ class SessionTurnRuntime:
                 details={"reason": str(exc)},
             )
         return None
+
+    def _commit_schema(self, base_state):
+        """Return the frozen card schema plus explicit wildcard declarations."""
+        fallback = generate_schema(base_state, strict_template=True)
+        schema_path = self.card_folder / ".initvar_schema.json"
+        if not schema_path.is_file():
+            return fallback
+        try:
+            raw = json.loads(schema_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            return fallback
+        return schema_from_definition(raw, fallback=fallback) or fallback
 
     def _quality_context(self, task):
         snapshot = json.loads(task["source_snapshot"]) if task["source_snapshot"] else {}

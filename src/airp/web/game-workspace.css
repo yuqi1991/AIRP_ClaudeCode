@@ -294,6 +294,49 @@
 .node-debug-call strong { font-weight: 650; }
 .node-debug-muted { color: var(--airp-color-muted); }
 
+/* Markdown blocks inside the long-form reader stay bounded by the reading
+ * column. The table wrapper owns horizontal scrolling so wide GFM tables do
+ * not expand the page or the Monitor column. */
+.airp-markdown-block-gap { height: .65rem; }
+.airp-markdown-paragraph { margin: 0; }
+.turn-text h1, .turn-text h2, .turn-text h3 {
+  margin: .85rem 0 .45rem;
+  color: var(--airp-color-text);
+  font-family: var(--airp-font-reading);
+  line-height: 1.3;
+}
+.turn-text h1 { font-size: 1.35rem; }
+.turn-text h2 { font-size: 1.18rem; }
+.turn-text h3 { font-size: 1.05rem; }
+.turn-text ul, .turn-text ol { margin: .35rem 0 .35rem 1.35rem; padding: 0; }
+.turn-text li { padding-left: .15rem; margin: .18rem 0; }
+.turn-text blockquote {
+  margin: .45rem 0;
+  border-left: 3px solid var(--airp-color-accent-muted);
+  padding: .35rem .8rem;
+  color: var(--airp-color-muted);
+}
+.turn-text hr { margin: .8rem 0; border: 0; border-top: 1px solid var(--airp-color-border); }
+.turn-text code {
+  padding: .08rem .28rem;
+  border: 1px solid var(--airp-color-border);
+  border-radius: 3px;
+  background: var(--airp-color-input);
+  font: .88em "SFMono-Regular", Consolas, monospace;
+}
+.turn-text pre {
+  max-width: 100%;
+  overflow: auto;
+  margin: .55rem 0;
+  padding: .7rem .8rem;
+  border: 1px solid var(--airp-color-border);
+  border-radius: var(--airp-radius-control);
+  background: var(--airp-color-input);
+  white-space: pre;
+}
+.turn-text pre code { padding: 0; border: 0; background: transparent; }
+.turn-text a { color: var(--airp-color-accent-muted); text-decoration: underline; }
+
 @media (max-width: 760px) {
   #agent-trace.monitor-topology { max-height: 46vh; }
   .node-debug-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -661,6 +704,24 @@
 .airp-game-project-head small {
   color: var(--airp-color-muted);
 }
+
+.airp-game-diagnostics {
+  display: grid;
+  gap: 3px;
+  margin: 0 0 12px;
+  padding: 9px 11px;
+  border: 1px solid var(--airp-color-border);
+  border-left: 3px solid var(--airp-color-accent-muted);
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--airp-color-surface) 78%, transparent);
+  color: var(--airp-color-muted);
+  font-size: .72rem;
+  line-height: 1.45;
+}
+.airp-game-diagnostics strong { color: var(--airp-color-text); }
+.airp-game-diagnostics small { color: var(--airp-color-accent-muted); }
+.airp-game-diagnostics.degraded { border-left-color: var(--airp-color-accent); }
+.airp-game-diagnostics.failed { border-left-color: #b0624a; }
 
 .airp-game-tabs {
   display: flex;

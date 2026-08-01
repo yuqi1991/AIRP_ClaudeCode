@@ -1,6 +1,6 @@
 # ADR-0024：角色卡与世界书导入诊断报告契约
 
-- **状态**：Accepted（报告格式与状态语义已锁定；生产 emitter 尚未接入）
+- **状态**：Accepted（报告格式、状态语义与生产 emitter/UI 均已实现；兼容矩阵继续扩充）
 - **日期**：2026-08-02
 - **关联**：Wayfinder #14、ADR-0016、ADR-0017、ADR-0023、`CONTEXT.md`
 
@@ -98,10 +98,10 @@ SillyTavern 的 regex scripts、beautify 或其它 extensions 只在确有 AIRP 
 
 ## Current implementation status
 
-格式、状态语义和测试样例已经确定。当前 `src/airp/import_card.py` 与
-`src/airp/import_prepare.py` 仍返回旧 summary，尚未发出 `airp.import-diagnostics`；
-后续实现应先保留旧字段兼容，再把报告作为 API/UI 的正式返回值，并补齐真实 PNG/JSON/TXT
-fixture 和游戏抽屉展示。
+格式、状态语义和测试样例已经确定。`src/airp/import_card.py`、
+`src/airp/import_prepare.py` 与 Project import API 在保留旧 summary 字段的同时发出
+`airp.import-diagnostics`；游戏抽屉显示整体状态、世界书条目计数和 finding。真实 PNG/JSON/TXT
+fixture 与更多 SillyTavern extensions 仍可继续扩充，但不再改变 v1 契约。
 
 ## Consequences
 

@@ -845,29 +845,58 @@ def run_card_scripts(card_dir: str, root_dir: str) -> dict | None:
     return None
 
 
+def _import_finding(code, level, status, message, *, source_path=None, destination_path=None, repair=None):
+    finding = {
+        "code": code,
+        "level": level,
+        "status": status,
+        "source_path": source_path,
+        "destination_path": destination_path,
+        "message": message,
+    }
+    if repair is not None:
+        finding["repair"] = repair
+    return finding
+
+
+def _new_import_diagnostics(card_dir):
+    return {
+        "schema": {"id": "airp.import-diagnostics", "version": 1},
+        "overall": {"status": "success", "counts": {"info": 0, "warning": 0, "error": 0}},
+        "source": {"file": None, "format": None},
+        "project": {"name": None},
+        "worldbook": {
+            "embedded": False,
+            "source_format": None,
+            "entries_seen": 0,
+            "entries_imported": 0,
+            "entries_skipped": 0,
+            "bound_to_project": False,
+        },
+        "findings": [],
+        "card_dir": str(card_dir),
+    }
+
+
+def _add_import_finding(report, finding):
+    report["findings"].append(finding)
+    level = finding.get("level", "info")
+    counts = report["overall"]["counts"]
+    counts[level] = counts.get(level, 0) + 1
+    if level == "error":
+        report["overall"]["status"] = "failed"
+    elif level == "warning" and report["overall"]["status"] != "failed":
+        report["overall"]["status"] = "degraded"
+
+
 def _merge_json_worldbooks(card_data, json_files, card_dir, skip_file=None):
     """合并所有 JSON 文件中的 character_book.entries 到 card_data。
     支持完整卡片格式 (data.character_book.entries) 和纯世界书格式 (entries)。
     按 entry.id 去重。返回 (合并的额外文件数, 合并的额外条目数)。"""
-    # 确保 card_data["data"] 存在且为字典
-    if "data" not in card_data or not isinstance(card_data.get("data"), dict):
-        card_data["data"] = {}
-    data_obj = card_data["data"]
-
-    # 确保 character_book 存在且为字典
-    if "character_book" not in data_obj or not isinstance(data_obj.get("character_book"), dict):
-        data_obj["character_book"] = {}
-    char_book = data_obj["character_book"]
-
-    # 确保 entries 存在且为列表
-    if "entries" not in char_book or not isinstance(char_book.get("entries"), list):
-        char_book["entries"] = []
-
-    existing = char_book["entries"]
-    existing_ids = {e.get("id") for e in existing if isinstance(e, dict) and e.get("id")}
-
-    file_count = 0
-    entry_count = 0
+    # Read candidates before mutating the card.  In particular, do not create
+    # an empty ``character_book`` for a card that has no companion worldbooks;
+    # that would make diagnostics falsely report an embedded worldbook.
+    candidates = []
     for jf in json_files:
         if jf == skip_file:
             continue
@@ -886,6 +915,25 @@ def _merge_json_worldbooks(card_data, json_files, card_dir, skip_file=None):
             entries = jdata.get("entries", [])
         if not isinstance(entries, list) or not entries:
             continue
+        candidates.append((jf, entries))
+
+    if not candidates:
+        return 0, 0
+
+    if "data" not in card_data or not isinstance(card_data.get("data"), dict):
+        card_data["data"] = {}
+    data_obj = card_data["data"]
+    if "character_book" not in data_obj or not isinstance(data_obj.get("character_book"), dict):
+        data_obj["character_book"] = {}
+    char_book = data_obj["character_book"]
+    if "entries" not in char_book or not isinstance(char_book.get("entries"), list):
+        char_book["entries"] = []
+
+    existing = char_book["entries"]
+    existing_ids = {e.get("id") for e in existing if isinstance(e, dict) and e.get("id")}
+    file_count = 0
+    entry_count = 0
+    for jf, entries in candidates:
 
         added = 0
         for entry in entries:
@@ -932,6 +980,8 @@ def run_import(card_dir, root_dir, *, styles_dir=None):
         "initvar_keys": [],
         "initvar_source": "",
     }
+    diagnostics = _new_import_diagnostics(card_dir)
+    result["diagnostics"] = diagnostics
 
     # 1. 扫描素材（跳过隐藏文件）
     files = os.listdir(card_dir) if os.path.isdir(card_dir) else []
@@ -997,11 +1047,34 @@ def run_import(card_dir, root_dir, *, styles_dir=None):
     if card_data is None:
         result["status"] = "no_card_found"
         result["files_scanned"] = {"png": len(png_files), "json": len(json_files), "txt": len(txt_files)}
+        _add_import_finding(
+            diagnostics,
+            _import_finding(
+                "card.not_found", "error", "failed",
+                "未找到可识别的 PNG、JSON 或 TXT 角色卡数据。",
+                source_path=None, destination_path="project.card",
+                repair={"action": "检查文件格式和编码"},
+            ),
+        )
         return result
 
     # 5. 提取元数据
     result["card_name"] = get_card_name(card_data)
     result["world_name"] = get_world_name(card_data)
+    diagnostics["source"] = {
+        "file": result.get("source_file"),
+        "format": result.get("source_type"),
+    }
+    diagnostics["project"]["name"] = result["card_name"] or result.get("source_file")
+    _add_import_finding(
+        diagnostics,
+        _import_finding(
+            "card.name.imported", "info", "imported",
+            f"已导入角色卡“{result['card_name'] or '未命名角色'}”。",
+            source_path="data.name" if result.get("source_type") != "txt" else "name",
+            destination_path="project.name",
+        ),
+    )
 
     # 保存完整卡片数据到 card_dir
     card_data_path = os.path.join(card_dir, ".card_data.json")
@@ -1020,7 +1093,46 @@ def run_import(card_dir, root_dir, *, styles_dir=None):
             json.dump(openings, f, ensure_ascii=False, indent=2)
 
     # 7. 处理世界书条目 → memory/
-    entries = card_data.get("data", {}).get("character_book", {}).get("entries", [])
+    embedded_book = card_data.get("data", {}).get("character_book", {})
+    entries = embedded_book.get("entries", []) if isinstance(embedded_book, dict) else []
+    diagnostics["worldbook"]["embedded"] = isinstance(embedded_book, dict) and "entries" in embedded_book
+    diagnostics["worldbook"]["source_format"] = "sillytavern-character-book" if diagnostics["worldbook"]["embedded"] else None
+    if diagnostics["worldbook"]["embedded"]:
+        raw_entries = list(entries.values()) if isinstance(entries, dict) else entries if isinstance(entries, list) else []
+        diagnostics["worldbook"]["entries_seen"] = len(raw_entries)
+        valid_entries = [entry for entry in raw_entries if isinstance(entry, dict)]
+        diagnostics["worldbook"]["entries_skipped"] = len(raw_entries) - len(valid_entries)
+        diagnostics["worldbook"]["entries_imported"] = len(valid_entries)
+        if diagnostics["worldbook"]["entries_skipped"]:
+            _add_import_finding(
+                diagnostics,
+                _import_finding(
+                    "worldbook.entry.invalid", "warning", "skipped",
+                    f"已跳过 {diagnostics['worldbook']['entries_skipped']} 条无效世界书条目。",
+                    source_path="data.character_book.entries",
+                    destination_path="project.worldbook_ids",
+                    repair={"action": "检查被跳过条目的对象结构"},
+                ),
+            )
+        entries = valid_entries
+        _add_import_finding(
+            diagnostics,
+            _import_finding(
+                "worldbook.embedded.imported", "info", "imported",
+                f"已读取内嵌世界书 {len(valid_entries)} 条，并写入兼容记忆索引。",
+                source_path="data.character_book.entries",
+                destination_path="project.worldbook_ids",
+            ),
+        )
+    else:
+        _add_import_finding(
+            diagnostics,
+            _import_finding(
+                "worldbook.embedded.not_present", "info", "not_present",
+                "角色卡未包含内嵌世界书。",
+                source_path="data.character_book", destination_path="project.worldbook_ids",
+            ),
+        )
     if isinstance(entries, list) and entries:
         result["worldbook_entries_total"] = len(entries)
         mem_stats = init_memory_entries(entries, memory_dir)
@@ -1029,6 +1141,9 @@ def run_import(card_dir, root_dir, *, styles_dir=None):
         # 生成世界书索引（供 AI 按需 Grep 检索，不进入对话上下文）
         index_stats = build_worldbook_index(entries, memory_dir)
         result["worldbook_index"] = index_stats
+        # ``run_import`` is the legacy card projection boundary; Project and
+        # Worldbook ownership is finalized by ProjectLibrary.import_card_report.
+        diagnostics["worldbook"]["bound_to_project"] = False
 
         # 检测卡片叙事结构（阶段人设/动态事件库）
         structure = analyze_card_structure(memory_dir)
@@ -1100,6 +1215,17 @@ def run_import(card_dir, root_dir, *, styles_dir=None):
                 with open(scope_path, "w", encoding="utf-8") as f:
                     json.dump(runner_data["scope"], f, ensure_ascii=False, indent=2)
                 result["scope"] = runner_data["scope"]
+        elif isinstance(card_data.get("data", {}).get("extensions"), dict) and card_data["data"]["extensions"].get("tavern_helper"):
+            _add_import_finding(
+                diagnostics,
+                _import_finding(
+                    "card.script.degraded", "warning", "degraded",
+                    "角色卡脚本未能在导入沙箱中完成提取，已保留可识别的静态内容。",
+                    source_path="data.extensions.tavern_helper",
+                    destination_path="project.compatibility",
+                    repair={"action": "查看导入诊断并检查脚本依赖"},
+                ),
+            )
 
         # Path B: worldbook [initvar] entries (mirrors MVU loadInitVarData)
         initvar_wb = extract_initvar_data(entries)

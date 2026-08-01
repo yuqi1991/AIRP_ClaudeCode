@@ -16,13 +16,12 @@ Studio 配置。`state.js`/`content.js` 仍是单张卡的可重建兼容 projec
 事实源，但不再依赖仓库级 `skills/styles` 单例。多卡并发隔离和更彻底的 projection
 替换仍是后续工作。
 
-Project 删除目前只移除 Workspace Project definition，尚未保证同步清理
-`runtime/projects/<project_id>`、`sessions/projects/<project_id>.sqlite3` 和 recent
-metadata；ADR-0023 已锁定该清理不变量，补齐实现和孤儿状态回归后才能标为 Proven。
+Project 删除现在会在 idle 边界清理 `runtime/projects/<project_id>`、
+`sessions/projects/<project_id>.sqlite3` 和 active/recent metadata，并有删除后重启回归。
 
 ## P1：上下文仍不可精确控制
 
-**状态：Broken**
+**状态：Working**
 
 世界书 skill 模式已降低每轮预塞成本，但 Claude Code 的追加 transcript 会累积历史与工具读取结果。独立 harness 必须提供显式 context builder、窗口策略和可观测 token 预算。
 
@@ -34,32 +33,27 @@ metadata；ADR-0023 已锁定该清理不变量，补齐实现和孤儿状态回
 
 ## P1：卡片兼容诊断缺失
 
-**状态：Broken**
+**状态：Resolved**
 
-导入支持多种资产，但失败和降级往往缺少面向玩家的报告。`ADR-0024` 已锁定
-`airp.import-diagnostics` v1、逐字段 provenance、内嵌 Worldbook 绑定计数和
-success/degraded/failed 语义；原型已验证三类报告形状。仍需把 emitter 接入
-`import_card.py`/`import_prepare.py`，建立 PNG/JSON/TXT 和变量/正则/美化兼容 fixture，
-并在游戏抽屉展示可定位的修复建议。
+`import_card.py`、`import_prepare.py` 和 Project import API 已发出
+`airp.import-diagnostics` v1；游戏抽屉显示状态、世界书计数和可定位 finding。后续只需
+继续扩充真实 PNG/JSON/TXT 兼容 fixture。
 
 ## P1：设定编辑缺少 revision 与 audit
 
-**状态：Working**
+**状态：Resolved**
 
-Project/Library 保存目前主要依赖 `updated_at`，`ProjectRuntimeStore.refresh()` 和 Graph
-选择会即时 materialize/rebind，无法向玩家证明运行中 Task 仍使用旧配置。
-[`ADR-0026`](../adr/0026-project-editing-and-trace-semantics.md) 已锁定三类 revision、
-expected revision 冲突、不可变 audit、Task source snapshot provenance 和“回退配置产生
-新 revision”语义。仍需实现持久化 revision/audit、延迟 rebind 和对应回归测试。
+Project、Provider、Agent、Graph、Worldbook、Regex Collection 保存均持久化 revision，支持
+`expected_revision` 冲突；`.audit.jsonl` 只记录变更路径和 before/after hash。Task 的
+Execution Plan 还会冻结 Project/Library revision 与配置 hash provenance，Session revision
+保持独立。
 
 ## P1：MVU 校验过宽
 
-**状态：Working**
+**状态：Resolved**
 
-兼容 handler 仍对未知变量路径宽松，正式 Runtime commit 已有独立 strict validator。
-[`ADR-0025`](../adr/0025-mvu-and-local-security-boundary.md) 进一步锁定：只有卡片 schema
-显式 wildcard 才能创建动态子键；其余未知路径拒绝并审计。仍需把 wildcard 语义、稳定错误码
-和浏览器可见的失败详情接入实现。
+兼容 handler 与正式 Runtime 共用 strict schema builder；只有卡片 schema 显式 wildcard 才能
+创建动态子键，其余未知路径拒绝并返回稳定校验错误。
 
 ## P2：自动化测试不足
 
@@ -74,9 +68,11 @@ Provider 发布边界已由 [ADR-0022](../adr/0022-provider-release-qualificatio
 
 ## P2：本地安全边界需审视
 
-**状态：Working**
+**状态：Resolved**
 
 [`ADR-0025`](../adr/0025-mvu-and-local-security-boundary.md) 已固定威胁模型和目标边界：
 默认 loopback、Origin allowlist、per-process capability、卡片脚本禁用、Markdown/HTML
-allowlist、静态路径和 body 限制，以及 secret 不出 Store。当前 CLI 的 `0.0.0.0`、CORS `*`
-和主页面 script 重执行仍需实现级修复；在这些 enforcement 完成前不能宣称本地安全边界 Proven。
+allowlist、静态路径和 body 限制，以及 secret 不出 Store。CLI 默认 loopback；显式暴露时动态
+API/SSE/DELETE 需要 per-process capability，Origin 不在 allowlist 时拒绝；主页面采用
+Markdown/HTML allowlist 且不重执行卡片脚本。loopback 下无 Origin 的本地兼容请求保留免 token
+行为，带 Origin 的请求仍执行同源校验。

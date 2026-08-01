@@ -1,6 +1,6 @@
 # ADR-0025：MVU 校验与本地安全边界
 
-- **状态**：Accepted（策略与威胁模型已锁定；HTTP/浏览器 enforcement 仍需实现）
+- **状态**：Accepted（策略、威胁模型与默认 enforcement 已实现；真实 LAN qualification 仍需 opt-in）
 - **日期**：2026-08-02
 - **关联**：Wayfinder #18、ADR-0006、ADR-0011、ADR-0015、ADR-0021、ADR-0024、`CONTEXT.md`
 
@@ -89,11 +89,12 @@ AIRP 是本地应用，但它同时处理不可信的角色卡内容、模型输
 
 ## Current implementation status
 
-已有证据：严格 MVU 入口、静态 root confinement、Project/Worldbook ID 校验、
-`LocalSecretStore` 的 0700/0600 原子写入和 secret redaction。尚未实现：wildcard 在严格
-validator 中的显式放行、默认 loopback host、Origin allowlist、capability auth、动态
-资源认证、HTML/script sanitizer，以及从主页面移除卡片脚本重执行。它们是后续实现 ticket，
-本 ADR 不把策略写成已完成代码。
+已有证据：严格 MVU 入口和 wildcard schema、静态 root confinement、Project/Worldbook ID
+校验、`LocalSecretStore` 的 0700/0600 原子写入和 secret redaction；默认 CLI 已绑定 loopback，
+动态 HTTP 路由执行 Origin/body/capability 边界，主页面 Markdown/HTML sanitizer 会移除
+脚本与危险 URL，且不重执行卡片脚本。loopback 下没有 Origin 的本地兼容请求保留免 token
+行为；显式暴露 host 时 `/v1`、`/api`、SSE 和 DELETE 需要 per-process capability。真实 LAN
+长会话与代理组合仍属于发布 qualification，不改变本 ADR 的默认边界。
 
 ## Consequences
 

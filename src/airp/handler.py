@@ -12,7 +12,7 @@ import sys
 import urllib.request
 from pathlib import Path
 
-from airp.engine.mvu import extract_commands, execute_commands, compute_current_variables, audit_variables, validate_command, generate_schema, SchemaNode
+from airp.engine.mvu import extract_commands, execute_commands, compute_current_variables, audit_variables, validate_command, generate_schema, SchemaNode, schema_from_definition
 from airp.engine.card import (read_chat_log, write_chat_log, read_state, write_state,
                          _get_latest_variables, _get_latest_delta, _get_turn_variables)
 from airp.engine.render import (resolve_card_macros, resolve_macros,
@@ -316,45 +316,7 @@ def _load_var_schema(card_folder, fallback_data=None):
 
 def _build_schema_from_definition(schema_def):
     """Build a SchemaNode tree from Node.js runner's schema definition."""
-    fields = schema_def.get("fields", {})
-    enums = schema_def.get("enums", {})
-    constraints = schema_def.get("constraints", [])
-
-    # Group field paths into a tree structure
-    root = {"_children": {}, "_type": "object"}
-
-    for path, info in fields.items():
-        parts = path.split(".")
-        node = root
-        for i, part in enumerate(parts):
-            if part == "*":
-                # Wildcard = key can be anything
-                node["_type"] = "object"
-                continue
-            if part not in node["_children"]:
-                node["_children"][part] = {"_children": {}, "_type": "any"}
-            node = node["_children"][part]
-            if i == len(parts) - 1:
-                node["_type"] = info.get("type", "any")
-                node["_nullable"] = info.get("nullable", True)
-
-    # Apply enum constraints
-    for enum_path, enum_values in enums.items():
-        parts = enum_path.split(".")
-        node = root
-        for part in parts:
-            if part.startswith("_"):
-                # _keys / _values are metadata keys
-                break
-            if part == "*":
-                node["_type"] = "object"
-                continue
-            if part not in node["_children"]:
-                node["_children"][part] = {"_children": {}, "_type": "any"}
-            node = node["_children"][part]
-
-    # Convert to SchemaNode
-    return _dict_to_schema_node(root)
+    return schema_from_definition(schema_def)
 
 
 def _dict_to_schema_node(d):

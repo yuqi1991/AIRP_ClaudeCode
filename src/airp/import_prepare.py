@@ -201,7 +201,7 @@ def prepare_card(
 
     # Carry forward optional detail keys from import_card
     for key in ["regex_scripts", "beautify_keys", "injection_rules",
-                 "schema_fields", "merged_worldbooks"]:
+                 "schema_fields", "merged_worldbooks", "diagnostics"]:
         if key in import_result:
             summary[key] = import_result[key]
 

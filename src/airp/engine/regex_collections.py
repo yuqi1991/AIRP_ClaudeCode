@@ -18,6 +18,8 @@ import uuid
 from pathlib import Path
 from typing import Any, Callable
 
+from airp.engine.revisions import append_audit, conflict_payload, expected_revision, revision
+
 
 REGEX_COLLECTION_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 REGEX_RULE_ID_RE = REGEX_COLLECTION_ID_RE
@@ -34,11 +36,13 @@ class RegexCollectionError(ValueError):
         *,
         status: int = 400,
         references: list[dict[str, str]] | None = None,
+        details: dict[str, Any] | None = None,
     ) -> None:
         super().__init__(message)
         self.code = code
         self.status = status
         self.references = references or []
+        self.details = details or None
 
     def to_dict(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
@@ -48,6 +52,8 @@ class RegexCollectionError(ValueError):
         }
         if self.references:
             payload["references"] = copy.deepcopy(self.references)
+        if self.details is not None:
+            payload.update(copy.deepcopy(self.details))
         return payload
 
 
@@ -114,7 +120,13 @@ class RegexCollectionLibrary:
             now = int(time.time())
             collection["created_at"] = now
             collection["updated_at"] = now
+            collection["revision"] = 1
             self._atomic_write(path, collection)
+            append_audit(
+                self.library_root, object_type="regex_collection", object_id=collection_id,
+                parent_revision=0, new_revision=1, before=None, after=collection,
+                source=payload.get("_source", "api"),
+            )
             return copy.deepcopy(collection)
 
     def update_collection(self, collection_id: str, payload: Any) -> dict[str, Any]:
@@ -130,12 +142,24 @@ class RegexCollectionLibrary:
             if "id" in payload and payload["id"] != collection_id:
                 raise RegexCollectionError("regex_collection_id_immutable", "collection id cannot be changed")
             current = self._read_collection(path)
+            expected = expected_revision(payload)
+            if expected is not None and expected != current.get("revision", 0):
+                raise RegexCollectionError(
+                    "revision_conflict", f"Regex Collection {collection_id!r} revision conflict", status=409,
+                    details=conflict_payload("regex_collection", collection_id, expected, current.get("revision", 0)),
+                )
             merged = {**current, **copy.deepcopy(payload), "id": collection_id}
             collection = self._normalize_for_write(merged, collection_id=collection_id)
             collection["name"] = self._allocate_name(collection["name"], exclude_id=collection_id)
             collection["created_at"] = current.get("created_at", 0)
             collection["updated_at"] = int(time.time())
+            collection["revision"] = current.get("revision", 0) + 1
             self._atomic_write(path, collection)
+            append_audit(
+                self.library_root, object_type="regex_collection", object_id=collection_id,
+                parent_revision=current.get("revision", 0), new_revision=collection["revision"],
+                before=current, after=collection, source=payload.get("_source", "api"),
+            )
             return copy.deepcopy(collection)
 
     def copy_collection(self, collection_id: str, payload: Any = None) -> dict[str, Any]:
@@ -330,6 +354,7 @@ class RegexCollectionLibrary:
         return self._normalize_for_write(raw, collection_id=collection_id) | {
             "created_at": self._timestamp(raw.get("created_at")),
             "updated_at": self._timestamp(raw.get("updated_at")),
+            "revision": revision(raw.get("revision"), 0),
         }
 
     @staticmethod

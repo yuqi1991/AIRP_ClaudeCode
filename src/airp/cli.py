@@ -283,7 +283,9 @@ def main() -> None:
     from airp.server import SessionRuntimeServer
     server = SessionRuntimeServer(
         runtime,
-        host="0.0.0.0",
+        # Loopback is the safe default. Set AIRP_HOST explicitly when a LAN
+        # listener is intended; the server then requires its capability token.
+        host=os.environ.get("AIRP_HOST", "127.0.0.1"),
         port=PORT,
         static_root=styles,
         session_manager=session_manager,
@@ -313,10 +315,11 @@ def main() -> None:
 
     # 6. Start unified server on :8765
     server.start()
-    url = f"http://localhost:{PORT}"
+    url = f"http://{server.host}:{PORT}"
     if not _wait_server_ready(url):
         _die(f"服务器未在 {url} 就绪")
     print(json.dumps({"ok": True, "url": url,
+                      "exposed": server.host not in {"127.0.0.1", "localhost", "::1"},
                       "card": str(card_folder),
                       "session_id": session_manager.active_session_id}, ensure_ascii=False))
     try:

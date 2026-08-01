@@ -20,6 +20,7 @@ from typing import Any, Mapping
 
 from airp.engine.capabilities import provider_parameters
 from airp.engine.macros import available_macro_roots, build_context, expand_template
+from airp.engine.revisions import append_audit, conflict_payload, expected_revision, revision
 
 
 AGENT_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
@@ -74,11 +75,13 @@ class AgentDefinitionError(ValueError):
         *,
         status: int = 400,
         references: list[dict[str, str]] | None = None,
+        details: dict[str, Any] | None = None,
     ) -> None:
         super().__init__(message)
         self.code = code
         self.status = status
         self.references = references or []
+        self.details = details or None
 
     def to_dict(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
@@ -88,6 +91,8 @@ class AgentDefinitionError(ValueError):
         }
         if self.references:
             payload["references"] = copy.deepcopy(self.references)
+        if self.details is not None:
+            payload.update(copy.deepcopy(self.details))
         return payload
 
 
@@ -164,7 +169,13 @@ class AgentDefinitionStore:
             now = int(time.time())
             agent["created_at"] = now
             agent["updated_at"] = now
+            agent["revision"] = 1
             self._write_agent(path, agent)
+            append_audit(
+                self.library_root, object_type="agent", object_id=agent_id,
+                parent_revision=0, new_revision=1, before=None, after=agent,
+                source=payload.get("_source", "api"),
+            )
             return copy.deepcopy(agent)
 
     def update_agent(self, agent_id: str, payload: Any) -> dict[str, Any]:
@@ -183,6 +194,12 @@ class AgentDefinitionStore:
             if "id" in payload and payload["id"] != agent_id:
                 raise AgentDefinitionError("agent_id_immutable", "agent_id cannot be changed")
             current = self._read_agent(path)
+            expected = expected_revision(payload)
+            if expected is not None and expected != current.get("revision", 0):
+                raise AgentDefinitionError(
+                    "revision_conflict", f"Agent Definition {agent_id!r} revision conflict", status=409,
+                    details=conflict_payload("agent", agent_id, expected, current.get("revision", 0)),
+                )
             merged = {**current, **copy.deepcopy(payload)}
             merged["agent_id"] = agent_id
             merged["id"] = agent_id
@@ -192,7 +209,13 @@ class AgentDefinitionStore:
             agent = self._normalize(merged, agent_id=agent_id)
             agent["created_at"] = current.get("created_at", 0)
             agent["updated_at"] = int(time.time())
+            agent["revision"] = current.get("revision", 0) + 1
             self._write_agent(path, agent)
+            append_audit(
+                self.library_root, object_type="agent", object_id=agent_id,
+                parent_revision=current.get("revision", 0), new_revision=agent["revision"],
+                before=current, after=agent, source=payload.get("_source", "api"),
+            )
             return copy.deepcopy(agent)
 
     def delete_agent(self, agent_id: str) -> None:
@@ -647,7 +670,7 @@ class AgentDefinitionStore:
                 f"Agent Definition {path.stem!r} is not an object",
             )
         agent_id = raw.get("agent_id", raw.get("id", path.stem))
-        return self._normalize(raw, agent_id=agent_id)
+        return self._normalize(raw, agent_id=agent_id) | {"revision": revision(raw.get("revision"), 0)}
 
     @staticmethod
     def _read_json(path: Path) -> Any:

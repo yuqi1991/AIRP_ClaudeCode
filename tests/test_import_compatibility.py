@@ -85,3 +85,24 @@ def test_structured_worldbook_profile_is_not_guessed_as_runtime_state(tmp_path):
     assert (card / ".session_init").is_file()
     openings = json.loads((card / "memory" / "openings.json").read_text(encoding="utf-8"))
     assert "variables" not in openings[0]
+
+
+def test_import_diagnostics_do_not_invent_an_embedded_worldbook(tmp_path):
+    root = tmp_path / "root"
+    (root / "styles").mkdir(parents=True)
+    card = tmp_path / "card"
+    card.mkdir()
+    (card / "plain.json").write_text(
+        json.dumps({"spec": "chara_card_v2", "data": {"name": "Plain card"}}),
+        encoding="utf-8",
+    )
+
+    result = run_import(str(card), str(root))
+
+    diagnostics = result["diagnostics"]
+    assert diagnostics["overall"]["status"] == "success"
+    assert diagnostics["worldbook"]["embedded"] is False
+    assert diagnostics["worldbook"]["entries_seen"] == 0
+    assert any(item["code"] == "worldbook.embedded.not_present" for item in diagnostics["findings"])
+    card_data = json.loads((card / ".card_data.json").read_text(encoding="utf-8"))
+    assert "character_book" not in card_data.get("data", {})

@@ -21,7 +21,7 @@ pip install -e .
 airp-runtime /path/to/card_folder /path/to/project_root
 ```
 
-服务默认监听 `0.0.0.0:8765`。浏览器打开 `http://localhost:8765/` 进入 AIRP 游戏工作区；顶部抽屉提供全部 Studio 配置入口，旧的 `/studio` 页面仅保留为兼容入口。先配置 Provider/API key，创建或选择 Agent、Graph、Project，再在游戏抽屉中选择当前 Graph。
+服务默认只监听 `127.0.0.1:8765`。浏览器打开 `http://127.0.0.1:8765/` 进入 AIRP 游戏工作区；顶部抽屉提供全部 Studio 配置入口，旧的 `/studio` 页面仅保留为兼容入口。先配置 Provider/API key，创建或选择 Agent、Graph、Project，再在游戏抽屉中选择当前 Graph。需要局域网访问时显式设置 `AIRP_HOST`，暴露模式会要求 capability token。
 
 源码 checkout 未安装 console script 时可使用：
 
