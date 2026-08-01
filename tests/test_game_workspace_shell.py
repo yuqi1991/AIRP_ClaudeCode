@@ -165,3 +165,43 @@ def test_game_page_mounts_worldbook_definition_drawer_and_api_actions():
     assert "worldbook-drawer-panel" in styles
     assert "worldbook-drawer-body" in styles
     assert "worldbook-entry-card" in styles
+
+
+def test_model_drawer_exposes_redacted_provider_profile_contract():
+    page = (WEB_ROOT / "index.html").read_text(encoding="utf-8")
+    script = (WEB_ROOT / "studio-model-drawer.js").read_text(encoding="utf-8")
+    styles = (WEB_ROOT / "game-workspace.css").read_text(encoding="utf-8")
+
+    assert '<script src="studio-model-drawer.js"></script>' in page
+    for marker in (
+        'id="studio-model-toggle"',
+        'data-studio-drawer-view="model"',
+        'id="studio-model-view"',
+        'id="studio-provider-list"',
+        'id="studio-provider-format"',
+        'id="studio-provider-api-key"',
+        'id="studio-provider-key-status"',
+        'id="studio-provider-models"',
+        'id="studio-provider-test"',
+        'id="studio-provider-refresh"',
+        'id="studio-provider-delete-key"',
+    ):
+        assert marker in page
+    for api_path in (
+        "/v1/studio/providers",
+        "/test",
+        "/models/refresh",
+        "/secret",
+    ):
+        assert api_path in script
+    for behavior in (
+        "key_configured",
+        "profilePayload",
+        "testConnection",
+        "refreshModels",
+        "deleteKey",
+        "model_discovery",
+        "API key 不会回显",
+    ):
+        assert behavior in script or behavior in page
+    assert ".studio-provider-grid" in styles

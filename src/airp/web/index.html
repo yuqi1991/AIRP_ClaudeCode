@@ -970,6 +970,7 @@ body {
   <span class="sep">|</span>
   <nav id="workspace-navigation" data-airp-region="navigation" aria-label="工作区导航" style="display:contents;">
     <button id="studio-agents-toggle" class="workspace-studio-action" type="button" data-airp-action="studio-agents" aria-controls="studio-drawer-host" aria-expanded="false">Agents 与编排</button>
+    <button id="studio-model-toggle" class="workspace-studio-action" type="button" data-airp-action="studio-model" aria-controls="studio-drawer-host" aria-expanded="false">模型</button>
     <a id="studio-link" href="/studio" aria-label="打开 Agent Studio" data-airp-action="studio-open">Studio</a>
   </nav>
   <button id="theme-toggle" title="切换夜间模式" style="background:none;border:1px solid var(--border);border-radius:4px;cursor:pointer;font-size:0.9em;padding:1px 6px;line-height:1;color:var(--muted);">🌙</button>
@@ -992,6 +993,7 @@ body {
     <nav class="studio-drawer-tabs" aria-label="Agents 与编排视图">
       <button class="studio-drawer-tab is-active" type="button" data-studio-drawer-view="agents" aria-selected="true">Agents</button>
       <button class="studio-drawer-tab" type="button" data-studio-drawer-view="orchestration" aria-selected="false">编排</button>
+      <button class="studio-drawer-tab" type="button" data-studio-drawer-view="model" aria-selected="false">模型</button>
     </nav>
 
     <section class="studio-drawer-view is-active" id="studio-agents-view" data-studio-drawer-panel="agents" aria-label="Agents 管理">
@@ -1043,6 +1045,42 @@ body {
             <div class="studio-form-actions"><button class="studio-button studio-button-primary" type="submit">保存 Agent</button><button class="studio-button studio-button-muted" id="studio-agent-copy" type="button" disabled>复制</button><button class="studio-button studio-button-danger" id="studio-agent-delete" type="button" disabled>删除</button></div>
           </form>
         </aside>
+      </div>
+    </section>
+
+    <section class="studio-drawer-view" id="studio-model-view" data-studio-drawer-panel="model" aria-label="模型 Provider Profile 管理" hidden>
+      <div class="studio-drawer-grid studio-provider-grid">
+        <aside class="studio-drawer-column studio-object-list studio-provider-list" aria-label="Provider Profile 列表">
+          <div class="studio-column-head">
+            <div><h3>Provider Profiles</h3><span id="studio-provider-count" class="studio-muted">读取中…</span></div>
+            <button class="studio-text-button" id="studio-provider-new" type="button">新建</button>
+          </div>
+          <label class="studio-search"><span class="studio-visually-hidden">搜索 Provider Profile</span><input id="studio-provider-search" type="search" placeholder="搜索 Provider…" autocomplete="off"></label>
+          <div class="studio-object-items" id="studio-provider-list" aria-live="polite"></div>
+        </aside>
+        <section class="studio-drawer-column studio-provider-editor" aria-label="Provider Profile 编辑器">
+          <div class="studio-column-head">
+            <div><h3 id="studio-provider-title">New Provider Profile</h3><span id="studio-provider-selection" class="studio-muted">未选择 Provider</span></div>
+            <span class="studio-provider-connection" id="studio-provider-connection" aria-live="polite"></span>
+          </div>
+          <form id="studio-provider-form" class="studio-form">
+            <div class="studio-provider-form-grid">
+              <label class="studio-field" for="studio-provider-name"><span>名称</span><input id="studio-provider-name" required placeholder="Writing provider" autocomplete="off"></label>
+              <label class="studio-field" for="studio-provider-format"><span>API format</span><select id="studio-provider-format"><option value="responses">Responses</option><option value="chat_completions">Chat Completions</option></select></label>
+            </div>
+            <label class="studio-field" for="studio-provider-base-url"><span>Base URL</span><input id="studio-provider-base-url" required type="url" placeholder="https://api.example.com/v1" autocomplete="url"></label>
+            <label class="studio-check"><input id="studio-provider-enabled" type="checkbox" checked><span>Provider enabled for Agent selection</span></label>
+            <div class="studio-provider-key-field">
+              <label class="studio-field" for="studio-provider-api-key"><span>API key</span><input id="studio-provider-api-key" type="password" autocomplete="new-password" placeholder="只在更新 Key 时填写"></label>
+              <div class="studio-key-status" id="studio-provider-key-status"><span class="studio-key-indicator" aria-hidden="true"></span><span>Not configured</span></div>
+            </div>
+            <label class="studio-field" for="studio-provider-models"><span>Model catalog</span><textarea id="studio-provider-models" rows="5" placeholder="one-model-per-line"></textarea></label>
+            <p class="studio-field-hint">保存时可手动维护模型 ID；Refresh models 会从 Provider 重新发现并保存目录。API key 不会回显。</p>
+            <div class="studio-provider-catalog" id="studio-provider-catalog" aria-live="polite"></div>
+            <div class="studio-form-actions"><button class="studio-button studio-button-primary" type="submit">保存 Provider</button><button class="studio-button studio-button-muted" id="studio-provider-test" type="button" disabled>测试连接</button><button class="studio-button studio-button-muted" id="studio-provider-refresh" type="button" disabled>刷新模型</button><button class="studio-button studio-button-muted" id="studio-provider-delete-key" type="button" disabled>删除 Key</button><button class="studio-button studio-button-danger" id="studio-provider-delete" type="button" disabled>删除 Provider</button></div>
+          </form>
+          <div class="studio-provider-notice" id="studio-provider-notice" role="status" aria-live="polite"></div>
+        </section>
       </div>
     </section>
 
@@ -1221,6 +1259,7 @@ body {
 <script src="game-workspace-contract.js"></script>
 <script src="studio-agents-drawer.js"></script>
 <script src="worldbook-drawer.js"></script>
+<script src="studio-model-drawer.js"></script>
 <script>
 // ═══ Dynamic script reloader (no page flash) ═══
 console.log('[RP-Frontend] Initialized. jQuery:', typeof jQuery, 'lodash:', typeof window._, 'toastr:', typeof toastr);
