@@ -1020,9 +1020,9 @@ body {
       </div>
     </div>
     <div class="side-card" id="agent-trace-card" data-airp-slot="monitor-graph">
-      <h4>🧭 Agent Trace</h4>
-      <div class="side-note" id="agent-trace-status">等待运行时事件</div>
-      <div id="agent-trace" aria-live="polite"></div>
+      <h4>🧭 Graph Observation</h4>
+      <div class="side-note monitor-run-status" id="agent-trace-status">等待运行时事件</div>
+      <div id="agent-trace" class="monitor-topology" aria-live="polite" aria-label="Graph 节点拓扑"></div>
       <button class="side-button" id="graph-retry-button" type="button" onclick="retryGraphRun()" hidden>Retry complete Graph</button>
     </div>
     <div class="side-card">
@@ -1075,14 +1075,30 @@ body {
 <div id="toast">✓ 操作已发送</div>
 
 <div id="node-detail-modal" data-airp-region="node-debug-overlay" hidden role="dialog" aria-modal="true" aria-labelledby="node-detail-title" onclick="closeNodeDetail(event)">
-  <div class="node-detail-panel" onclick="event.stopPropagation()">
+  <div class="node-detail-panel node-debug-panel" onclick="event.stopPropagation()">
     <div class="node-detail-head">
       <h3 id="node-detail-title">Node Run</h3>
       <button class="node-detail-close" id="node-debug-replay-button" type="button" title="Runs a new billable model call without changing the story" onclick="runDebugReplay()">Debug Replay</button>
       <button class="node-detail-close" type="button" title="关闭详情" aria-label="关闭详情" onclick="closeNodeDetail()">×</button>
     </div>
-    <div class="side-note">Debug Replay makes a new model call and never commits a story turn.</div>
-    <pre id="node-detail-body" data-airp-slot="debug-body"></pre>
+    <div class="side-note">Live details stay scoped to this Node Run. Debug Replay makes a new model call and never commits a story turn.</div>
+    <div id="node-debug-summary" class="node-debug-summary" aria-live="polite"></div>
+    <section class="node-debug-section" aria-labelledby="node-debug-trace-title">
+      <h4 id="node-debug-trace-title">Live trace</h4>
+      <pre id="node-detail-body" data-airp-slot="debug-body"></pre>
+    </section>
+    <section class="node-debug-section" aria-labelledby="node-debug-model-title">
+      <h4 id="node-debug-model-title">Model calls</h4>
+      <div id="node-debug-model-calls" class="node-debug-list"></div>
+    </section>
+    <section class="node-debug-section" aria-labelledby="node-debug-tool-title">
+      <h4 id="node-debug-tool-title">Tool calls</h4>
+      <div id="node-debug-tool-calls" class="node-debug-list"></div>
+    </section>
+    <details class="node-debug-section">
+      <summary>Input and artifact</summary>
+      <pre id="node-debug-input" class="node-debug-json"></pre>
+    </details>
   </div>
 </div>
 
@@ -1569,6 +1585,13 @@ let streamingPreview = { taskId: null, text: "" };
 let agentTrace = { nodes: {}, events: [], graphMode: false };
 let graphRunState = { graphRunId: null, status: null };
 let nodeDetailState = { nodeRunId: null, data: null, debugReplay: null };
+let nodeDetailRefreshTimer = null;
+const NODE_STATUS_LABELS = Object.freeze({
+  idle: '待运行',
+  running: '运行中',
+  succeeded: '已完成',
+  failed: '失败'
+});
 
 // The legacy page still owns these values.  The workspace contract mirrors
 // them so future Studio/Monitor modules can subscribe without taking over the
@@ -1637,25 +1660,96 @@ function renderAgentTrace() {
   const entries = Object.keys(agentTrace.nodes).map(function(key) { return agentTrace.nodes[key]; });
   entries.sort(function(a, b) { return (a.order || 0) - (b.order || 0) || a.sequence - b.sequence; });
   target.innerHTML = "";
-  entries.slice(0, 20).forEach(function(item) {
-    const row = document.createElement("button");
-    row.type = "button";
-    row.className = "trace-node " + item.state;
-    row.title = "打开节点详情";
-    row.onclick = function() { openNodeDetail(item.nodeRunId, item); };
-    const title = document.createElement("div");
-    title.className = "trace-title";
-    title.textContent = item.label;
-    const meta = document.createElement("div");
-    meta.className = "trace-meta";
-    meta.textContent = item.meta + (item.streamedOutput ? " · " + item.streamedOutput.slice(-80) : "");
-    row.appendChild(title); row.appendChild(meta); target.appendChild(row);
-  });
-  status.textContent = entries.length ? "最近 " + entries.length + " 个运行节点" : "等待运行时事件";
+  target.setAttribute("data-graph-status", graphRunState.status || "idle");
+  if (!entries.length) {
+    const empty = document.createElement("div");
+    empty.className = "monitor-empty";
+    empty.textContent = "等待 Graph Run";
+    target.appendChild(empty);
+  } else {
+    const list = document.createElement("ol");
+    list.className = "monitor-topology-list";
+    entries.forEach(function(item, index) {
+      const state = NODE_STATUS_LABELS[item.state] ? item.state : "idle";
+      const node = document.createElement("li");
+      node.className = "monitor-node monitor-node-" + state + (state === "running" ? " is-active" : "");
+      node.dataset.nodeId = item.nodeId || "";
+      if (item.nodeRunId) node.dataset.nodeRunId = item.nodeRunId;
+
+      const row = document.createElement("button");
+      row.type = "button";
+      row.className = "trace-node " + state;
+      row.title = "打开节点调试详情";
+      row.setAttribute("aria-label", (item.label || item.nodeId || "Node") + " · " + NODE_STATUS_LABELS[state]);
+      row.setAttribute("aria-current", state === "running" ? "step" : "false");
+      row.onclick = function() { openNodeDetail(item.nodeRunId, item); };
+
+      const head = document.createElement("div");
+      head.className = "monitor-node-head";
+      const order = document.createElement("span");
+      order.className = "monitor-node-index";
+      order.textContent = String(index + 1).padStart(2, "0");
+      const title = document.createElement("span");
+      title.className = "trace-title";
+      title.textContent = item.label || item.nodeId || "Node";
+      const badge = document.createElement("span");
+      badge.className = "monitor-node-status";
+      badge.textContent = NODE_STATUS_LABELS[state];
+      head.appendChild(order); head.appendChild(title); head.appendChild(badge);
+
+      const meta = document.createElement("div");
+      meta.className = "trace-meta";
+      meta.textContent = item.meta || "";
+      row.appendChild(head); row.appendChild(meta);
+      const stream = item.streamedOutput || "";
+      if (stream) {
+        const streamPreview = document.createElement("div");
+        streamPreview.className = "monitor-node-stream";
+        streamPreview.textContent = stream.slice(-120);
+        row.appendChild(streamPreview);
+      }
+      node.appendChild(row);
+      list.appendChild(node);
+    });
+    target.appendChild(list);
+  }
+  const active = entries.find(function(item) { return item.state === "running"; });
+  const runStatus = graphRunState.status || (entries.length ? "idle" : "waiting");
+  status.innerHTML = "";
+  const statusLabel = document.createElement("span");
+  statusLabel.className = "monitor-run-status-value";
+  statusLabel.dataset.status = runStatus;
+  statusLabel.textContent = graphRunState.graphRunId
+    ? "Graph " + (graphRunState.graphId || "") + " · " + runStatus
+    : "等待运行时事件";
+  status.appendChild(statusLabel);
+  if (active) {
+    const activeLabel = document.createElement("span");
+    activeLabel.className = "side-note";
+    activeLabel.textContent = "· 当前: " + (active.label || active.nodeId);
+    status.appendChild(activeLabel);
+  }
   const retry = document.getElementById("graph-retry-button");
   if (retry) retry.hidden = !(graphRunState.graphRunId && graphRunState.status === "failed");
   workspacePatchState('monitor', { trace: agentTrace, graphRun: graphRunState });
   workspaceEmit('monitor:trace-rendered', { trace: agentTrace, graphRun: graphRunState });
+}
+
+function scheduleNodeDetailRefresh(nodeRunId) {
+  if (!nodeRunId || nodeDetailState.nodeRunId !== nodeRunId) return;
+  if (nodeDetailRefreshTimer) return;
+  nodeDetailRefreshTimer = setTimeout(async function() {
+    nodeDetailRefreshTimer = null;
+    try {
+      const response = await fetch(apiUrl('/v1/studio/node-runs/' + encodeURIComponent(nodeRunId)), { cache: 'no-store' });
+      const data = await response.json();
+      if (!response.ok || !data.node_run || nodeDetailState.nodeRunId !== nodeRunId) return;
+      nodeDetailState.data = data.node_run;
+      renderNodeDetail(data.node_run);
+    } catch (error) {
+      // The last retained payload remains visible while the stream reconnects.
+    }
+  }, 80);
 }
 
 function recordAgentTrace(type, payload, sequence) {
@@ -1664,7 +1758,11 @@ function recordAgentTrace(type, payload, sequence) {
   if (type === "graph.run.started") {
     agentTrace.graphMode = true;
     agentTrace.nodes = {};
-    graphRunState = { graphRunId: payload.graph_run_id || payload.run_id || null, status: "running" };
+    graphRunState = {
+      graphRunId: payload.graph_run_id || payload.run_id || null,
+      graphId: payload.graph_id || null,
+      status: "running"
+    };
     (payload.nodes || []).forEach(function(nodeId, index) {
       const nodeKey = taskId + ":node:" + nodeId;
       agentTrace.nodes[nodeKey] = {
@@ -1675,7 +1773,11 @@ function recordAgentTrace(type, payload, sequence) {
     renderAgentTrace();
     return;
   } else if (type === "graph.run.finished") {
-    graphRunState = { graphRunId: payload.graph_run_id || payload.run_id || graphRunState.graphRunId, status: payload.status || payload.state || null };
+    graphRunState = {
+      graphRunId: payload.graph_run_id || payload.run_id || graphRunState.graphRunId,
+      graphId: payload.graph_id || graphRunState.graphId || null,
+      status: payload.status || payload.state || null
+    };
     renderAgentTrace();
     return;
   } else if (type === "graph.node.started" || type === "graph.node.finished" || type === "graph.node.delta") {
@@ -1693,9 +1795,12 @@ function recordAgentTrace(type, payload, sequence) {
       output: payload.final_output || payload.artifact || payload.streamed_output || payload.delta || (agentTrace.nodes[key] || {}).output || "",
       streamedOutput: payload.streamed_output || payload.delta || (agentTrace.nodes[key] || {}).streamedOutput || ""
     });
-    if (nodeDetailState.nodeRunId && nodeDetailState.nodeRunId === payload.node_run_id && type === "graph.node.delta") {
-      nodeDetailState.data = Object.assign({}, nodeDetailState.data || {}, { streamed_output: payload.streamed_output || "" });
+    if (nodeDetailState.nodeRunId && nodeDetailState.nodeRunId === payload.node_run_id) {
+      nodeDetailState.data = Object.assign({}, nodeDetailState.data || {}, {
+        streamed_output: payload.streamed_output || (nodeDetailState.data || {}).streamed_output || ""
+      });
       renderNodeDetail(nodeDetailState.data);
+      scheduleNodeDetailRefresh(payload.node_run_id);
     }
     renderAgentTrace();
     return;
@@ -1706,7 +1811,10 @@ function recordAgentTrace(type, payload, sequence) {
     meta = state === "succeeded" ? "节点成功" : state === "failed" ? "节点失败" : "节点运行中";
     if (agentTrace.graphMode) return;
   } else if (type.indexOf("model_call.") === 0) {
-    if (agentTrace.graphMode) return;
+    if (agentTrace.graphMode) {
+      scheduleNodeDetailRefresh(payload.node_run_id);
+      return;
+    }
     if (payload.agent_node_id) {
       key = taskId + ":node:" + payload.agent_node_id;
       const previous = agentTrace.nodes[key] || {};
@@ -1735,7 +1843,10 @@ function recordAgentTrace(type, payload, sequence) {
     label = "模型调用 #" + (payload.call_ordinal || "?") + (payload.model ? " · " + payload.model : "");
     meta = type.endsWith("finished") ? "完成 · " + (payload.latency_ms || 0) + " ms · " + ((payload.usage || {}).total_tokens || 0) + " tokens" : "请求中";
   } else {
-    if (agentTrace.graphMode) return;
+    if (agentTrace.graphMode) {
+      scheduleNodeDetailRefresh(payload.node_run_id);
+      return;
+    }
     key = taskId + ":tool:" + (payload.tool || "unknown") + ":" + (payload.args_hash || sequence);
     state = type.endsWith("finished") ? (payload.ok === false ? "failed" : "succeeded") : "running";
     label = "工具 · " + (payload.tool || "unknown");
@@ -1750,19 +1861,126 @@ function recordAgentTrace(type, payload, sequence) {
     error: payload.error || (agentTrace.nodes[key] || {}).error || null,
     streamedOutput: (agentTrace.nodes[key] || {}).streamedOutput || ""
   });
+  if (nodeDetailState.nodeRunId && nodeDetailState.nodeRunId === payload.node_run_id) {
+    scheduleNodeDetailRefresh(payload.node_run_id);
+  }
   renderAgentTrace();
+}
+
+function debugValue(value, fallback) {
+  if (value === null || value === undefined || value === '') return fallback || '—';
+  if (typeof value === 'string') return value;
+  try { return JSON.stringify(value, null, 2); } catch (e) { return String(value); }
+}
+
+function renderDebugCallList(target, calls, kind) {
+  if (!target) return;
+  target.innerHTML = '';
+  const list = Array.isArray(calls) ? calls : [];
+  if (!list.length) {
+    const empty = document.createElement('div');
+    empty.className = 'node-debug-muted';
+    empty.textContent = kind === 'tool' ? 'No tool calls recorded.' : 'No model calls recorded.';
+    target.appendChild(empty);
+    return;
+  }
+  list.forEach(function(call, index) {
+    const item = document.createElement('div');
+    const state = call.status || (call.error ? 'failed' : 'succeeded');
+    item.className = 'node-debug-call ' + state;
+    const title = document.createElement('strong');
+    if (kind === 'tool') {
+      title.textContent = (call.name || call.tool || 'tool') + ' · ' + (call.status || 'unknown');
+    } else {
+      const request = call.request || {};
+      const usage = call.usage || {};
+      title.textContent = 'Call #' + (call.call_ordinal || index + 1) + (request.model ? ' · ' + request.model : '') + ' · ' + (call.status || 'unknown');
+      if (usage.total_tokens) title.textContent += ' · ' + usage.total_tokens + ' tokens';
+    }
+    item.appendChild(title);
+    const detail = document.createElement('pre');
+    detail.className = 'node-debug-json';
+    const payload = kind === 'tool'
+      ? { args: call.args || {}, result: call.result, error: call.error }
+      : { request: call.request || {}, output: call.final_output || call.streamed_output || '', stop_reason: call.stop_reason, usage: call.usage };
+    detail.textContent = debugValue(payload, '—');
+    item.appendChild(detail);
+    target.appendChild(item);
+  });
 }
 
 function renderNodeDetail(detail) {
   const body = document.getElementById('node-detail-body');
   const title = document.getElementById('node-detail-title');
   if (!body || !detail) return;
-  if (title) title.textContent = (detail.label || detail.node_id || 'Node Run') + ' · ' + (detail.state || 'idle');
+  const state = NODE_STATUS_LABELS[detail.state] ? detail.state : (detail.status || 'idle');
+  const modelCalls = Array.isArray(detail.model_calls) ? detail.model_calls : [];
+  const toolCalls = Array.isArray(detail.tool_calls) ? detail.tool_calls : [];
+  if (title) title.textContent = (detail.label || detail.node_id || 'Node Run') + ' · ' + (NODE_STATUS_LABELS[state] || state);
   const replayButton = document.getElementById('node-debug-replay-button');
   if (replayButton) replayButton.hidden = !nodeDetailState.nodeRunId;
+
+  const summary = document.getElementById('node-debug-summary');
+  if (summary) {
+    summary.innerHTML = '';
+    [
+      ['状态', NODE_STATUS_LABELS[state] || state],
+      ['Agent', detail.agent_id || detail.role || detail.node_id || '—'],
+      ['Model calls', String(modelCalls.length)],
+      ['Tool calls', String(toolCalls.length)],
+      ['Node Run', detail.node_run_id || 'live trace'],
+      ['Updated', detail.finished_at ? new Date(detail.finished_at * 1000).toLocaleTimeString() : 'live']
+    ].forEach(function(pair) {
+      const stat = document.createElement('div');
+      stat.className = 'node-debug-stat';
+      const label = document.createElement('span');
+      label.className = 'node-debug-stat-label';
+      label.textContent = pair[0];
+      const value = document.createElement('span');
+      value.className = 'node-debug-stat-value';
+      value.title = pair[1];
+      value.textContent = pair[1];
+      stat.appendChild(label); stat.appendChild(value); summary.appendChild(stat);
+    });
+  }
+
+  const stream = detail.streamed_output || detail.final_output || detail.output || '';
+  if (detail.node_run_id) {
+    body.textContent = debugValue({
+      node_run_id: detail.node_run_id,
+      state: detail.state || detail.status || 'idle',
+      streamed_output: detail.streamed_output || '',
+      final_output: detail.final_output || '',
+      effective_config: detail.effective_config || {},
+      prompt_provenance: detail.prompt_provenance || [],
+      tool_snapshot: detail.tool_snapshot || {},
+      error: detail.error || null,
+      debug_replay: nodeDetailState.debugReplay || null
+    }, stream || 'Waiting for live trace…');
+  } else {
+    body.textContent = debugValue({
+      label: detail.label || detail.node_id || 'Node Run',
+      state: detail.state || detail.status || 'idle',
+      prompt: detail.prompt || null,
+      output: stream,
+      manifests: detail.manifests || [],
+      model_calls: modelCalls
+    }, 'Waiting for live trace…');
+  }
+  renderDebugCallList(document.getElementById('node-debug-model-calls'), modelCalls, 'model');
+  renderDebugCallList(document.getElementById('node-debug-tool-calls'), toolCalls, 'tool');
+  const input = document.getElementById('node-debug-input');
+  if (input) {
+    input.textContent = debugValue({
+      input: detail.input_artifact || detail.input || null,
+      artifact: detail.artifact || null,
+      prompt: detail.prompt || null,
+      error: detail.error || null,
+      debug_replay: nodeDetailState.debugReplay || null
+    }, '—');
+  }
   const view = Object.assign({}, detail);
   if (nodeDetailState.debugReplay) view.debug_replay = nodeDetailState.debugReplay;
-  body.textContent = JSON.stringify(view, null, 2);
   workspacePatchState('nodeDebug', { open: true, nodeRunId: nodeDetailState.nodeRunId, data: view });
   workspaceEmit('node-debug:rendered', view);
 }
@@ -1839,6 +2057,10 @@ function closeNodeDetail(event) {
   if (event && event.target && event.target.id !== 'node-detail-modal') return;
   const modal = document.getElementById('node-detail-modal');
   if (modal) modal.hidden = true;
+  if (nodeDetailRefreshTimer) {
+    clearTimeout(nodeDetailRefreshTimer);
+    nodeDetailRefreshTimer = null;
+  }
   nodeDetailState = { nodeRunId: null, data: null, debugReplay: null };
   workspaceSetState('nodeDebug', { open: false, nodeRunId: null, data: null });
   workspaceEmit('node-debug:closed');
@@ -2155,14 +2377,19 @@ function hydrateGraphRun(graphRuns) {
   const run = graphRuns && (graphRuns.current || graphRuns.most_recent);
   if (!run || !Array.isArray(run.nodes)) return;
   agentTrace.graphMode = true;
-  graphRunState = { graphRunId: run.graph_run_id || run.run_id || null, status: run.status || null };
+  const planGraph = run.plan && run.plan.graph ? run.plan.graph : {};
+  graphRunState = {
+    graphRunId: run.graph_run_id || run.run_id || null,
+    graphId: run.graph_id || planGraph.graph_id || null,
+    status: run.status || null
+  };
   agentTrace.nodes = {};
   run.nodes.forEach(function(node, index) {
     let state = node.state || 'idle';
     if (!["idle", "running", "succeeded", "failed"].includes(state)) state = "idle";
     const key = (run.task_id || 'runtime') + ':node:' + (node.node_id || index);
     agentTrace.nodes[key] = {
-      sequence: 0, order: node.order || index, taskId: run.task_id || 'runtime', nodeRunId: node.node_run_id, nodeId: node.node_id,
+      sequence: 0, order: Number.isFinite(node.order) ? node.order : index, taskId: run.task_id || 'runtime', nodeRunId: node.node_run_id, nodeId: node.node_id,
       state: state, label: node.label || node.node_id || 'node',
       meta: state === 'running' ? '节点运行中' : state === 'succeeded' ? '节点成功' : state === 'failed' ? '节点失败' : '节点未运行',
       input: node.input_artifact || node.input || null,

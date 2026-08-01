@@ -35,3 +35,265 @@
 [data-airp-region="navigation"] {
   display: contents;
 }
+
+/* Monitor graph --------------------------------------------------------- */
+#agent-trace.monitor-topology {
+  position: relative;
+  display: grid;
+  gap: 0;
+  max-height: min(52vh, 520px);
+  overflow-y: auto;
+  padding: 4px 2px 6px 4px;
+  counter-reset: monitor-node;
+}
+
+#agent-trace.monitor-topology::before {
+  content: "";
+  position: absolute;
+  top: 18px;
+  bottom: 18px;
+  left: 14px;
+  width: 1px;
+  background: var(--airp-color-border);
+}
+
+.monitor-topology-list {
+  display: grid;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.monitor-node {
+  position: relative;
+  z-index: 1;
+  min-width: 0;
+  padding: 3px 0 3px 25px;
+}
+
+.monitor-node::before {
+  content: "";
+  position: absolute;
+  z-index: 2;
+  top: 15px;
+  left: 8px;
+  width: 11px;
+  height: 11px;
+  border: 2px solid var(--airp-color-border);
+  border-radius: 50%;
+  background: var(--airp-color-surface);
+  box-sizing: border-box;
+}
+
+.monitor-node.is-active::before {
+  border-color: var(--airp-color-accent);
+  background: var(--airp-color-accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--airp-color-accent) 18%, transparent);
+}
+
+.monitor-node-succeeded::before { border-color: var(--airp-color-accent-muted); }
+.monitor-node-failed::before { border-color: #b0624a; background: #b0624a; }
+
+.monitor-node .trace-node {
+  position: relative;
+  display: block;
+  width: 100%;
+  min-height: 48px;
+  margin: 0;
+  padding: 8px 9px;
+  border: 1px solid var(--airp-color-border);
+  border-left: 3px solid var(--airp-color-border);
+  border-radius: var(--airp-radius-control);
+  background: var(--airp-color-bg);
+  text-align: left;
+  transition: border-color var(--airp-motion-fast) ease, background var(--airp-motion-fast) ease, box-shadow var(--airp-motion-fast) ease;
+}
+
+.monitor-node .trace-node:hover,
+.monitor-node .trace-node:focus-visible {
+  border-color: var(--airp-color-accent);
+  outline: none;
+}
+
+.monitor-node.is-active .trace-node {
+  border-color: var(--airp-color-accent);
+  border-left-color: var(--airp-color-accent);
+  background: color-mix(in srgb, var(--airp-color-accent) 8%, var(--airp-color-bg));
+  box-shadow: inset 3px 0 0 var(--airp-color-accent);
+}
+
+.monitor-node-succeeded .trace-node { border-left-color: var(--airp-color-accent-muted); }
+.monitor-node-failed .trace-node { border-left-color: #b0624a; background: rgba(176, 98, 74, .08); }
+.monitor-node-idle .trace-node { opacity: .72; }
+
+.monitor-node-head {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 7px;
+}
+
+.monitor-node-index {
+  flex: 0 0 auto;
+  color: var(--airp-color-muted);
+  font: 600 .68rem/1 "SFMono-Regular", Consolas, monospace;
+}
+
+.monitor-node .trace-title {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--airp-color-text);
+  font-size: .79rem;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.monitor-node-status {
+  flex: 0 0 auto;
+  margin-left: auto;
+  padding: 2px 5px;
+  border: 1px solid var(--airp-color-border);
+  border-radius: 3px;
+  color: var(--airp-color-muted);
+  font-size: .62rem;
+  line-height: 1;
+  text-transform: uppercase;
+}
+
+.monitor-node-running .monitor-node-status { border-color: var(--airp-color-accent); color: var(--airp-color-accent); }
+.monitor-node-succeeded .monitor-node-status { border-color: var(--airp-color-accent-muted); color: var(--airp-color-accent-muted); }
+.monitor-node-failed .monitor-node-status { border-color: #b0624a; color: #b0624a; }
+
+.monitor-node .trace-meta {
+  margin: 5px 0 0 21px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.monitor-node-stream {
+  margin: 5px 0 0 21px;
+  overflow: hidden;
+  color: var(--airp-color-muted);
+  font-size: .68rem;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.monitor-empty {
+  position: relative;
+  z-index: 1;
+  padding: 14px 8px 14px 25px;
+  color: var(--airp-color-muted);
+  font-size: .74rem;
+}
+
+#agent-trace-status.monitor-run-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 20px;
+}
+
+.monitor-run-status-value {
+  color: var(--airp-color-text);
+  font-weight: 650;
+}
+
+.monitor-run-status-value[data-status="running"] { color: var(--airp-color-accent); }
+.monitor-run-status-value[data-status="succeeded"] { color: var(--airp-color-accent-muted); }
+.monitor-run-status-value[data-status="failed"] { color: #b0624a; }
+
+/* The overlay is one focused debug surface. Its content is filled from the
+ * retained Node Run payload so prompt, stream, model and tools stay together. */
+.node-debug-panel {
+  width: min(760px, 96vw);
+  max-height: 90vh;
+  overflow: auto;
+}
+
+.node-debug-summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.node-debug-stat {
+  min-width: 0;
+  padding: 7px 8px;
+  border: 1px solid var(--airp-color-border);
+  background: var(--airp-color-bg);
+}
+
+.node-debug-stat-label {
+  display: block;
+  color: var(--airp-color-muted);
+  font-size: .62rem;
+  text-transform: uppercase;
+}
+
+.node-debug-stat-value {
+  display: block;
+  margin-top: 3px;
+  overflow: hidden;
+  color: var(--airp-color-text);
+  font-size: .76rem;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.node-debug-section {
+  margin-top: 12px;
+  border-top: 1px solid var(--airp-color-border);
+  padding-top: 9px;
+}
+
+.node-debug-section h4 {
+  margin-bottom: 6px;
+  color: var(--airp-color-accent);
+  font-size: .68rem;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+
+.node-debug-section pre,
+.node-debug-json {
+  max-height: 220px;
+  overflow: auto;
+  margin: 0;
+  padding: 8px;
+  border: 1px solid var(--airp-color-border);
+  background: var(--airp-color-bg);
+  color: var(--airp-color-text);
+  font: .7rem/1.45 "SFMono-Regular", Consolas, monospace;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.node-debug-list {
+  display: grid;
+  gap: 5px;
+}
+
+.node-debug-call {
+  padding: 7px 8px;
+  border-left: 2px solid var(--airp-color-border);
+  background: var(--airp-color-bg);
+  color: var(--airp-color-text);
+  font-size: .71rem;
+}
+
+.node-debug-call.running { border-left-color: var(--airp-color-accent); }
+.node-debug-call.failed { border-left-color: #b0624a; }
+.node-debug-call strong { font-weight: 650; }
+.node-debug-muted { color: var(--airp-color-muted); }
+
+@media (max-width: 760px) {
+  #agent-trace.monitor-topology { max-height: 46vh; }
+  .node-debug-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}

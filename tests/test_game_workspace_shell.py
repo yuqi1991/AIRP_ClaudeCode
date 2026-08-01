@@ -59,3 +59,36 @@ def test_workspace_contract_exports_state_and_event_boundaries():
         "node-debug:opened",
     ):
         assert event_name in page
+
+
+def test_monitor_has_vertical_graph_observation_and_status_contract():
+    page = (WEB_ROOT / "index.html").read_text(encoding="utf-8")
+    tokens = (WEB_ROOT / "game-workspace.css").read_text(encoding="utf-8")
+
+    assert 'data-airp-slot="monitor-session"' in page
+    assert 'data-airp-slot="monitor-runtime"' in page
+    assert 'class="monitor-topology"' in page
+    assert "monitor-topology-list" in page
+    assert "monitor-node-running" in tokens
+    assert "monitor-node-succeeded" in tokens
+    assert "monitor-node-failed" in tokens
+    assert "is-active" in page
+    assert "NODE_STATUS_LABELS" in page
+    assert "graph.node.started" in page
+    assert "graph.node.finished" in page
+    assert "Graph Observation" in page
+
+
+def test_monitor_debug_overlay_keeps_live_trace_model_and_tool_sections():
+    page = (WEB_ROOT / "index.html").read_text(encoding="utf-8")
+
+    assert 'data-airp-region="node-debug-overlay"' in page
+    assert 'data-airp-slot="debug-body"' in page
+    assert 'id="node-debug-model-calls"' in page
+    assert 'id="node-debug-tool-calls"' in page
+    assert 'id="node-debug-input"' in page
+    assert "/v1/studio/node-runs/" in page
+    assert "/v1/session/agent-traces" in page
+    assert "scheduleNodeDetailRefresh" in page
+    assert "tool_calls" in page
+    assert "model_calls" in page
