@@ -23,6 +23,18 @@
 
 Pi 是已否决的历史 harness 候选。ADR-0019 已确认 AIRP 自有 Graph Runtime + OpenAI-compatible Provider Adapter，新的 runtime 设计不得重新引入 Pi 作为执行依赖。
 
+### 已锁定的最小回合边界
+
+ADR-0021 将上述目标收敛为一条可观察的 Session Turn Runtime Contract：Runtime/Harness
+独占 `submit → Task → Context Manifest → Graph/Provider/Tool → Turn Draft → commit →
+projection/events` 的生命周期。浏览器只通过 Command API 和可重放事件交互；Provider、Tool
+和模型没有 authoritative write 权限；同一 Session 不允许 canonical Runtime 失败后静默
+回到 Claude Code/file-loop。
+
+这一契约已经由当前 Python Runtime 的 durable Task、generation lease、revision/commit、
+Trace、SSE 和 projection 代码承载，但真实 Provider 的跨协议/长会话可靠性仍不是本节的
+完成证明，继续由 Wayfinder #17 验收。任意 DAG 和多 Agent 世界模拟保持未决。
+
 ## 未来一等 agent 职责
 
 | Agent | 输入 | 输出/权限 | 责任 |

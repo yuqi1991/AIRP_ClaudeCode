@@ -19,6 +19,10 @@
 - 独立 token、日志和可观测性；
 - 消除对追加式 Claude transcript 的功能依赖。
 
+**已锁定的基础契约**：ADR-0021 规定 canonical Runtime/Harness 独占从 `submit` 到唯一
+commit、projection 和 durable events 的回合生命周期。#17 继续验证真实 Provider、断线和
+长会话恢复；这不等同于任意 DAG 或多 Agent 世界模拟已经决定。
+
 **历史研究**：[`Pi Agent Execution Layer 可行性研究`](../research/pi-runtime-evaluation.md)。该候选已由 ADR-0019 否决，当前执行层是 AIRP 自有 Graph Runtime + OpenAI-compatible Provider Adapter。
 
 **已完成决策**：Graph/Provider/Tool/Worldbook 边界已在 AIRP 内部验证；真实 DeepSeek 路径通过 OpenAI-compatible adapter 接入，Pi sidecar、Pi package 和第二套 agent loop 已删除。

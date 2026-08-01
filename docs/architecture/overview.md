@@ -53,11 +53,16 @@ Engine 不解析用户正文标签，也不内置文风、人称、NSFW、字数
 
 ## 回合流程
 
-1. submit 创建带幂等键的持久 task。
-2. runtime 冻结 card、Project、Graph 和绑定世界书，编译 Context Manifest。
+1. submit 创建带幂等键的持久 Task；重复 key 只观察同一个 Task。
+2. Runtime 冻结 card、Project、Graph 和绑定世界书，编译带来源和预算的 Context Manifest。
 3. GraphRuntime 顺序执行 Agent 节点；ProviderNodeRunner 发布 model/tool/node lifecycle events，并流式发布 `narrative.preview.delta`。
-4. 任一节点失败即整图失败，错误节点写入 Trace；用户点击整图重跑时创建新 attempt。
-5. 成功结果原子写入 commit/revision/state，并重建 `chat_log.json`、`state.js`、`content.js` 投影。
+4. 任一节点失败即整图失败，错误节点写入 Trace；用户点击整图重跑时创建新 attempt，不能静默切回旧 file-loop。
+5. Harness 解析并校验 Turn Draft，在 optimistic revision 下最多写入一个 commit；模型和 Provider 不拥有提交权。
+6. 成功结果先完成 commit，再幂等重建 `chat_log.json`、`state.js`、`content.js` 投影；preview 在此之前不是已提交回合。
+
+这条边界由 [ADR-0021](../adr/0021-independent-runtime-turn-contract.md) 锁定。取消通过
+AbortSignal 传播，事件从 durable sequence 提供 SSE 重连；重启恢复依赖 Task/lease/commit/
+projection 状态，不依赖进程内队列或信号文件。
 
 ## 可调试性
 

@@ -17,6 +17,7 @@
 | 世界书按需 capability | `src/airp/engine/worldbook_library.py`、`src/airp/host/rp/tools.py`、`tests/test_studio_worldbooks.py` | Project 可绑定多本 Worldbook，Agent 通过 exact-title tool 读取正文 |
 | Regex Collection | `src/airp/engine/regex_collections.py`、`src/airp/engine/regex_transformer.py`、`tests/test_regex_collections.py` | 每个 Agent 可绑定集合；按顺序应用 input/output/both |
 | Agent Trace/SSE | `src/airp/server.py`、`src/airp/host/rp/session_runtime.py`、`tests/test_agent_studio_golden_path.py` | 保留当前/最近 Graph Run；节点输入输出和模型/工具事件可审计 |
+| Session Turn Runtime 最小回合契约 | `docs/adr/0021-independent-runtime-turn-contract.md`、`src/airp/host/rp/session_runtime.py`、`src/airp/host/rp/commands.py` | canonical Runtime 独占 Task、Context、唯一 commit、projection 和 durable events；真实 Provider/长会话故障边界仍在 #17 |
 | 角色卡脚本资源 | `src/airp/resources/run_card_scripts.cjs`、`src/airp/resources/mvu_shared.cjs` | 资源随 Python 包分发；不依赖 `skills/` |
 
 ## Experimental

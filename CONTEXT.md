@@ -31,6 +31,7 @@ AIRP 是面向玩家的本地独立角色扮演引擎：玩家可导入和游玩
 | 引擎模块采用 deep module 形态 | 已实现 | ADR-0003 |
 | 当前 Claude Code runtime 只是原型，不是长期产品 runtime | 已确认 | ADR-0001 |
 | 下一代首先建设可控 harness/runtime | 已确认 | `docs/status/roadmap.md` |
+| 独立 Runtime/Harness 拥有从 submit 到唯一 commit、投影和事件的完整回合生命周期 | 已确认 | ADR-0021；Provider/长会话可靠性仍待验收 |
 | 多 agent 一等职责为叙事导演、世界模拟、文风润色和角色演化 | 已确认 | `docs/architecture/future-runtime.md` |
 | agent 可在角色资料明显不足时自主检索外部资料，并记录来源/摘要 | 已确认 | `docs/product/principles.md` |
 | 代码变更必须同步更新相应 wiki、状态表和 ADR | 已确认 | `docs/development/agent-guide.md` |
