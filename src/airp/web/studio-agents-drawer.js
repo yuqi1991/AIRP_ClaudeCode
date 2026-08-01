@@ -39,6 +39,29 @@
     if (api && typeof api.patchState === 'function') api.patchState('studioDrawer', values);
   }
 
+  function setNavigation(view) {
+    var api = contract();
+    if (api && typeof api.setNavigationState === 'function') api.setNavigationState(view);
+  }
+
+  function openHost() {
+    var api = contract();
+    if (api && api.drawerMotion) api.drawerMotion.open(host);
+    else {
+      host.hidden = false;
+      host.setAttribute('aria-hidden', 'false');
+    }
+  }
+
+  function closeHost() {
+    var api = contract();
+    if (api && api.drawerMotion) api.drawerMotion.close(host);
+    else {
+      host.hidden = true;
+      host.setAttribute('aria-hidden', 'true');
+    }
+  }
+
   function setStatus(message, error) {
     var target = $('studio-drawer-status');
     if (!target) return;
@@ -106,10 +129,9 @@
     if (global.AIRPGameDrawer && typeof global.AIRPGameDrawer.close === 'function') global.AIRPGameDrawer.close();
     if (global.AIRPWorldbookDrawer && typeof global.AIRPWorldbookDrawer.close === 'function') global.AIRPWorldbookDrawer.close();
     state.view = nextView;
-    host.hidden = false;
-    host.setAttribute('aria-hidden', 'false');
+    openHost();
     var toggle = $('studio-agents-toggle');
-    if (toggle) toggle.setAttribute('aria-expanded', 'true');
+    setNavigation(nextView === 'orchestration' ? 'agents' : nextView);
     var modelToggle = $('studio-model-toggle');
     if (modelToggle) modelToggle.setAttribute('aria-expanded', nextView === 'model' ? 'true' : 'false');
     var worldbookToggle = $('studio-worldbooks-toggle');
@@ -133,10 +155,8 @@
   }
 
   function closeDrawer() {
-    host.hidden = true;
-    host.setAttribute('aria-hidden', 'true');
-    var toggle = $('studio-agents-toggle');
-    if (toggle) toggle.setAttribute('aria-expanded', 'false');
+    closeHost();
+    setNavigation(null);
     var modelToggle = $('studio-model-toggle');
     if (modelToggle) modelToggle.setAttribute('aria-expanded', 'false');
     var regexToggle = $('studio-regex-toggle');

@@ -97,6 +97,26 @@
     }
   }
 
+  function setNavigation(view) {
+    if (workspace && typeof workspace.setNavigationState === 'function') workspace.setNavigationState(view);
+  }
+
+  function openHost() {
+    if (workspace && workspace.drawerMotion) workspace.drawerMotion.open(host);
+    else {
+      host.hidden = false;
+      host.setAttribute('aria-hidden', 'false');
+    }
+  }
+
+  function closeHost() {
+    if (workspace && workspace.drawerMotion) workspace.drawerMotion.close(host);
+    else {
+      host.hidden = true;
+      host.setAttribute('aria-hidden', 'true');
+    }
+  }
+
   function activateSharedPanel() {
     var panels = host.querySelectorAll('[data-studio-drawer-panel]');
     var worldbookPanel = host.querySelector('.worldbook-drawer-panel');
@@ -613,9 +633,8 @@
     if (global.AIRPGameDrawer && typeof global.AIRPGameDrawer.close === 'function') global.AIRPGameDrawer.close();
     if (global.AIRPStudioAgentsDrawer && typeof global.AIRPStudioAgentsDrawer.close === 'function') global.AIRPStudioAgentsDrawer.close();
     ensureMarkup();
-    host.hidden = false;
-    host.setAttribute('aria-hidden', 'false');
-    toggle.setAttribute('aria-expanded', 'true');
+    openHost();
+    setNavigation('worldbooks');
     setWorkspaceState(true, 'worldbooks');
     activateSharedPanel();
     if (!state.ready) {
@@ -635,9 +654,8 @@
   }
 
   function closeDrawer() {
-    host.hidden = true;
-    host.setAttribute('aria-hidden', 'true');
-    toggle.setAttribute('aria-expanded', 'false');
+    closeHost();
+    setNavigation(null);
     setWorkspaceState(false, null);
   }
 

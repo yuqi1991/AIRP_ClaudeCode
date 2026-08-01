@@ -45,6 +45,63 @@
   };
 
   var events = new EventTarget();
+  var drawerCloseTimers = new WeakMap();
+
+  function drawerDuration(host) {
+    if (!host || typeof getComputedStyle !== 'function') return 220;
+    var value = parseFloat(getComputedStyle(host).transitionDuration || '0');
+    return Number.isFinite(value) ? Math.max(0, value * 1000) : 220;
+  }
+
+  function drawerMotionOpen(host) {
+    if (!host) return;
+    var timer = drawerCloseTimers.get(host);
+    if (timer) clearTimeout(timer);
+    host.hidden = false;
+    host.classList.remove('is-closing', 'is-open');
+    host.classList.add('is-opening');
+    host.setAttribute('aria-hidden', 'true');
+    var frame = global.requestAnimationFrame || function (callback) { return global.setTimeout(callback, 0); };
+    frame(function () {
+      if (host.hidden || !host.classList.contains('is-opening')) return;
+      host.classList.remove('is-opening');
+      host.classList.add('is-open');
+      host.setAttribute('aria-hidden', 'false');
+    });
+  }
+
+  function drawerMotionClose(host) {
+    if (!host) return;
+    var timer = drawerCloseTimers.get(host);
+    if (timer) clearTimeout(timer);
+    host.hidden = false;
+    host.classList.remove('is-opening', 'is-open');
+    host.classList.add('is-closing');
+    host.setAttribute('aria-hidden', 'true');
+    var closeTimer = global.setTimeout(function () {
+      if (!host.classList.contains('is-closing')) return;
+      host.hidden = true;
+      host.classList.remove('is-closing');
+    }, drawerDuration(host));
+    drawerCloseTimers.set(host, closeTimer);
+  }
+
+  function setNavigationState(view) {
+    var normalized = String(view || '').split(':').pop();
+    var selected = normalized === 'orchestration' ? 'agents' : normalized;
+    var buttons = {
+      game: '#game-drawer-toggle',
+      worldbooks: '#studio-worldbooks-toggle',
+      agents: '#studio-agents-toggle',
+      regex: '#studio-regex-toggle',
+      'regex-collections': '#studio-regex-toggle',
+      model: '#studio-model-toggle'
+    };
+    Object.keys(buttons).forEach(function (key) {
+      var button = document.querySelector(buttons[key]);
+      if (button) button.setAttribute('aria-expanded', key === selected ? 'true' : 'false');
+    });
+  }
 
   function emit(type, detail) {
     events.dispatchEvent(new CustomEvent(type, { detail: detail || null }));
@@ -84,6 +141,8 @@
     region: region,
     slot: slot,
     setState: setState,
-    patchState: patchState
+    patchState: patchState,
+    setNavigationState: setNavigationState,
+    drawerMotion: Object.freeze({ open: drawerMotionOpen, close: drawerMotionClose })
   });
 })(window, document);

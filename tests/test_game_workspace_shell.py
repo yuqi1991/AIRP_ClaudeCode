@@ -37,6 +37,8 @@ def test_game_page_loads_workspace_contract_and_visual_tokens():
     assert "version: 1" in contract
     assert "studioDrawer" in contract
     assert "nodeDebug" in contract
+    assert "setNavigationState" in contract
+    assert "drawerMotion" in contract
     assert "--airp-color-bg" in tokens
     assert "--airp-motion-panel" in tokens
 
@@ -51,6 +53,8 @@ def test_game_page_uses_airp_nav_order_and_dark_reading_surface():
     assert "--bg: #061326" in page
     assert "--accent: #d8b76a" in page
     assert "airp-markdown-table" in page
+    assert "transform: translateY(-12px)" in (WEB_ROOT / "game-workspace.css").read_text(encoding="utf-8")
+    assert "bottom: 0" in (WEB_ROOT / "game-workspace.css").read_text(encoding="utf-8")
     assert '<span class="sep">' not in page
     assert '<span class="tag" id="tb-world">—</span>' not in page
     assert 'setText(\'tb-time\', S.time || \'—\')' not in page

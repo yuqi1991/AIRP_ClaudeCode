@@ -23,6 +23,11 @@
     return global.AIRPWorkspace || null;
   }
 
+  function setNavigation(view) {
+    var workspace = api();
+    if (workspace && typeof workspace.setNavigationState === 'function') workspace.setNavigationState(view);
+  }
+
   function emit(type, detail) {
     var workspace = api();
     if (workspace && typeof workspace.emit === 'function') workspace.emit(type, detail || null);
@@ -109,9 +114,14 @@
     if (current) {
       current.open('model');
     } else {
-      host.hidden = false;
-      host.setAttribute('aria-hidden', 'false');
+      var workspace = api();
+      if (workspace && workspace.drawerMotion) workspace.drawerMotion.open(host);
+      else {
+        host.hidden = false;
+        host.setAttribute('aria-hidden', 'false');
+      }
     }
+    setNavigation('model');
     renderModelView();
     if (!state.loaded) loadProfiles();
   }

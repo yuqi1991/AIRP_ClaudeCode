@@ -4,20 +4,28 @@
   z-index: 80;
   top: 34px;
   right: 300px;
-  bottom: auto;
+  bottom: 0;
   left: 0;
   width: auto;
-  height: min(72vh, 640px);
-  max-height: 72vh;
+  height: auto;
+  max-height: none;
   overflow: hidden;
   pointer-events: none;
   background: var(--surface);
   border-bottom: 1px solid var(--border);
   box-shadow: 0 12px 26px rgba(28, 24, 20, .2);
+  transform: translateY(-12px);
+  opacity: 0;
+  visibility: hidden;
+  transition: transform var(--airp-motion-panel) ease, opacity var(--airp-motion-panel) ease, visibility 0s linear var(--airp-motion-panel);
 }
 
 [data-airp-region="studio-drawer"][aria-hidden="false"] {
+  transform: translateY(0);
+  opacity: 1;
+  visibility: visible;
   pointer-events: auto;
+  transition-delay: 0s;
 }
 
 .worldbook-drawer-backdrop {
@@ -453,7 +461,7 @@
 
 @media (max-width: 760px) {
   [data-airp-region="studio-drawer"] {
-    top: 34px;
+    top: var(--airp-drawer-top);
     right: 0;
     bottom: 0;
     width: 100%;
@@ -464,7 +472,7 @@
 
 @media (max-width: 680px) {
   [data-airp-region="studio-drawer"] {
-    top: 34px;
+    top: var(--airp-drawer-top);
     right: 0;
     bottom: 0;
     width: 100%;

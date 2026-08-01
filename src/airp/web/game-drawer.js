@@ -65,17 +65,23 @@
       view.hidden = model.open ? view !== panel : view === panel;
       view.classList.toggle('is-active', model.open && view === panel);
     });
-    host.hidden = !model.open;
-    host.setAttribute('aria-hidden', model.open ? 'false' : 'true');
-    toggle.setAttribute('aria-expanded', model.open ? 'true' : 'false');
+    var workspace = global.AIRPWorkspace;
+    if (workspace && typeof workspace.setNavigationState === 'function') workspace.setNavigationState(model.open ? 'game' : null);
+    if (workspace && workspace.drawerMotion) {
+      if (model.open) workspace.drawerMotion.open(host);
+      else workspace.drawerMotion.close(host);
+    } else {
+      host.hidden = !model.open;
+      host.setAttribute('aria-hidden', model.open ? 'false' : 'true');
+    }
     var worldbookToggle = document.getElementById('studio-worldbooks-toggle');
     var regexToggle = document.getElementById('studio-regex-toggle');
     if (worldbookToggle) worldbookToggle.setAttribute('aria-expanded', 'false');
     if (regexToggle) regexToggle.setAttribute('aria-expanded', 'false');
-    if (global.AIRPWorkspace) {
-      global.AIRPWorkspace.setState('studioDrawer', { open: model.open, view: 'game' });
-      global.AIRPWorkspace.emit('studio-drawer:' + (model.open ? 'opened' : 'closed'), { view: 'game' });
-      global.AIRPWorkspace.emit('studio:drawer-' + (model.open ? 'opened' : 'closed'), { view: 'game' });
+    if (workspace) {
+      workspace.setState('studioDrawer', { open: model.open, view: model.open ? 'game' : null });
+      workspace.emit('studio-drawer:' + (model.open ? 'opened' : 'closed'), { view: model.open ? 'game' : null });
+      workspace.emit('studio:drawer-' + (model.open ? 'opened' : 'closed'), { view: model.open ? 'game' : null });
     }
     if (model.open) loadState();
   }

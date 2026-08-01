@@ -115,6 +115,7 @@
     if (workspace && typeof workspace.patchState === 'function') {
       workspace.patchState('studioDrawer', { open: true, view: view });
     }
+    if (workspace && typeof workspace.setNavigationState === 'function') workspace.setNavigationState(view);
   }
 
   function addTabs() {
@@ -683,8 +684,6 @@
   }
 
   function openRegexDrawer() {
-    var regexToggle = $('studio-regex-toggle');
-    if (regexToggle) regexToggle.setAttribute('aria-expanded', 'true');
     if (integratedPanel() && global.AIRPStudioAgentsDrawer && typeof global.AIRPStudioAgentsDrawer.open === 'function') {
       return Promise.resolve(global.AIRPStudioAgentsDrawer.open('regex-collections')).then(function() {
         ensureMarkup();
