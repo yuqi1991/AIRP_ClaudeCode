@@ -79,8 +79,14 @@ Studio Agent Trace 至少保留当前/最近一次 Graph Run 的节点输入、i
 | `<card>/` | `.card_data.json`、`memory/`、`.runtime.sqlite3` 与兼容投影 |
 | Workspace `library/` | Provider、Agent、Graph、Worldbook、Regex Collection |
 | Workspace `projects/` | 角色卡/故事 Project 与绑定关系 |
+| Workspace `runtime/projects/` | 每个 Project 的 card materialization 与运行输入投影 |
+| Workspace `sessions/projects/` | 每个 Project 的 Session catalog、Task/Event/Commit/Revision SQLite |
+| Workspace `runtime/active_project.json` | 当前进程恢复用的 active Project/recent pointer |
 | Workspace `secrets.json` | Provider API key（本地 Secret Store） |
 | `src/airp/web/` | wheel 内置只读网页资源 |
 | `src/airp/resources/` | wheel 内置卡片脚本资源 |
 
 仓库不再保留第二套 skills runtime。旧静态配置只在明确的 Studio migration 边界读取，canonical runtime 不会从 `skills/` 发现 Agent、工具或提示词。
+
+Project/Session 的所有权和删除生命周期由 [ADR-0023](../adr/0023-project-owned-runtime-and-active-projection.md)
+定义；`runtime/styles` 等兼容文件只是当前 active surface 的可重建 projection。

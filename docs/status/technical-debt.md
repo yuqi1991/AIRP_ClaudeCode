@@ -16,6 +16,10 @@ Studio 配置。`state.js`/`content.js` 仍是单张卡的可重建兼容 projec
 事实源，但不再依赖仓库级 `skills/styles` 单例。多卡并发隔离和更彻底的 projection
 替换仍是后续工作。
 
+Project 删除目前只移除 Workspace Project definition，尚未保证同步清理
+`runtime/projects/<project_id>`、`sessions/projects/<project_id>.sqlite3` 和 recent
+metadata；ADR-0023 已锁定该清理不变量，补齐实现和孤儿状态回归后才能标为 Proven。
+
 ## P1：上下文仍不可精确控制
 
 **状态：Broken**

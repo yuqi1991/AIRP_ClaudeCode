@@ -18,6 +18,7 @@
 | Regex Collection | `src/airp/engine/regex_collections.py`、`src/airp/engine/regex_transformer.py`、`tests/test_regex_collections.py` | 每个 Agent 可绑定集合；按顺序应用 input/output/both |
 | Agent Trace/SSE | `src/airp/server.py`、`src/airp/host/rp/session_runtime.py`、`tests/test_agent_studio_golden_path.py` | 保留当前/最近 Graph Run；节点输入输出和模型/工具事件可审计 |
 | Session Turn Runtime 最小回合契约 | `docs/adr/0021-independent-runtime-turn-contract.md`、`src/airp/host/rp/session_runtime.py`、`src/airp/host/rp/commands.py` | canonical Runtime 独占 Task、Context、唯一 commit、projection 和 durable events；真实 Provider qualification 由 ADR-0022 定义 |
+| Project/Session 持久化边界 | `docs/adr/0023-project-owned-runtime-and-active-projection.md`、`src/airp/host/rp/project_runtime.py`、`src/airp/host/rp/session_manager.py`、`tests/test_game_project_drawer.py` | 多 Project/Session 可持久化且单 active projection 可恢复；Project-owned runtime 删除清理仍待实现 |
 | 角色卡脚本资源 | `src/airp/resources/run_card_scripts.cjs`、`src/airp/resources/mvu_shared.cjs` | 资源随 Python 包分发；不依赖 `skills/` |
 
 ## Experimental

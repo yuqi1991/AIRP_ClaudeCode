@@ -43,6 +43,19 @@
 
 因此这些 JSON/JS 文件不是多 session 的事实源。卡片事实、绑定 Worldbook、变量基线和现有 `memory/*.md` 仍为卡片级共享；需要真正分叉长期记忆时，应先把 memory 纳入 revision/session store，而不是复制投影文件。
 
+### Project 所有权与 active projection
+
+Workspace 的全局 Studio Library 不属于某个 Project；Project Definition 只保存规范化角色卡、
+Openings、变量基线、Worldbook bindings 和 Graph selection。每个 Project 在
+`runtime/projects/<project_id>` 拥有自己的 card materialization，在
+`sessions/projects/<project_id>.sqlite3` 拥有自己的 Session catalog 与 runtime lineage。
+
+一个 server 进程可以保存多个 Project 和 Session，但只激活其中一个 Project/Session。共享
+的 `runtime/styles` projection、Monitor 和 Command service 始终指向当前 active surface；
+切换时从 durable lineage 重建，不从旧 projection 推断事实。删除 Project 的私有 runtime
+和 Session DB 必须与定义删除保持同一生命周期；当前清理实现仍是待办，详见
+[ADR-0023](../adr/0023-project-owned-runtime-and-active-projection.md)。
+
 ## 记忆职责分离
 
 - **chat log**：事实级回合记录与变量快照；用于回退和重新渲染。

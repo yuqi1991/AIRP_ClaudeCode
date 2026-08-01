@@ -4,6 +4,9 @@
 - **日期**：2026-07-28
 - **关联**：ADR-0004、ADR-0007、ADR-0008、`docs/architecture/card-worldbook-memory.md`
 
+> **边界澄清**：Project 所有权、跨 Project active pointer 和删除清理由 ADR-0023 统一定义；
+> 本 ADR 继续描述单个 Project 内的 Session lineage 与单 active projection。
+
 ## Context
 
 SQLite runtime 已能持久化一个 session 的 task、event、commit、revision 与 opening，但浏览器和启动器固定使用 `local`。`chat_log.json`、`content.js` 和 `state.js` 又是单份兼容文件；直接把它们复制成多个存档会产生多个事实源，并让恢复、回退与幂等语义漂移。
