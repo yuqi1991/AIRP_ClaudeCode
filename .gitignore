@@ -30,6 +30,11 @@ node_modules/
 !src/airp/**
 src/airp/**/__pycache__/
 src/airp/**/*.pyc
+# Runtime projections and Workspace data written beside the static web shell.
+src/airp/web/.airp-runtime/
+src/airp/web/content.js
+src/airp/web/state.js
+src/airp/web/studio/
 !tests/
 !tests/*.py
 !docs/

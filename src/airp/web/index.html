@@ -1002,7 +1002,7 @@ html, body { color-scheme: dark; }
     <button id="game-drawer-toggle" class="workspace-nav-button" type="button" data-airp-action="game-open" aria-controls="studio-drawer-host" aria-expanded="false">游戏</button>
     <button id="studio-worldbooks-toggle" class="workspace-studio-action" type="button" data-airp-action="studio-worldbooks" aria-controls="studio-drawer-host" aria-expanded="false">世界书</button>
     <button id="studio-agents-toggle" class="workspace-studio-action" type="button" data-airp-action="studio-agents" aria-controls="studio-drawer-host" aria-expanded="false">Agents 与编排</button>
-    <button id="studio-regex-toggle" class="workspace-studio-action" type="button" data-airp-action="studio-regex" aria-controls="studio-drawer-host" aria-expanded="false">Regex Collections</button>
+    <button id="studio-regex-toggle" class="workspace-studio-action" type="button" data-airp-action="studio-regex" aria-controls="studio-drawer-host" aria-expanded="false">正则集合</button>
     <button id="studio-model-toggle" class="workspace-studio-action" type="button" data-airp-action="studio-model" aria-controls="studio-drawer-host" aria-expanded="false">模型</button>
   </nav>
   <button id="theme-toggle" title="切换夜间模式" style="background:none;border:1px solid var(--border);border-radius:4px;cursor:pointer;font-size:0.9em;padding:1px 6px;line-height:1;color:var(--muted);">🌙</button>
@@ -1014,7 +1014,7 @@ html, body { color-scheme: dark; }
   <section id="studio-drawer-panel" data-airp-slot="studio-drawer-panel" aria-labelledby="studio-drawer-title">
     <header class="studio-drawer-header">
       <div>
-        <p class="studio-drawer-kicker">Studio</p>
+        <p class="studio-drawer-kicker">工作室</p>
         <h2 id="studio-drawer-title">Agents 与编排</h2>
       </div>
       <div class="studio-drawer-header-actions">
@@ -1034,78 +1034,118 @@ html, body { color-scheme: dark; }
           <label class="studio-search"><span class="studio-visually-hidden">搜索 Agent</span><input id="studio-agent-search" type="search" placeholder="搜索 Agent…" autocomplete="off"></label>
           <div class="studio-object-items" id="studio-agent-list" aria-live="polite"></div>
         </aside>
-        <section class="studio-drawer-column studio-editor-column" aria-label="Agent instruction 和 Prompt 预览">
+        <section class="studio-drawer-column studio-editor-column" aria-label="Agent 指令和提示词预览">
           <div class="studio-editor-toolbar">
             <div class="studio-segmented" role="tablist" aria-label="Agent 内容">
-              <button class="is-active" type="button" data-agent-editor-view="instruction" role="tab" aria-selected="true">Instruction</button>
-              <button type="button" data-agent-editor-view="preview" role="tab" aria-selected="false">Prompt 预览</button>
+              <button class="is-active" type="button" data-agent-editor-view="instruction" role="tab" aria-selected="true">指令</button>
+              <button type="button" data-agent-editor-view="preview" role="tab" aria-selected="false">提示词预览</button>
             </div>
             <span class="studio-editor-id" id="studio-agent-id"></span>
           </div>
           <div class="studio-editor-pane is-active" id="studio-agent-instruction-pane" data-agent-editor-pane="instruction">
-            <label class="studio-field studio-field-grow" for="studio-agent-instruction"><span>Instruction</span><textarea id="studio-agent-instruction" placeholder="描述 Agent 的行为与输出边界…"></textarea></label>
-            <p class="studio-field-hint">支持运行时宏，例如 <code>{{player_input}}</code>、<code>{{handoff}}</code> 和 <code>{{current_state.phase}}</code>。</p>
+            <label class="studio-field studio-field-grow" for="studio-agent-instruction"><span>指令</span><textarea id="studio-agent-instruction" placeholder="描述 Agent 的行为与输出边界…"></textarea></label>
+            <details class="studio-macro-reference">
+              <summary><span>运行时宏参考</span><span class="studio-macro-count">31 个根宏</span></summary>
+              <div class="studio-macro-guide">
+                <p>使用 <code>{{root}}</code> 插入完整值，使用 <code>{{root.path}}</code> 读取对象字段，例如 <code>{{current_state.phase}}</code>。对象和数组会输出为 JSON；不存在的宏或路径会保留原占位符，便于检查拼写。宏不支持条件、循环、函数或默认值表达式。</p>
+                <div class="studio-macro-table-wrap">
+                  <table class="studio-macro-table">
+                    <thead><tr><th>宏</th><th>内容与用法</th></tr></thead>
+                    <tbody>
+                      <tr class="studio-macro-section"><th colspan="2">角色卡类</th></tr>
+                      <tr><td><code data-agent-macro="card_facts">{{card_facts}}</code><code data-agent-macro="character">{{character}}</code><code data-agent-macro="character_card">{{character_card}}</code><code data-agent-macro="card">{{card}}</code></td><td>角色卡事实对象的等价别名。常用字段：<code>{{card_facts.name}}</code>、<code>{{card_facts.description}}</code>、<code>{{card_facts.personality}}</code>、<code>{{card_facts.scenario}}</code>、<code>{{card_facts.first_mes}}</code>、<code>{{card_facts.system_prompt}}</code>。也可把前缀替换为 <code>character_card</code> 或 <code>card</code>。</td></tr>
+                      <tr><td><code data-agent-macro="card_structure">{{card_structure}}</code></td><td>角色卡的结构化元数据，不等同于完整角色卡原文。</td></tr>
+                      <tr><td><code data-agent-macro="charName">{{charName}}</code><code data-agent-macro="char">{{char}}</code><code data-agent-macro="character_name">{{character_name}}</code></td><td>当前角色名称的等价别名。</td></tr>
+                      <tr class="studio-macro-section"><th colspan="2">世界书类</th></tr>
+                      <tr><td><code data-agent-macro="worldbook_catalog">{{worldbook_catalog}}</code></td><td>世界书轻量目录，只包含可检索的标题、用途等摘要信息。</td></tr>
+                      <tr><td><code data-agent-macro="worldbooks">{{worldbooks}}</code></td><td>运行时明确加载的世界书条目；未加载正文时仅提供目录。不会隐式暴露完整世界书正文。</td></tr>
+                      <tr class="studio-macro-section"><th colspan="2">编排类</th></tr>
+                      <tr><td><code data-agent-macro="graph">{{graph}}</code><code data-agent-macro="node">{{node}}</code></td><td>当前编排图与节点上下文。字段示例：<code>{{node.id}}</code>。</td></tr>
+                      <tr><td><code data-agent-macro="handoff">{{handoff}}</code></td><td>上游 Agent 交给当前节点的产物内容。</td></tr>
+                      <tr><td><code data-agent-macro="output_contract">{{output_contract}}</code></td><td>当前节点的输出契约，由运行时负责提供和约束。</td></tr>
+                      <tr class="studio-macro-section"><th colspan="2">历史对话类</th></tr>
+                      <tr><td><code data-agent-macro="recent_memory">{{recent_memory}}</code></td><td>运行时选入的近期记忆内容。</td></tr>
+                      <tr><td><code data-agent-macro="recent_turns">{{recent_turns}}</code></td><td>近期对话回合数组，插入完整值时输出 JSON。</td></tr>
+                      <tr class="studio-macro-section"><th colspan="2">运行时与状态类</th></tr>
+                      <tr><td><code data-agent-macro="project">{{project}}</code><code data-agent-macro="project_id">{{project_id}}</code></td><td>当前游戏对象与 ID。字段示例：<code>{{project.id}}</code>。</td></tr>
+                      <tr><td><code data-agent-macro="session">{{session}}</code><code data-agent-macro="task">{{task}}</code></td><td>当前会话与任务上下文；具体字段由运行时提供，可在提示词预览中检查。</td></tr>
+                      <tr><td><code data-agent-macro="settings">{{settings}}</code></td><td>游戏运行设置。字段示例：<code>{{settings.style}}</code>。</td></tr>
+                      <tr><td><code data-agent-macro="runtime">{{runtime}}</code></td><td>运行时提供的附加只读上下文。字段随运行环境变化。</td></tr>
+                      <tr><td><code data-agent-macro="initvar">{{initvar}}</code></td><td>游戏的初始变量快照。字段示例：<code>{{initvar.relationship}}</code>。</td></tr>
+                      <tr><td><code data-agent-macro="current_state">{{current_state}}</code></td><td>当前持久变量状态。字段示例：<code>{{current_state.phase}}</code>。</td></tr>
+                      <tr class="studio-macro-section"><th colspan="2">用户输入类</th></tr>
+                      <tr><td><code data-agent-macro="user">{{user}}</code><code data-agent-macro="user_name">{{user_name}}</code><code data-agent-macro="player">{{player}}</code></td><td>当前玩家名称的等价别名。</td></tr>
+                      <tr><td><code data-agent-macro="player_input">{{player_input}}</code><code data-agent-macro="project_input">{{project_input}}</code></td><td>本次玩家输入的等价别名。</td></tr>
+                      <tr class="studio-macro-section"><th colspan="2">工具与能力类</th></tr>
+                      <tr><td><code data-agent-macro="tool_protocol">{{tool_protocol}}</code></td><td>当前允许工具的调用协议；工具权限仍以 Agent 工具白名单为准。</td></tr>
+                      <tr><td><code data-agent-macro="skills">{{skills}}</code></td><td>当前运行时提供的可用 Skill 目录或说明。</td></tr>
+                    </tbody>
+                  </table>
+                </div>
+                <p class="studio-macro-note">宏在编排运行开始时展开并冻结。保存中的修改只影响下一次运行；使用“提示词预览”查看当前上下文下的实际展开结果和可用字段。</p>
+              </div>
+            </details>
           </div>
           <div class="studio-editor-pane" id="studio-agent-preview-pane" data-agent-editor-pane="preview" hidden>
             <div class="studio-preview-inputs">
-              <label class="studio-field" for="studio-preview-input"><span>Project input</span><textarea id="studio-preview-input" rows="4" placeholder="用于编译 Prompt 的输入…"></textarea></label>
-              <label class="studio-field" for="studio-preview-context"><span>Runtime context JSON</span><textarea id="studio-preview-context" rows="4" placeholder='{"settings":{},"current_state":{}}'></textarea></label>
-              <label class="studio-field" for="studio-preview-handoff"><span>Handoff JSON</span><textarea id="studio-preview-handoff" rows="3" placeholder='{"source_node_id":"planner","artifact":"…"}'></textarea></label>
-              <label class="studio-field" for="studio-preview-contract"><span>Output contract JSON</span><textarea id="studio-preview-contract" rows="3" placeholder='{"kind":"text"}'></textarea></label>
+              <label class="studio-field" for="studio-preview-input"><span>游戏输入</span><textarea id="studio-preview-input" rows="4" placeholder="用于编译提示词的输入…"></textarea></label>
+              <label class="studio-field" for="studio-preview-context"><span>运行时上下文 JSON</span><textarea id="studio-preview-context" rows="4" placeholder='{"settings":{},"current_state":{}}'></textarea></label>
+              <label class="studio-field" for="studio-preview-handoff"><span>交接内容 JSON</span><textarea id="studio-preview-handoff" rows="3" placeholder='{"source_node_id":"planner","artifact":"…"}'></textarea></label>
+              <label class="studio-field" for="studio-preview-contract"><span>输出契约 JSON</span><textarea id="studio-preview-contract" rows="3" placeholder='{"kind":"text"}'></textarea></label>
             </div>
             <div class="studio-preview-actions"><button class="studio-button studio-button-primary" id="studio-agent-preview" type="button" disabled>编译预览</button></div>
-            <div class="studio-preview-list" id="studio-agent-preview-output" aria-live="polite"><p class="studio-empty">选择 Agent 后编译 Prompt 预览。</p></div>
+            <div class="studio-preview-list" id="studio-agent-preview-output" aria-live="polite"><p class="studio-empty">选择 Agent 后编译提示词预览。</p></div>
           </div>
         </section>
         <aside class="studio-drawer-column studio-settings-column" aria-label="Agent 设置">
           <div class="studio-column-head studio-column-head-stacked"><div><h3>Agent 设置</h3><span id="studio-agent-selection" class="studio-muted">未选择 Agent</span></div></div>
           <form id="studio-agent-form" class="studio-form">
-            <label class="studio-field" for="studio-agent-name"><span>名称</span><input id="studio-agent-name" required placeholder="Scene writer" autocomplete="off"></label>
-            <label class="studio-field" for="studio-agent-provider"><span>Provider Profile</span><select id="studio-agent-provider"><option value="">Runtime provider</option></select></label>
-            <label class="studio-field" for="studio-agent-model"><span>Model</span><input id="studio-agent-model" placeholder="provider-model-id" autocomplete="off"></label>
+            <label class="studio-field" for="studio-agent-name"><span>名称</span><input id="studio-agent-name" required placeholder="场景写手" autocomplete="off"></label>
+            <label class="studio-field" for="studio-agent-provider"><span>服务商配置</span><select id="studio-agent-provider"><option value="">运行时服务商</option></select></label>
+            <label class="studio-field" for="studio-agent-model"><span>模型</span><input id="studio-agent-model" placeholder="服务商模型 ID" autocomplete="off"></label>
             <div class="studio-field-row">
-              <label class="studio-field" for="studio-agent-temperature"><span>Temperature</span><input id="studio-agent-temperature" type="number" min="0" max="2" step="0.01" placeholder="默认"></label>
-              <label class="studio-field" for="studio-agent-max-tokens"><span>Max tokens</span><input id="studio-agent-max-tokens" type="number" min="1" step="1" placeholder="默认"></label>
+              <label class="studio-field" for="studio-agent-temperature"><span>温度</span><input id="studio-agent-temperature" type="number" min="0" max="2" step="0.01" placeholder="默认"></label>
+              <label class="studio-field" for="studio-agent-max-tokens"><span>最大 Token 数</span><input id="studio-agent-max-tokens" type="number" min="1" step="1" placeholder="默认"></label>
             </div>
-            <label class="studio-field" for="studio-agent-tools"><span>Tool allowlist</span><input id="studio-agent-tools" placeholder="get_recent_memory, load_worldbook_entry" autocomplete="off"></label>
-            <label class="studio-field" for="studio-agent-regex"><span>Regex Collection</span><select id="studio-agent-regex"><option value="">不绑定 Regex Collection</option></select></label>
-            <label class="studio-field" for="studio-agent-advanced"><span>Advanced JSON</span><textarea id="studio-agent-advanced" rows="4" placeholder='{"response_format":{"type":"json_object"}}'></textarea></label>
+            <label class="studio-field" for="studio-agent-tools"><span>工具白名单</span><input id="studio-agent-tools" placeholder="get_recent_memory, load_worldbook_entry" autocomplete="off"></label>
+            <label class="studio-field" for="studio-agent-regex"><span>正则集合</span><select id="studio-agent-regex"><option value="">不绑定正则集合</option></select></label>
+            <label class="studio-field" for="studio-agent-advanced"><span>高级参数 JSON</span><textarea id="studio-agent-advanced" rows="4" placeholder='{"response_format":{"type":"json_object"}}'></textarea></label>
             <div class="studio-form-actions"><button class="studio-button studio-button-primary" type="submit">保存 Agent</button><button class="studio-button studio-button-muted" id="studio-agent-copy" type="button" disabled>复制</button><button class="studio-button studio-button-danger" id="studio-agent-delete" type="button" disabled>删除</button></div>
           </form>
         </aside>
       </div>
     </section>
 
-    <section class="studio-drawer-view" id="studio-model-view" data-studio-drawer-panel="model" aria-label="模型 Provider Profile 管理" hidden>
+    <section class="studio-drawer-view" id="studio-model-view" data-studio-drawer-panel="model" aria-label="模型服务商配置管理" hidden>
       <div class="studio-drawer-grid studio-provider-grid">
-        <aside class="studio-drawer-column studio-object-list studio-provider-list" aria-label="Provider Profile 列表">
+        <aside class="studio-drawer-column studio-object-list studio-provider-list" aria-label="服务商配置列表">
           <div class="studio-column-head">
-            <div><h3>Provider Profiles</h3><span id="studio-provider-count" class="studio-muted">读取中…</span></div>
+            <div><h3>服务商配置</h3><span id="studio-provider-count" class="studio-muted">读取中…</span></div>
             <button class="studio-text-button" id="studio-provider-new" type="button">新建</button>
           </div>
-          <label class="studio-search"><span class="studio-visually-hidden">搜索 Provider Profile</span><input id="studio-provider-search" type="search" placeholder="搜索 Provider…" autocomplete="off"></label>
+          <label class="studio-search"><span class="studio-visually-hidden">搜索服务商配置</span><input id="studio-provider-search" type="search" placeholder="搜索服务商…" autocomplete="off"></label>
           <div class="studio-object-items" id="studio-provider-list" aria-live="polite"></div>
         </aside>
-        <section class="studio-drawer-column studio-provider-editor" aria-label="Provider Profile 编辑器">
+        <section class="studio-drawer-column studio-provider-editor" aria-label="服务商配置编辑器">
           <div class="studio-column-head">
-            <div><h3 id="studio-provider-title">New Provider Profile</h3><span id="studio-provider-selection" class="studio-muted">未选择 Provider</span></div>
+            <div><h3 id="studio-provider-title">新建服务商配置</h3><span id="studio-provider-selection" class="studio-muted">未选择服务商</span></div>
             <span class="studio-provider-connection" id="studio-provider-connection" aria-live="polite"></span>
           </div>
           <form id="studio-provider-form" class="studio-form">
             <div class="studio-provider-form-grid">
-              <label class="studio-field" for="studio-provider-name"><span>名称</span><input id="studio-provider-name" required placeholder="Writing provider" autocomplete="off"></label>
-              <label class="studio-field" for="studio-provider-format"><span>API format</span><select id="studio-provider-format"><option value="responses">Responses</option><option value="chat_completions">Chat Completions</option></select></label>
+              <label class="studio-field" for="studio-provider-name"><span>名称</span><input id="studio-provider-name" required placeholder="写作服务商" autocomplete="off"></label>
+              <label class="studio-field" for="studio-provider-format"><span>API 格式</span><select id="studio-provider-format"><option value="responses">Responses</option><option value="chat_completions">Chat Completions</option></select></label>
             </div>
             <label class="studio-field" for="studio-provider-base-url"><span>Base URL</span><input id="studio-provider-base-url" required type="url" placeholder="https://api.example.com/v1" autocomplete="url"></label>
-            <label class="studio-check"><input id="studio-provider-enabled" type="checkbox" checked><span>Provider enabled for Agent selection</span></label>
+            <label class="studio-check"><input id="studio-provider-enabled" type="checkbox" checked><span>允许 Agent 选择此服务商</span></label>
             <div class="studio-provider-key-field">
-              <label class="studio-field" for="studio-provider-api-key"><span>API key</span><input id="studio-provider-api-key" type="password" autocomplete="new-password" placeholder="只在更新 Key 时填写"></label>
-              <div class="studio-key-status" id="studio-provider-key-status"><span class="studio-key-indicator" aria-hidden="true"></span><span>Not configured</span></div>
+              <label class="studio-field" for="studio-provider-api-key"><span>API 密钥</span><input id="studio-provider-api-key" type="password" autocomplete="new-password" placeholder="只在更新密钥时填写"></label>
+              <div class="studio-key-status" id="studio-provider-key-status"><span class="studio-key-indicator" aria-hidden="true"></span><span>未配置</span></div>
             </div>
-            <label class="studio-field" for="studio-provider-models"><span>Model catalog</span><textarea id="studio-provider-models" rows="5" placeholder="one-model-per-line"></textarea></label>
-            <p class="studio-field-hint">保存时可手动维护模型 ID；Refresh models 会从 Provider 重新发现并保存目录。API key 不会回显。</p>
+            <label class="studio-field" for="studio-provider-models"><span>模型目录</span><textarea id="studio-provider-models" rows="5" placeholder="每行一个模型 ID"></textarea></label>
+            <p class="studio-field-hint">保存时可手动维护模型 ID；“刷新模型”会从服务商重新发现并保存目录。API 密钥不会回显。</p>
             <div class="studio-provider-catalog" id="studio-provider-catalog" aria-live="polite"></div>
-            <div class="studio-form-actions"><button class="studio-button studio-button-primary" type="submit">保存 Provider</button><button class="studio-button studio-button-muted" id="studio-provider-test" type="button" disabled>测试连接</button><button class="studio-button studio-button-muted" id="studio-provider-refresh" type="button" disabled>刷新模型</button><button class="studio-button studio-button-muted" id="studio-provider-delete-key" type="button" disabled>删除 Key</button><button class="studio-button studio-button-danger" id="studio-provider-delete" type="button" disabled>删除 Provider</button></div>
+            <div class="studio-form-actions"><button class="studio-button studio-button-primary" type="submit">保存服务商</button><button class="studio-button studio-button-muted" id="studio-provider-test" type="button" disabled>测试连接</button><button class="studio-button studio-button-muted" id="studio-provider-refresh" type="button" disabled>刷新模型</button><button class="studio-button studio-button-muted" id="studio-provider-delete-key" type="button" disabled>删除密钥</button><button class="studio-button studio-button-danger" id="studio-provider-delete" type="button" disabled>删除服务商</button></div>
           </form>
           <div class="studio-provider-notice" id="studio-provider-notice" role="status" aria-live="polite"></div>
         </section>
@@ -1114,46 +1154,47 @@ html, body { color-scheme: dark; }
 
     <section class="studio-drawer-view" id="studio-orchestration-view" data-studio-drawer-panel="orchestration" aria-label="编排管理" hidden>
       <div class="studio-drawer-grid studio-graph-grid">
-        <aside class="studio-drawer-column studio-object-list" aria-label="Graph 列表">
+        <aside class="studio-drawer-column studio-object-list" aria-label="编排图列表">
           <div class="studio-column-head">
-            <div><h3>Graphs</h3><span id="studio-graph-count" class="studio-muted">读取中…</span></div>
+            <div><h3>编排图</h3><span id="studio-graph-count" class="studio-muted">读取中…</span></div>
             <button class="studio-text-button" id="studio-graph-new" type="button">新建</button>
           </div>
-          <label class="studio-search"><span class="studio-visually-hidden">搜索 Graph</span><input id="studio-graph-search" type="search" placeholder="搜索 Graph…" autocomplete="off"></label>
+          <label class="studio-search"><span class="studio-visually-hidden">搜索编排图</span><input id="studio-graph-search" type="search" placeholder="搜索编排图…" autocomplete="off"></label>
           <div class="studio-object-items" id="studio-graph-list" aria-live="polite"></div>
         </aside>
-        <section class="studio-drawer-column studio-topology-column" aria-label="线性 Graph 拓扑">
+        <section class="studio-drawer-column studio-topology-column" aria-label="线性编排拓扑">
           <div class="studio-column-head">
-            <div><h3 id="studio-graph-title">Linear topology</h3><span id="studio-graph-runtime-state" class="studio-muted">Runtime 使用已保存配置</span></div>
+            <div><h3 id="studio-graph-title">线性拓扑</h3><span id="studio-graph-runtime-state" class="studio-muted">运行时使用已保存配置</span></div>
             <button class="studio-text-button" id="studio-graph-add-node" type="button">添加节点</button>
           </div>
-          <div class="studio-runtime-note"><span class="studio-runtime-dot"></span><span>Runtime linear · 节点按从上到下顺序执行</span></div>
+          <div class="studio-runtime-note"><span class="studio-runtime-dot"></span><span>线性运行 · 节点按从上到下顺序执行</span></div>
           <div class="studio-topology" id="studio-graph-topology" aria-live="polite"></div>
-          <div class="studio-empty" id="studio-graph-empty" hidden>新建 Graph 后添加 Agent 节点。</div>
+          <div class="studio-empty" id="studio-graph-empty" hidden>新建编排图后添加 Agent 节点。</div>
         </section>
-        <aside class="studio-drawer-column studio-settings-column" aria-label="Graph 和节点设置">
-          <div class="studio-column-head studio-column-head-stacked"><div><h3>编排设置</h3><span id="studio-graph-selection" class="studio-muted">未选择 Graph</span></div></div>
+        <aside class="studio-drawer-column studio-settings-column" aria-label="编排图和节点设置">
+          <div class="studio-column-head studio-column-head-stacked"><div><h3>编排设置</h3><span id="studio-graph-selection" class="studio-muted">未选择编排图</span></div></div>
           <form id="studio-graph-form" class="studio-form">
-            <label class="studio-field" for="studio-graph-name"><span>Graph 名称</span><input id="studio-graph-name" required placeholder="Writing pipeline" autocomplete="off"></label>
-            <label class="studio-field" for="studio-graph-id"><span>Graph ID</span><input id="studio-graph-id" placeholder="保存时自动生成" autocomplete="off"></label>
+            <label class="studio-field" for="studio-graph-name"><span>编排图名称</span><input id="studio-graph-name" required placeholder="写作流程" autocomplete="off"></label>
+            <label class="studio-field" for="studio-graph-id"><span>编排图 ID</span><input id="studio-graph-id" placeholder="保存时自动生成" autocomplete="off"></label>
             <fieldset class="studio-node-settings"><legend>当前节点</legend>
-              <label class="studio-field" for="studio-node-id"><span>Node ID</span><input id="studio-node-id" placeholder="writer-node" autocomplete="off"></label>
-              <label class="studio-field" for="studio-node-label"><span>显示名称</span><input id="studio-node-label" placeholder="Draft" autocomplete="off"></label>
+              <label class="studio-field" for="studio-node-id"><span>节点 ID</span><input id="studio-node-id" placeholder="writer-node" autocomplete="off"></label>
+              <label class="studio-field" for="studio-node-label"><span>显示名称</span><input id="studio-node-label" placeholder="草稿" autocomplete="off"></label>
               <label class="studio-field" for="studio-node-agent"><span>Agent</span><select id="studio-node-agent"><option value="">选择 Agent</option></select></label>
               <label class="studio-check"><input id="studio-node-enabled" type="checkbox" checked><span>节点启用</span></label>
               <div class="studio-node-actions"><button class="studio-button studio-button-muted" id="studio-node-agent-open" type="button" disabled>打开 Agent</button><button class="studio-button studio-button-danger" id="studio-node-remove" type="button" disabled>移除节点</button></div>
             </fieldset>
             <fieldset class="studio-node-settings"><legend>输出节点</legend>
-              <label class="studio-field" for="studio-graph-output"><span>Output node</span><select id="studio-graph-output"><option value="">选择输出节点</option></select></label>
-              <p class="studio-field-hint">Output 必须是最后一个启用节点，Runtime 只提交该节点的 Artifact。</p>
+              <label class="studio-field" for="studio-graph-output"><span>输出节点</span><select id="studio-graph-output"><option value="">选择输出节点</option></select></label>
+              <p class="studio-field-hint">输出节点必须是最后一个启用节点，运行时只提交该节点的产物。</p>
             </fieldset>
-            <div class="studio-form-actions"><button class="studio-button studio-button-primary" type="submit">保存 Graph</button><button class="studio-button studio-button-muted" id="studio-graph-use" type="button" disabled>用于 Runtime</button><button class="studio-button studio-button-muted" id="studio-graph-copy" type="button" disabled>复制</button><button class="studio-button studio-button-danger" id="studio-graph-delete" type="button" disabled>删除</button></div>
+            <div class="studio-form-actions"><button class="studio-button studio-button-primary" type="submit">保存编排图</button><button class="studio-button studio-button-muted" id="studio-graph-use" type="button" disabled>设为运行编排</button><button class="studio-button studio-button-muted" id="studio-graph-copy" type="button" disabled>复制</button><button class="studio-button studio-button-danger" id="studio-graph-delete" type="button" disabled>删除</button></div>
           </form>
         </aside>
       </div>
     </section>
   </section>
-  <div id="worldbook-drawer-mount" data-airp-slot="worldbook-drawer-panel" data-airp-drawer-view="worldbooks" aria-label="Worldbook Definitions"></div>
+  <section id="regex-drawer-panel" data-airp-slot="regex-drawer-panel" data-airp-drawer-view="regex-collections" aria-label="正则集合" hidden></section>
+  <div id="worldbook-drawer-mount" data-airp-slot="worldbook-drawer-panel" data-airp-drawer-view="worldbooks" aria-label="世界书定义"></div>
   <section id="game-drawer-panel" data-airp-slot="game-drawer-panel" data-studio-drawer-panel="game" aria-label="游戏 Project 管理" hidden></section>
 </div>
 

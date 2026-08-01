@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
 
@@ -7,6 +8,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 from airp.engine.agent_definitions import AgentDefinitionStore
 from airp.engine.context_compiler import ContextCompileRequest, ContextPolicy, expand_macros
+from airp.engine.macros import DEFAULT_MACRO_ROOTS
 from airp.engine.graph_runtime import AgentArtifact, ExecutionPlanCompiler
 from airp.engine.node_runner import ProviderNodeRunner
 from airp.engine.provider import FakeProvider
@@ -97,6 +99,21 @@ def test_studio_agent_editor_uses_instruction_and_context_without_prompt_preset(
     assert 'id="preview-context"' in page
     assert 'id="agent-preset"' not in page
     assert "/v1/studio/prompt-presets" not in page
+
+
+def test_integrated_agent_editor_documents_every_supported_macro_root():
+    page = (REPO_ROOT / "src" / "airp" / "web" / "index.html").read_text(encoding="utf-8")
+
+    documented = set(re.findall(r'data-agent-macro="([A-Za-z_][A-Za-z0-9_.-]*)"', page))
+    assert documented == set(DEFAULT_MACRO_ROOTS)
+    assert "{{root.path}}" in page
+    assert "{{card_facts.description}}" in page
+    assert "{{card_facts.personality}}" in page
+    assert "{{card_facts.scenario}}" in page
+    assert "{{card_facts.first_mes}}" in page
+    assert "不存在的宏或路径会保留原占位符" in page
+    assert "不会隐式暴露完整世界书正文" in page
+    assert "提示词预览" in page
 
 
 def test_node_runner_expands_handoff_macro_from_the_current_artifact(tmp_path: Path):

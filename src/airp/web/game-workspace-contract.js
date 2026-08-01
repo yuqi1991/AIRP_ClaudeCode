@@ -103,6 +103,20 @@
     });
   }
 
+  function activateDrawerSurface(surface) {
+    var surfaces = {
+      studio: document.getElementById('studio-drawer-panel'),
+      regex: document.getElementById('regex-drawer-panel'),
+      game: document.getElementById('game-drawer-panel'),
+      worldbooks: document.getElementById('worldbook-drawer-mount')
+    };
+    Object.keys(surfaces).forEach(function (name) {
+      if (surfaces[name]) surfaces[name].hidden = name !== surface;
+    });
+    var host = region('studioDrawer');
+    if (host) host.dataset.airpDrawerSurface = surface || '';
+  }
+
   function emit(type, detail) {
     events.dispatchEvent(new CustomEvent(type, { detail: detail || null }));
   }
@@ -143,6 +157,7 @@
     setState: setState,
     patchState: patchState,
     setNavigationState: setNavigationState,
+    activateDrawerSurface: activateDrawerSurface,
     drawerMotion: Object.freeze({ open: drawerMotionOpen, close: drawerMotionClose })
   });
 })(window, document);

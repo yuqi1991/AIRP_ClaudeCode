@@ -1044,6 +1044,31 @@ class SessionRuntimeServer:
         except ProjectLibraryError as exc:
             return self._studio_project_error(exc)
 
+    def _studio_project_delete(self, project_id: str) -> tuple[dict[str, Any], int]:
+        if self.projects is None:
+            return {"ok": False, "error": "studio_library_unavailable"}, 501
+        if project_id == self.runtime.project_id and self.runtime.generation_active():
+            return {
+                "ok": False,
+                "error": "generation_active",
+                "message": "生成进行中，完成或取消后才能删除当前游戏",
+            }, 409
+        try:
+            deleting_active = project_id == self.runtime.project_id
+            fallback = next(
+                (item for item in self.projects.list_projects() if item.get("id") != project_id),
+                None,
+            )
+            if deleting_active and fallback is not None and self.project_runtimes is not None:
+                switched, status = self._switch_active_project(fallback["id"])
+                if status != 200:
+                    return switched, status
+            self.projects.delete_project(project_id)
+            payload = self._project_runtime_payload()
+            return {"ok": True, "deleted_id": project_id, **payload}, 200
+        except ProjectLibraryError as exc:
+            return self._studio_project_error(exc)
+
     def _studio_provider_test(self, profile_id: str) -> tuple[dict[str, Any], int]:
         try:
             models = self.provider_profiles.test_connection(profile_id)
@@ -1833,6 +1858,14 @@ class SessionRuntimeServer:
                             except WorldbookLibraryError as exc:
                                 payload, status = server_ref._studio_worldbook_error(exc)
                                 self._send_json(status, payload)
+                            return
+                        break
+                for prefix in STUDIO_PROJECT_PATHS:
+                    if path.startswith(prefix + "/"):
+                        project_id = path[len(prefix) + 1:]
+                        if "/" not in project_id:
+                            payload, status = server_ref._studio_project_delete(project_id)
+                            self._send_json(status, payload)
                             return
                         break
                 prefix = "/api/sessions/"

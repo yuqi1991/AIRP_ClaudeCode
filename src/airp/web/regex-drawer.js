@@ -1,9 +1,9 @@
 /*
  * Regex Collection editor for the integrated game workspace.
  *
- * The Worldbook drawer owns the shared Studio host and its lifecycle event.
- * This module adds a second view without duplicating that host or changing
- * the Regex Collection/Graph Runtime implementation behind the HTTP API.
+ * The workspace owns the shared drawer shell. Regex Collections owns a
+ * dedicated surface inside that shell so its content cannot leak into the
+ * Agents, orchestration, or Provider Profile view tree.
  */
 (function installRegexDrawer(global, document) {
   'use strict';
@@ -25,41 +25,47 @@
   };
   var workspace = global.AIRPWorkspace || null;
   var markup = [
-    '<div class="regex-drawer-view" id="regex-drawer-view" data-regex-drawer-view="regex-collections" data-studio-drawer-panel="regex-collections" hidden>',
+    '<div class="regex-drawer-view" id="regex-drawer-view" data-regex-drawer-view="regex-collections" hidden>',
       '<div class="regex-drawer-toolbar">',
-        '<div class="regex-drawer-toolbar-title"><strong>Regex Collections</strong><span id="regex-drawer-count">0 saved</span></div>',
-        '<input class="regex-drawer-search" id="regex-drawer-library-search" type="search" placeholder="Search collections" aria-label="Search Regex Collections">',
-        '<button class="regex-drawer-button primary" id="regex-drawer-new" type="button">New</button>',
+        '<div class="regex-drawer-toolbar-title"><strong>正则集合</strong><span id="regex-drawer-count">已保存 0 个</span></div>',
+        '<input class="regex-drawer-search" id="regex-drawer-library-search" type="search" placeholder="搜索正则集合" aria-label="搜索正则集合">',
+        '<button class="regex-drawer-button primary" id="regex-drawer-new" type="button">新建</button>',
       '</div>',
       '<div class="regex-drawer-body">',
-        '<aside class="regex-drawer-column regex-library-column" aria-label="Regex Collection library">',
-          '<div class="regex-drawer-column-heading"><h2>Library</h2><span class="regex-drawer-hint" id="regex-drawer-library-hint">Reusable rules</span></div>',
+        '<aside class="regex-drawer-column regex-library-column" aria-label="正则集合库">',
+          '<div class="regex-drawer-column-heading"><h2>集合库</h2><span class="regex-drawer-hint" id="regex-drawer-library-hint">可复用规则</span></div>',
           '<div class="regex-library-list" id="regex-drawer-list" aria-live="polite"></div>',
         '</aside>',
-        '<main class="regex-drawer-column regex-editor-column" aria-label="Regex Collection editor">',
+        '<main class="regex-drawer-column regex-editor-column" aria-label="正则集合编辑器">',
           '<div class="regex-editor-header">',
-            '<div><div class="regex-drawer-kicker">Collection definition</div><input class="regex-drawer-input regex-collection-name" id="regex-drawer-name" required autocomplete="off" placeholder="Collection name" aria-label="Regex Collection name"></div>',
-            '<div class="regex-editor-actions"><button class="regex-drawer-button" id="regex-drawer-copy" type="button" hidden>Copy</button><button class="regex-drawer-button danger" id="regex-drawer-delete" type="button" hidden>Delete</button></div>',
+            '<div><div class="regex-drawer-kicker">集合定义</div><input class="regex-drawer-input regex-collection-name" id="regex-drawer-name" required autocomplete="off" placeholder="集合名称" aria-label="正则集合名称"></div>',
+            '<div class="regex-editor-actions"><button class="regex-drawer-button" id="regex-drawer-copy" type="button" hidden>复制</button><button class="regex-drawer-button danger" id="regex-drawer-delete" type="button" hidden>删除</button></div>',
           '</div>',
-          '<div class="regex-rule-toolbar"><div><h2>Ordered rules</h2><p class="regex-drawer-hint">JavaScript RegExp rules run from top to bottom.</p></div><button class="regex-drawer-button" id="regex-drawer-add-rule" type="button">Add rule</button></div>',
+          '<div class="regex-rule-toolbar"><div><h2>有序规则</h2><p class="regex-drawer-hint">JavaScript 正则表达式按从上到下的顺序执行。</p></div><button class="regex-drawer-button" id="regex-drawer-add-rule" type="button">添加规则</button></div>',
           '<div class="regex-rule-list" id="regex-drawer-rules"></div>',
           '<section class="regex-test-panel" aria-labelledby="regex-drawer-test-title">',
-            '<div class="regex-rule-toolbar"><div><h2 id="regex-drawer-test-title">Test collection</h2><p class="regex-drawer-hint">Run the current draft without saving it first.</p></div><button class="regex-drawer-button" id="regex-drawer-test" type="button">Run test</button></div>',
-            '<div class="regex-test-controls"><label>Test target<select class="regex-drawer-select" id="regex-drawer-test-target" aria-label="Test target"><option value="input">Input</option><option value="output" selected>Output</option></select></label><label class="regex-test-input-label">Test input<textarea class="regex-drawer-textarea" id="regex-drawer-test-input" placeholder="Paste sample text here"></textarea></label></div>',
-            '<div class="regex-test-result-grid"><div><h3>Result</h3><pre class="regex-test-output" id="regex-drawer-test-output" aria-live="polite"></pre></div><div><h3>Diagnostics</h3><div class="regex-diagnostics" id="regex-drawer-diagnostics" aria-live="polite"></div></div></div>',
+            '<div class="regex-rule-toolbar"><div><h2 id="regex-drawer-test-title">测试集合</h2><p class="regex-drawer-hint">无需保存，直接运行当前草稿。</p></div><button class="regex-drawer-button" id="regex-drawer-test" type="button">运行测试</button></div>',
+            '<div class="regex-test-controls"><label>测试目标<select class="regex-drawer-select" id="regex-drawer-test-target" aria-label="测试目标"><option value="input">输入</option><option value="output" selected>输出</option></select></label><label class="regex-test-input-label">测试文本<textarea class="regex-drawer-textarea" id="regex-drawer-test-input" placeholder="在此粘贴示例文本"></textarea></label></div>',
+            '<div class="regex-test-result-grid"><div><h3>结果</h3><pre class="regex-test-output" id="regex-drawer-test-output" aria-live="polite"></pre></div><div><h3>诊断</h3><div class="regex-diagnostics" id="regex-drawer-diagnostics" aria-live="polite"></div></div></div>',
           '</section>',
         '</main>',
-        '<aside class="regex-drawer-column regex-binding-column" aria-label="Agent Regex Collection bindings">',
-          '<div class="regex-drawer-column-heading"><h2>Agent bindings</h2><span class="regex-drawer-hint">0 or 1 per Agent</span></div>',
-          '<p class="regex-drawer-hint regex-binding-explanation">Choose at most one collection for each Agent. Changes save immediately through the existing Agent API.</p>',
+        '<aside class="regex-drawer-column regex-binding-column" aria-label="Agent 正则集合绑定">',
+          '<div class="regex-drawer-column-heading"><h2>Agent 绑定</h2><span class="regex-drawer-hint">每个 Agent 最多 1 个</span></div>',
+          '<p class="regex-drawer-hint regex-binding-explanation">每个 Agent 最多选择一个正则集合。更改会通过 Agent API 立即保存。</p>',
           '<div class="regex-binding-list" id="regex-drawer-agent-bindings" aria-live="polite"></div>',
         '</aside>',
       '</div>',
       '<footer class="regex-drawer-footer">',
         '<div class="regex-drawer-notice" id="regex-drawer-notice" role="status" aria-live="polite"></div>',
-        '<div class="regex-drawer-actions"><button class="regex-drawer-button primary" id="regex-drawer-save" type="button">Save Collection</button></div>',
+        '<div class="regex-drawer-actions"><button class="regex-drawer-button primary" id="regex-drawer-save" type="button">保存集合</button></div>',
       '</footer>',
     '</div>'
+  ].join('');
+  var integratedHeader = [
+    '<header class="studio-drawer-header regex-drawer-header">',
+      '<div><p class="studio-drawer-kicker">工作室</p><h2>正则集合</h2></div>',
+      '<button class="studio-icon-button" id="regex-drawer-close" type="button" aria-label="关闭正则集合抽屉" title="关闭">×</button>',
+    '</header>'
   ].join('');
 
   function $(id) { return document.getElementById(id); }
@@ -73,8 +79,7 @@
   }
 
   function integratedPanel() {
-    var currentPanel = document.getElementById('studio-drawer-panel');
-    return currentPanel && currentPanel.querySelector('[data-studio-drawer-panel="agents"]') ? currentPanel : null;
+    return document.getElementById('regex-drawer-panel');
   }
 
   function legacyPanel() {
@@ -91,8 +96,8 @@
   function errorMessage(error, fallback) {
     var payload = error && error.payload;
     if (payload && Array.isArray(payload.references) && payload.references.length) {
-      return (error.message || fallback) + ' Referenced by ' + payload.references.map(function(item) {
-        return item.name || item.id || item.agent_id || 'an Agent';
+      return (error.message || fallback) + '；仍被以下对象引用：' + payload.references.map(function(item) {
+        return item.name || item.id || item.agent_id || '某个 Agent';
       }).join(', ') + '.';
     }
     return error && error.message ? error.message : fallback;
@@ -103,7 +108,7 @@
     var payload = {};
     try { payload = await response.json(); } catch (_) { payload = {}; }
     if (!response.ok) {
-      var error = new Error(payload.message || payload.error || 'Studio request failed');
+      var error = new Error(payload.message || payload.error || '工作室请求失败');
       error.payload = payload;
       error.status = response.status;
       throw error;
@@ -130,10 +135,10 @@
     if (!header || !close) return;
     var tabs = document.createElement('nav');
     tabs.className = 'regex-drawer-tabs';
-    tabs.setAttribute('aria-label', 'Studio drawer views');
+    tabs.setAttribute('aria-label', '工作室抽屉视图');
     [
-      ['worldbooks', 'Worldbooks'],
-      ['regex-collections', 'Regex Collections']
+      ['worldbooks', '世界书'],
+      ['regex-collections', '正则集合']
     ].forEach(function(item) {
       var button = document.createElement('button');
       button.type = 'button';
@@ -150,7 +155,9 @@
     var currentPanel = panel();
     if (!currentPanel) return false;
     addTabs();
-    if (!$('regex-drawer-view')) currentPanel.insertAdjacentHTML('beforeend', markup);
+    if (!$('regex-drawer-view')) {
+      currentPanel.insertAdjacentHTML('beforeend', (integratedPanel() ? integratedHeader : '') + markup);
+    }
     return Boolean($('regex-drawer-view'));
   }
 
@@ -175,18 +182,12 @@
     var integrated = integratedPanel();
     if (integrated) {
       var regexPanel = $('regex-drawer-view');
-      integrated.querySelectorAll('[data-studio-drawer-panel]').forEach(function(viewPanel) {
-        var active = viewPanel === regexPanel ? isRegex : (viewPanel.getAttribute('data-studio-drawer-panel') === view);
-        viewPanel.hidden = !active;
-        viewPanel.classList.toggle('is-active', active);
-      });
-      var mount = document.getElementById('worldbook-drawer-mount');
-      if (mount) mount.hidden = view !== 'worldbooks';
-      var title = document.getElementById('studio-drawer-title');
-      if (title) title.textContent = isRegex ? 'Regex Collections' : (view === 'orchestration' ? 'Agents 与编排' : (view === 'model' ? '模型' : 'Agents 与编排'));
-      var worldbook = legacyPanel();
-      if (worldbook) worldbook.hidden = view !== 'worldbooks';
+      if (regexPanel) {
+        regexPanel.hidden = !isRegex;
+        regexPanel.classList.toggle('is-active', isRegex);
+      }
       if (isRegex) {
+        if (workspace && typeof workspace.activateDrawerSurface === 'function') workspace.activateDrawerSurface('regex');
         setWorkspaceView('regex-collections');
         loadData();
       }
@@ -201,7 +202,7 @@
   }
 
   function makeRule(index) {
-    return { id: '', name: 'Rule ' + (index + 1), enabled: true, target: 'both', pattern: '', flags: '', replacement: '' };
+    return { id: '', name: '规则 ' + (index + 1), enabled: true, target: 'both', pattern: '', flags: '', replacement: '' };
   }
 
   function emptyCollection() {
@@ -215,7 +216,7 @@
       var value = rule && typeof rule === 'object' ? rule : {};
       return {
         id: value.id || '',
-        name: value.name || ('Rule ' + (index + 1)),
+        name: value.name || ('规则 ' + (index + 1)),
         enabled: value.enabled !== false,
         target: ['input', 'output', 'both'].indexOf(value.target) >= 0 ? value.target : 'both',
         pattern: value.pattern === undefined || value.pattern === null ? '' : String(value.pattern),
@@ -232,7 +233,7 @@
     state.testResult = null;
     if ($('regex-drawer-library-search')) $('regex-drawer-library-search').value = '';
     renderAll();
-    showNotice('New Regex Collection');
+    showNotice('新建正则集合');
     if ($('regex-drawer-name')) $('regex-drawer-name').focus();
   }
 
@@ -258,7 +259,7 @@
     var target = $('regex-drawer-list');
     if (!target) return;
     var count = $('regex-drawer-count');
-    if (count) count.textContent = state.collections.length + ' saved';
+    if (count) count.textContent = '已保存 ' + state.collections.length + ' 个';
     var rows = visibleCollections().map(function(collection) {
       var row = document.createElement('button');
       row.type = 'button';
@@ -271,7 +272,7 @@
       var meta = document.createElement('span');
       meta.className = 'regex-library-meta';
       var ruleCount = Array.isArray(collection.rules) ? collection.rules.length : 0;
-      meta.textContent = ruleCount + ' rule' + (ruleCount === 1 ? '' : 's');
+      meta.textContent = ruleCount + ' 条规则';
       row.append(title, meta);
       row.addEventListener('click', function() { loadCollection(collection.id); });
       return row;
@@ -279,7 +280,7 @@
     if (!rows.length) {
       var empty = document.createElement('div');
       empty.className = 'regex-drawer-empty';
-      empty.textContent = state.libraryQuery ? 'No matching collections.' : 'No Regex Collections yet.';
+      empty.textContent = state.libraryQuery ? '没有匹配的正则集合。' : '还没有正则集合。';
       rows.push(empty);
     }
     target.replaceChildren.apply(target, rows);
@@ -304,7 +305,7 @@
     var header = document.createElement('div');
     header.className = 'regex-rule-card-header';
     var title = document.createElement('strong');
-    title.textContent = rule.name || ('Rule ' + (index + 1));
+    title.textContent = rule.name || ('规则 ' + (index + 1));
     var enabledLabel = document.createElement('label');
     enabledLabel.className = 'regex-rule-enabled';
     var enabled = document.createElement('input');
@@ -314,25 +315,25 @@
       rule.enabled = enabled.checked;
       card.classList.toggle('is-disabled', !rule.enabled);
     });
-    enabledLabel.append(enabled, ' Enabled');
+    enabledLabel.append(enabled, ' 启用');
     header.append(title, enabledLabel);
 
     var fields = document.createElement('div');
     fields.className = 'regex-rule-fields';
-    var name = makeField('Name', rule.name, 'input', 'regex-rule-name');
-    var target = makeField('Target', '', 'select', 'regex-rule-target');
+    var name = makeField('名称', rule.name, 'input', 'regex-rule-name');
+    var target = makeField('目标', '', 'select', 'regex-rule-target');
     ['input', 'output', 'both'].forEach(function(optionValue) {
       var option = document.createElement('option');
       option.value = optionValue;
-      option.textContent = optionValue;
+      option.textContent = { input: '输入', output: '输出', both: '输入和输出' }[optionValue];
       option.selected = optionValue === rule.target;
       target.control.appendChild(option);
     });
-    var pattern = makeField('Pattern', rule.pattern, 'input', 'regex-rule-pattern');
-    var flags = makeField('Flags', rule.flags, 'input', 'regex-rule-flags');
-    var replacement = makeField('Replacement', rule.replacement, 'textarea', 'regex-rule-replacement');
+    var pattern = makeField('匹配表达式', rule.pattern, 'input', 'regex-rule-pattern');
+    var flags = makeField('标志', rule.flags, 'input', 'regex-rule-flags');
+    var replacement = makeField('替换内容', rule.replacement, 'textarea', 'regex-rule-replacement');
     [name, target, pattern, flags, replacement].forEach(function(field) { fields.appendChild(field.label); });
-    name.control.addEventListener('input', function() { rule.name = name.control.value; title.textContent = rule.name || ('Rule ' + (index + 1)); });
+    name.control.addEventListener('input', function() { rule.name = name.control.value; title.textContent = rule.name || ('规则 ' + (index + 1)); });
     target.control.addEventListener('change', function() { rule.target = target.control.value; });
     pattern.control.addEventListener('input', function() { rule.pattern = pattern.control.value; });
     flags.control.addEventListener('input', function() { rule.flags = flags.control.value; });
@@ -340,7 +341,7 @@
 
     var actions = document.createElement('div');
     actions.className = 'regex-rule-actions';
-    [['Move up', -1], ['Move down', 1]].forEach(function(item) {
+    [['上移', -1], ['下移', 1]].forEach(function(item) {
       var button = document.createElement('button');
       button.type = 'button';
       button.className = 'regex-drawer-button';
@@ -358,7 +359,7 @@
     var remove = document.createElement('button');
     remove.type = 'button';
     remove.className = 'regex-drawer-button danger';
-    remove.textContent = 'Remove';
+    remove.textContent = '移除';
     remove.addEventListener('click', function() {
       state.collection.rules.splice(index, 1);
       renderRules();
@@ -376,7 +377,7 @@
     if (!cards.length) {
       var empty = document.createElement('div');
       empty.className = 'regex-drawer-empty';
-      empty.textContent = 'No rules. Add a rule to begin transforming text.';
+      empty.textContent = '还没有规则。添加规则后即可开始处理文本。';
       cards.push(empty);
     }
     target.replaceChildren.apply(target, cards);
@@ -399,14 +400,14 @@
     diagnostics.replaceChildren();
     var result = state.testResult;
     if (!result) {
-      output.textContent = 'Run a test to inspect transformed text.';
+      output.textContent = '运行测试后可在此查看处理结果。';
       return;
     }
     if (result.error) {
-      output.textContent = 'Test failed.';
+      output.textContent = '测试失败。';
       var error = document.createElement('div');
       error.className = 'regex-diagnostic error';
-      error.textContent = (result.error.code ? result.error.code + ': ' : '') + (result.error.message || 'Regex test failed');
+      error.textContent = (result.error.code ? result.error.code + '：' : '') + (result.error.message || '正则测试失败');
       diagnostics.appendChild(error);
       return;
     }
@@ -415,17 +416,18 @@
     if (!items.length) {
       var empty = document.createElement('div');
       empty.className = 'regex-drawer-hint';
-      empty.textContent = 'No rule diagnostics.';
+      empty.textContent = '没有规则诊断信息。';
       diagnostics.appendChild(empty);
       return;
     }
     items.forEach(function(item, index) {
       var row = document.createElement('div');
       row.className = 'regex-diagnostic' + (item.error ? ' error' : '');
-      var label = item.name || item.rule_id || ('Rule ' + (index + 1));
-      var status = item.skipped ? 'skipped' : (item.changed ? 'changed' : (item.matched ? 'matched' : 'no match'));
-      row.textContent = label + ' · ' + (item.target || 'output') + ' · ' + status;
-      if (item.match_count) row.textContent += ' · ' + item.match_count + ' match' + (item.match_count === 1 ? '' : 'es');
+      var label = item.name || item.rule_id || ('规则 ' + (index + 1));
+      var status = item.skipped ? '已跳过' : (item.changed ? '已替换' : (item.matched ? '已匹配' : '未匹配'));
+      var targetLabel = { input: '输入', output: '输出', both: '输入和输出' }[item.target || 'output'];
+      row.textContent = label + ' · ' + targetLabel + ' · ' + status;
+      if (item.match_count) row.textContent += ' · 匹配 ' + item.match_count + ' 次';
       diagnostics.appendChild(row);
     });
   }
@@ -447,10 +449,10 @@
       var select = document.createElement('select');
       select.className = 'regex-drawer-select';
       select.dataset.agentId = agent.agent_id || agent.id || '';
-      select.setAttribute('aria-label', 'Regex Collection for ' + (agent.name || agent.agent_id || 'Agent'));
+      select.setAttribute('aria-label', (agent.name || agent.agent_id || 'Agent') + ' 的正则集合');
       var none = document.createElement('option');
       none.value = '';
-      none.textContent = 'No collection';
+      none.textContent = '不绑定集合';
       select.appendChild(none);
       collections.forEach(function(collection) {
         var option = document.createElement('option');
@@ -462,7 +464,7 @@
       if (current && !collections.some(function(collection) { return collection.id === current; })) {
         var missing = document.createElement('option');
         missing.value = current;
-        missing.textContent = current + ' (missing)';
+        missing.textContent = current + '（已丢失）';
         select.appendChild(missing);
       }
       select.value = current;
@@ -473,7 +475,7 @@
     if (!rows.length) {
       var empty = document.createElement('div');
       empty.className = 'regex-drawer-empty';
-      empty.textContent = 'No Agent Definitions found.';
+      empty.textContent = '没有找到 Agent 定义。';
       rows.push(empty);
     }
     target.replaceChildren.apply(target, rows);
@@ -511,9 +513,9 @@
     try {
       var payload = await request(endpoint + '/' + encodeURIComponent(id));
       fillEditor(payload.collection);
-      showNotice('Loaded ' + payload.collection.name + '.');
+      showNotice('已加载“' + payload.collection.name + '”。');
     } catch (error) {
-      showNotice(errorMessage(error, 'Could not load this Regex Collection.'), 'error');
+      showNotice(errorMessage(error, '无法加载此正则集合。'), 'error');
     }
   }
 
@@ -524,7 +526,7 @@
       await Promise.all([loadCollections(), loadAgents()]);
       state.ready = true;
     } catch (error) {
-      showNotice(errorMessage(error, 'Could not load Regex Collections.'), 'error');
+      showNotice(errorMessage(error, '无法加载正则集合。'), 'error');
     } finally {
       state.loading = false;
     }
@@ -552,7 +554,7 @@
   async function saveCollection() {
     var payload = editorPayload();
     if (!payload || !payload.name) {
-      showNotice('Regex Collection name is required.', 'error');
+      showNotice('正则集合名称不能为空。', 'error');
       if ($('regex-drawer-name')) $('regex-drawer-name').focus();
       return;
     }
@@ -566,9 +568,9 @@
         body: JSON.stringify(payload)
       });
       await loadCollections(response.collection.id);
-      showNotice('Regex Collection saved.', 'success');
+      showNotice('正则集合已保存。', 'success');
     } catch (error) {
-      showNotice(errorMessage(error, 'Could not save this Regex Collection.'), 'error');
+      showNotice(errorMessage(error, '无法保存此正则集合。'), 'error');
     } finally {
       button.disabled = false;
     }
@@ -583,20 +585,20 @@
         body: '{}'
       });
       await loadCollections(payload.collection.id);
-      showNotice('Regex Collection copied.', 'success');
+      showNotice('正则集合已复制。', 'success');
     } catch (error) {
-      showNotice(errorMessage(error, 'Could not copy this Regex Collection.'), 'error');
+      showNotice(errorMessage(error, '无法复制此正则集合。'), 'error');
     }
   }
 
   async function deleteCollection() {
-    if (!state.selectedId || !global.confirm('Delete this Regex Collection?')) return;
+    if (!state.selectedId || !global.confirm('删除此正则集合？')) return;
     try {
       await request(endpoint + '/' + encodeURIComponent(state.selectedId), { method: 'DELETE' });
       await loadCollections();
-      showNotice('Regex Collection deleted.', 'success');
+      showNotice('正则集合已删除。', 'success');
     } catch (error) {
-      showNotice(errorMessage(error, 'Could not delete this Regex Collection.'), 'error');
+      showNotice(errorMessage(error, '无法删除此正则集合。'), 'error');
     }
   }
 
@@ -616,11 +618,11 @@
       });
       state.testResult = response.result || null;
       renderTestResult();
-      showNotice('Test completed.', 'success');
+      showNotice('测试完成。', 'success');
     } catch (error) {
       state.testResult = { error: error.payload || { message: error.message } };
       renderTestResult();
-      showNotice(errorMessage(error, 'Regex test failed.'), 'error');
+      showNotice(errorMessage(error, '正则测试失败。'), 'error');
     } finally {
       button.disabled = false;
     }
@@ -639,10 +641,10 @@
       });
       var updated = response.agent || response;
       agent.regex_collection_id = updated.regex_collection_id || null;
-      showNotice(value ? 'Agent binding saved.' : 'Agent binding cleared.', 'success');
+      showNotice(value ? 'Agent 绑定已保存。' : 'Agent 绑定已清除。', 'success');
     } catch (error) {
       select.value = agent.regex_collection_id || '';
-      showNotice(errorMessage(error, 'Could not update the Agent binding.'), 'error');
+      showNotice(errorMessage(error, '无法更新 Agent 绑定。'), 'error');
     } finally {
       select.disabled = false;
     }
@@ -663,6 +665,9 @@
     if ($('regex-drawer-copy')) $('regex-drawer-copy').addEventListener('click', copyCollection);
     if ($('regex-drawer-delete')) $('regex-drawer-delete').addEventListener('click', deleteCollection);
     if ($('regex-drawer-test')) $('regex-drawer-test').addEventListener('click', testCollection);
+    if ($('regex-drawer-close')) $('regex-drawer-close').addEventListener('click', function() {
+      closeRegexDrawer();
+    });
   }
 
   function onDrawerOpened(event) {
@@ -670,7 +675,7 @@
     bindControlsOnce();
     var view = event && event.detail && event.detail.view;
     if (integratedPanel()) {
-      setView(view === 'regex-collections' ? 'regex-collections' : (view || 'agents'));
+      setView(view === 'regex-collections' ? 'regex-collections' : 'agents');
     } else {
       setView(view === 'regex-collections' ? 'regex-collections' : 'worldbooks');
     }
@@ -684,12 +689,19 @@
   }
 
   function openRegexDrawer() {
-    if (integratedPanel() && global.AIRPStudioAgentsDrawer && typeof global.AIRPStudioAgentsDrawer.open === 'function') {
-      return Promise.resolve(global.AIRPStudioAgentsDrawer.open('regex-collections')).then(function() {
-        ensureMarkup();
-        bindControlsOnce();
-        setView('regex-collections');
-      });
+    if (integratedPanel()) {
+      if (global.AIRPGameDrawer && typeof global.AIRPGameDrawer.close === 'function') global.AIRPGameDrawer.close();
+      if (global.AIRPWorldbookDrawer && typeof global.AIRPWorldbookDrawer.close === 'function') global.AIRPWorldbookDrawer.close();
+      if (global.AIRPStudioAgentsDrawer && typeof global.AIRPStudioAgentsDrawer.close === 'function') global.AIRPStudioAgentsDrawer.close();
+      ensureMarkup();
+      bindControlsOnce();
+      if (workspace && workspace.drawerMotion) workspace.drawerMotion.open(host);
+      else {
+        host.hidden = false;
+        host.setAttribute('aria-hidden', 'false');
+      }
+      setView('regex-collections');
+      return Promise.resolve();
     }
     if (global.AIRPWorldbookDrawer && typeof global.AIRPWorldbookDrawer.open === 'function') {
       return Promise.resolve(global.AIRPWorldbookDrawer.open()).then(function() {
@@ -706,6 +718,17 @@
     return Promise.resolve();
   }
 
+  function closeRegexDrawer() {
+    if (workspace && workspace.drawerMotion) workspace.drawerMotion.close(host);
+    else {
+      host.hidden = true;
+      host.setAttribute('aria-hidden', 'true');
+    }
+    if (workspace && typeof workspace.setNavigationState === 'function') workspace.setNavigationState(null);
+    if (workspace && typeof workspace.patchState === 'function') workspace.patchState('studioDrawer', { open: false, view: null });
+    if (workspace && typeof workspace.emit === 'function') workspace.emit('studio-drawer:closed', { view: 'regex-collections' });
+  }
+
   ensureMarkup();
   bindControlsOnce();
   var regexToggle = $('studio-regex-toggle');
@@ -714,14 +737,13 @@
       var current = workspace && workspace.state && workspace.state.studioDrawer;
       var currentView = current && current.view ? String(current.view).split(':').pop() : '';
       if (current && current.open && currentView === 'regex-collections') {
-        if (global.AIRPStudioAgentsDrawer && typeof global.AIRPStudioAgentsDrawer.close === 'function') global.AIRPStudioAgentsDrawer.close();
-        else if (global.AIRPWorldbookDrawer && typeof global.AIRPWorldbookDrawer.close === 'function') global.AIRPWorldbookDrawer.close();
+        closeRegexDrawer();
       } else {
         openRegexDrawer();
       }
     });
   }
-  if (workspace && workspace.events && typeof workspace.events.addEventListener === 'function') {
+  if (!integratedPanel() && workspace && workspace.events && typeof workspace.events.addEventListener === 'function') {
     workspace.events.addEventListener('studio-drawer:opened', onDrawerOpened);
     workspace.events.addEventListener('studio:drawer-opened', onDrawerOpened);
   }

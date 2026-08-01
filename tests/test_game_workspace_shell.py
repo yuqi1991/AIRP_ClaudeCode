@@ -38,6 +38,7 @@ def test_game_page_loads_workspace_contract_and_visual_tokens():
     assert "studioDrawer" in contract
     assert "nodeDebug" in contract
     assert "setNavigationState" in contract
+    assert "activateDrawerSurface" in contract
     assert "drawerMotion" in contract
     assert "--airp-color-bg" in tokens
     assert "--airp-motion-panel" in tokens
@@ -47,7 +48,7 @@ def test_game_page_uses_airp_nav_order_and_dark_reading_surface():
     page = (WEB_ROOT / "index.html").read_text(encoding="utf-8")
 
     navigation = page[page.index('id="workspace-navigation"'):page.index("</nav>", page.index('id="workspace-navigation"'))]
-    labels = ("游戏", "世界书", "Agents 与编排", "Regex Collections", "模型")
+    labels = ("游戏", "世界书", "Agents 与编排", "正则集合", "模型")
     positions = [navigation.index(label) for label in labels]
     assert positions == sorted(positions)
     assert "--bg: #061326" in page
@@ -58,6 +59,14 @@ def test_game_page_uses_airp_nav_order_and_dark_reading_surface():
     assert '<span class="sep">' not in page
     assert '<span class="tag" id="tb-world">—</span>' not in page
     assert 'setText(\'tb-time\', S.time || \'—\')' not in page
+
+
+def test_game_drawer_exposes_project_delete_control_and_api():
+    script = (WEB_ROOT / "game-drawer.js").read_text(encoding="utf-8")
+
+    assert "data-game-delete" in script
+    assert "method: 'DELETE'" in script
+    assert "删除游戏" in script
 
 
 def test_workspace_contract_exports_state_and_event_boundaries():
@@ -139,6 +148,7 @@ def test_agents_orchestration_drawer_exposes_linear_editor_contract():
     for api_path in (
         "/v1/studio/agents",
         "/prompt-preview",
+        "/v1/session/project",
         "/v1/studio/regex-collections",
         "/v1/studio/graphs",
         "/v1/session/runtime/graph",
@@ -147,6 +157,8 @@ def test_agents_orchestration_drawer_exposes_linear_editor_contract():
     for behavior in (
         "agentFilter",
         "compilePreview",
+        "withActiveProjectCard",
+        "card_facts",
         "finalEnabledNodeId",
         "ensureValidOutput",
         "studio:runtime-graph-selected",
@@ -233,7 +245,7 @@ def test_model_drawer_exposes_redacted_provider_profile_contract():
         "refreshModels",
         "deleteKey",
         "model_discovery",
-        "API key 不会回显",
+        "API 密钥不会回显",
     ):
         assert behavior in script or behavior in page
     assert ".studio-provider-grid" in styles
@@ -244,3 +256,38 @@ def test_regex_view_cannot_leak_into_other_integrated_drawer_views():
 
     assert ".regex-drawer-view[hidden]" in styles
     assert "display: none !important" in styles
+
+
+def test_integrated_drawers_use_one_active_surface_and_scoped_studio_views():
+    contract = (WEB_ROOT / "game-workspace-contract.js").read_text(encoding="utf-8")
+    agents = (WEB_ROOT / "studio-agents-drawer.js").read_text(encoding="utf-8")
+    model = (WEB_ROOT / "studio-model-drawer.js").read_text(encoding="utf-8")
+    game = (WEB_ROOT / "game-drawer.js").read_text(encoding="utf-8")
+    worldbook = (WEB_ROOT / "worldbook-drawer.js").read_text(encoding="utf-8")
+    styles = (WEB_ROOT / "game-workspace.css").read_text(encoding="utf-8")
+
+    assert "activateDrawerSurface" in contract
+    assert "api.activateDrawerSurface('studio')" in agents
+    assert "studioPanel.querySelectorAll('[data-studio-drawer-panel]')" in agents
+    assert "studioPanel.querySelectorAll('[data-studio-drawer-panel]')" in model
+    assert "workspace.activateDrawerSurface('game')" in game
+    assert "!(drawerState && drawerState.open)" in game
+    assert "workspace.activateDrawerSurface('worldbooks')" in worldbook
+    assert '[data-airp-slot="studio-drawer-panel"][hidden]' in styles
+    assert '[data-airp-slot="worldbook-drawer-panel"][hidden]' in styles
+    assert ".studio-drawer-view[hidden] { display: none !important; }" in styles
+    assert ".studio-drawer-grid { display: grid; flex: 1 0 auto; min-height: 100%" in styles
+
+
+def test_regex_collection_surface_is_structurally_separate_from_studio_views():
+    page = (WEB_ROOT / "index.html").read_text(encoding="utf-8")
+    script = (WEB_ROOT / "regex-drawer.js").read_text(encoding="utf-8")
+    styles = (WEB_ROOT / "regex-drawer.css").read_text(encoding="utf-8")
+
+    assert 'id="regex-drawer-panel"' in page
+    assert "document.getElementById('regex-drawer-panel')" in script
+    assert 'data-studio-drawer-panel="regex-collections"' not in script
+    assert "AIRPStudioAgentsDrawer.open('regex-collections')" not in script
+    assert "workspace.activateDrawerSurface('regex')" in script
+    assert '[data-airp-slot="regex-drawer-panel"]' in styles
+    assert "currentPanel.insertAdjacentHTML('beforeend'," in script

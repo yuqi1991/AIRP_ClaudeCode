@@ -175,6 +175,61 @@ def test_project_import_endpoint_uses_card_name_and_strips_source_only_fields(tm
         assert "extensions" not in project
 
 
+def test_project_import_creates_and_binds_embedded_sillytavern_worldbook(tmp_path: Path):
+    with _server(tmp_path) as server:
+        status, imported = _json_request(
+            "POST",
+            f"{server.base_url}/v1/studio/projects/import",
+            {
+                "document": {
+                    "spec": "chara_card_v2",
+                    "data": {
+                        "name": "Card with lore",
+                        "character_book": {
+                            "name": "Embedded lore",
+                            "entries": [
+                                {
+                                    "id": 7,
+                                    "comment": "Harbor",
+                                    "content": "The harbor is foggy.",
+                                    "enabled": True,
+                                    "insertion_order": 3,
+                                }
+                            ],
+                        },
+                    },
+                }
+            },
+        )
+
+        assert status == 201
+        project = imported["project"]
+        assert len(project["worldbook_ids"]) == 1
+        status, worldbooks = _json_request("GET", f"{server.base_url}/v1/studio/worldbooks")
+        assert status == 200
+        imported_book = next(book for book in worldbooks["worldbooks"] if book["id"] == project["worldbook_ids"][0])
+        assert imported_book["name"] == "Embedded lore"
+        assert imported_book["entries"][0]["title"] == "Harbor"
+
+
+def test_project_delete_endpoint_removes_imported_project(tmp_path: Path):
+    with _server(tmp_path) as server:
+        status, imported = _json_request(
+            "POST",
+            f"{server.base_url}/v1/studio/projects/import",
+            {"document": {"spec": "chara_card_v2", "data": {"name": "Disposable card"}}},
+        )
+        assert status == 201
+        project_id = imported["project"]["id"]
+
+        status, deleted = _json_request("DELETE", f"{server.base_url}/v1/studio/projects/{project_id}")
+        assert status == 200
+        assert deleted["deleted_id"] == project_id
+        status, missing = _json_request("GET", f"{server.base_url}/v1/studio/projects/{project_id}")
+        assert status == 404
+        assert missing["error"] == "project_not_found"
+
+
 def test_project_save_reads_worldbook_bindings_on_the_next_runtime_context(tmp_path: Path):
     with _server(tmp_path) as server:
         book = _worldbook(server)

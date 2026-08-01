@@ -6,7 +6,7 @@ AIRP 是一个内容中立的 multi-agent graph runtime，并在其上提供可�
 
 - `airp.engine`：GraphRuntime、ProviderNodeRunner、OpenAI-compatible `chat_completions`/`responses`、Agent instruction 宏、Regex Collection、显式 capability registry。
 - `airp.host.rp`：卡片投影、Session/Revision、世界书按需读取、存档管理和 RP 工具。
-- Studio：Provider、Agent、Graph、Project、Worldbook、Regex Collection 编辑，以及实时 Graph/Agent Trace 调试。
+- 集成式 AIRP 工作区：游戏、Worldbook、Agents 与编排、Regex Collections、模型都在游戏页顶部互斥抽屉中编辑；右侧 Monitor 持续显示存档和 Graph/Agent Trace。
 - 浏览器前端：`narrative.preview.delta` SSE 流式预览、节点输入输出详情、失败节点定位和整图重跑。
 - 角色卡导入：PNG/JSON/TXT、SillyTavern worldbook、卡片脚本提取；脚本资源随 `airp` 包分发。
 
@@ -21,7 +21,7 @@ pip install -e .
 airp-runtime /path/to/card_folder /path/to/project_root
 ```
 
-服务默认监听 `0.0.0.0:8765`。浏览器打开 `http://localhost:8765/`，Studio 在 `/studio`。先在 Studio 配置 Provider/API key，创建或选择 Agent、Graph、Project，再回到游戏页选择激活 Graph。
+服务默认监听 `0.0.0.0:8765`。浏览器打开 `http://localhost:8765/` 进入 AIRP 游戏工作区；顶部抽屉提供全部 Studio 配置入口，旧的 `/studio` 页面仅保留为兼容入口。先配置 Provider/API key，创建或选择 Agent、Graph、Project，再在游戏抽屉中选择当前 Graph。
 
 源码 checkout 未安装 console script 时可使用：
 
@@ -36,9 +36,9 @@ PYTHONPATH=src python -m airp.launcher /path/to/card_folder /path/to/project_roo
 | Provider URL、API format、模型、key | Studio → Providers | Workspace library + Secret Store |
 | Agent 名称、instruction、模型参数、advanced JSON、工具和 Regex Collection | Studio → Agents | Workspace library |
 | Graph 节点顺序与 Agent 绑定 | Studio → Graphs | Workspace library |
-| 角色卡字段、开场、世界书绑定 | Studio → Projects | Workspace projects |
-| 世界书条目 | Studio → Worldbooks | Workspace worldbooks |
-| 会话、revision、事件、投影 | 游戏运行时 | 卡片目录 + Workspace sessions/runtime |
+| 角色卡字段、开场、世界书绑定 | 游戏 → 游戏抽屉 | Workspace projects |
+| 世界书条目 | 游戏 → 世界书抽屉 | Workspace worldbooks |
+| 会话、revision、事件、投影 | 游戏运行时 / Monitor | 卡片目录 + Workspace sessions/runtime |
 
 Agent instruction 是唯一的写作软约束入口。引擎不会替用户规定文风、人称、NSFW、字数、标签或正文格式；需要这些要求时，直接在 Agent instruction 或宏中编辑。
 

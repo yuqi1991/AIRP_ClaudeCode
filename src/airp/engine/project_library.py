@@ -128,6 +128,17 @@ class ProjectLibrary:
             self._write_project(path, project)
             return copy.deepcopy(project)
 
+    def delete_project(self, project_id: str) -> None:
+        path = self._path_for(project_id)
+        with self._lock:
+            if not path.is_file():
+                raise ProjectLibraryError(
+                    "project_not_found",
+                    f"Project {project_id!r} was not found",
+                    status=404,
+                )
+            path.unlink()
+
     def copy_project(self, project_id: str, payload: Any = None) -> dict[str, Any]:
         if payload is not None and not isinstance(payload, dict):
             raise ProjectLibraryError("invalid_project", "copy payload must be an object")
@@ -159,7 +170,28 @@ class ProjectLibrary:
             raise ProjectLibraryError("invalid_project_import", "document must be a JSON object")
         overrides = {key: copy.deepcopy(value) for key, value in payload.items() if key not in {"document", "card_data", "data"}}
         overrides["card_data"] = document
-        return self.create_project(overrides)
+        card_data = document.get("data") if isinstance(document.get("data"), dict) else document
+        embedded = card_data.get("character_book") if isinstance(card_data, dict) else None
+        imported_worldbook = None
+        if isinstance(embedded, dict) and isinstance(embedded.get("entries"), (dict, list)):
+            try:
+                imported_worldbook, _, _ = self.worldbooks.import_worldbook({"document": document})
+            except WorldbookLibraryError as exc:
+                raise ProjectLibraryError(exc.code, str(exc), status=exc.status) from exc
+            existing_ids = overrides.get("worldbook_ids")
+            existing_ids = list(existing_ids) if isinstance(existing_ids, list) else []
+            if imported_worldbook["id"] not in existing_ids:
+                existing_ids.append(imported_worldbook["id"])
+            overrides["worldbook_ids"] = existing_ids
+        try:
+            return self.create_project(overrides)
+        except Exception:
+            if imported_worldbook is not None:
+                try:
+                    self.worldbooks.delete_worldbook(imported_worldbook["id"])
+                except WorldbookLibraryError:
+                    pass
+            raise
 
     def _normalize(self, payload: dict[str, Any], *, project_id: str) -> dict[str, Any]:
         self._validate_id(project_id)

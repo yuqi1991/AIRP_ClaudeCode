@@ -15,8 +15,13 @@
     activeProjectId: null,
     search: '',
     worldbooks: [],
+    worldbooksLoading: false,
+    worldbooksLoaded: false,
+    worldbooksError: '',
+    worldbooksRequestId: 0,
     graphs: [],
     selectedGraph: null,
+    stateRequestId: 0,
     status: ''
   };
 
@@ -61,11 +66,20 @@
       if (global.AIRPStudioAgentsDrawer && typeof global.AIRPStudioAgentsDrawer.close === 'function') global.AIRPStudioAgentsDrawer.close();
     }
     model.open = !!open;
-    document.querySelectorAll('[data-studio-drawer-panel]').forEach(function (view) {
-      view.hidden = model.open ? view !== panel : view === panel;
-      view.classList.toggle('is-active', model.open && view === panel);
-    });
     var workspace = global.AIRPWorkspace;
+    if (model.open) {
+      if (workspace && typeof workspace.activateDrawerSurface === 'function') workspace.activateDrawerSurface('game');
+      else {
+        var studioPanel = document.getElementById('studio-drawer-panel');
+        var worldbookMount = document.getElementById('worldbook-drawer-mount');
+        if (studioPanel) studioPanel.hidden = true;
+        if (worldbookMount) worldbookMount.hidden = true;
+        panel.hidden = false;
+      }
+    } else {
+      panel.hidden = true;
+    }
+    panel.classList.toggle('is-active', model.open);
     if (workspace && typeof workspace.setNavigationState === 'function') workspace.setNavigationState(model.open ? 'game' : null);
     if (workspace && workspace.drawerMotion) {
       if (model.open) workspace.drawerMotion.open(host);
@@ -155,7 +169,8 @@
     var tabs = [
       ['card', '角色卡'], ['openings', '开场'], ['worldbooks', '世界书绑定'], ['graph', '编排选择']
     ];
-    var html = '<div class="airp-game-project-head"><div><h3>' + esc(project.name || project.id) + '</h3><small>' + esc(project.id) + '</small></div></div>' +
+    var html = '<div class="airp-game-project-head"><div><h3>' + esc(project.name || project.id) + '</h3><small>' + esc(project.id) + '</small></div>' +
+      '<button class="airp-game-button danger" type="button" data-game-delete>删除游戏</button></div>' +
       '<div class="airp-game-tabs" role="tablist">' + tabs.map(function(tab) {
         return '<button class="airp-game-button" type="button" role="tab" aria-selected="' + (model.tab === tab[0] ? 'true' : 'false') + '" data-game-tab="' + tab[0] + '">' + tab[1] + '</button>';
       }).join('') + '</div>';
@@ -164,6 +179,7 @@
     Array.prototype.forEach.call(editor.querySelectorAll('[data-game-tab]'), function(button) {
       button.addEventListener('click', function() { model.tab = button.getAttribute('data-game-tab'); renderEditor(); if (model.tab === 'worldbooks') loadWorldbooks(); if (model.tab === 'graph') loadGraphs(); });
     });
+    editor.querySelector('[data-game-delete]').addEventListener('click', deleteProject);
     var pane = editor.querySelector('[data-game-pane]');
     if (model.tab === 'card') renderCardPane(pane);
     if (model.tab === 'openings') renderOpeningsPane(pane);
@@ -230,13 +246,22 @@
 
   function renderWorldbooksPane(pane) {
     var selected = Array.isArray(model.project.worldbook_ids) ? model.project.worldbook_ids : [];
-    pane.innerHTML = '<div class="airp-game-checklist" data-game-worldbook-list><div class="airp-game-empty">正在读取世界书…</div></div>' +
-      '<div class="airp-game-form-actions"><button class="airp-game-button primary" type="button" data-game-save-worldbooks>保存绑定</button></div>';
-    if (model.worldbooks.length) {
-      pane.querySelector('[data-game-worldbook-list]').innerHTML = model.worldbooks.map(function(book) {
+    var listHtml = '<div class="airp-game-empty">正在读取世界书…</div>';
+    if (model.worldbooksError) {
+      listHtml = '<div class="airp-game-empty airp-game-error">读取世界书失败：' + esc(model.worldbooksError) +
+        '<button class="airp-game-button" type="button" data-game-retry-worldbooks>重试</button></div>';
+    } else if (model.worldbooksLoaded && !model.worldbooks.length) {
+      listHtml = '<div class="airp-game-empty">暂无可用世界书，请先在“世界书”抽屉中新建或导入。</div>';
+    } else if (model.worldbooksLoaded) {
+      listHtml = model.worldbooks.map(function(book) {
         return '<label><input type="checkbox" value="' + esc(book.id) + '" ' + (selected.indexOf(book.id) >= 0 ? 'checked' : '') + '>' + esc(book.name || book.id) + '</label>';
       }).join('');
     }
+    pane.innerHTML = '<div class="airp-game-checklist" data-game-worldbook-list>' + listHtml + '</div>' +
+      '<div class="airp-game-form-actions"><button class="airp-game-button primary" type="button" data-game-save-worldbooks>保存绑定</button></div>';
+    var retry = pane.querySelector('[data-game-retry-worldbooks]');
+    if (retry) retry.addEventListener('click', loadWorldbooks);
+    pane.querySelector('[data-game-save-worldbooks]').disabled = !model.worldbooksLoaded || !!model.worldbooksError;
     pane.querySelector('[data-game-save-worldbooks]').addEventListener('click', saveWorldbooks);
   }
 
@@ -273,6 +298,22 @@
       renderList();
       renderEditor();
       setStatus(message || '已保存');
+    }).catch(function(error) { setStatus(error.message, true); });
+  }
+
+  function deleteProject() {
+    if (!model.project || !global.confirm('从游戏列表删除“' + (model.project.name || model.project.id) + '”？此操作无法撤销。')) return;
+    var projectId = model.project.id;
+    setStatus('正在删除游戏…');
+    return request('/v1/studio/projects/' + encodeURIComponent(projectId), { method: 'DELETE' }).then(function(data) {
+      model.project = null;
+      model.activeProjectId = data.active_project_id || null;
+      model.projects = data.projects || model.projects.filter(function(item) { return item.id !== projectId; });
+      renderList();
+      renderEditor();
+      setStatus('游戏已删除');
+      if (global.AIRPWorkspace) global.AIRPWorkspace.emit('project:deleted', { project_id: projectId });
+      return loadState();
     }).catch(function(error) { setStatus(error.message, true); });
   }
 
@@ -324,10 +365,27 @@
   }
 
   function loadWorldbooks() {
-    request('/v1/studio/worldbooks').then(function(data) {
+    var requestId = ++model.worldbooksRequestId;
+    model.worldbooksLoading = true;
+    model.worldbooksLoaded = false;
+    model.worldbooksError = '';
+    if (model.tab === 'worldbooks') renderEditor();
+    return request('/v1/studio/worldbooks').then(function(data) {
+      if (requestId !== model.worldbooksRequestId) return data;
       model.worldbooks = data.worldbooks || [];
+      model.worldbooksLoading = false;
+      model.worldbooksLoaded = true;
       if (model.tab === 'worldbooks') renderEditor();
-    }).catch(function(error) { setStatus(error.message, true); });
+      return data;
+    }).catch(function(error) {
+      if (requestId !== model.worldbooksRequestId) return null;
+      model.worldbooksLoading = false;
+      model.worldbooksLoaded = true;
+      model.worldbooksError = error.message || '请求失败';
+      if (model.tab === 'worldbooks') renderEditor();
+      setStatus(error.message, true);
+      return null;
+    });
   }
 
   function loadGraphs() {
@@ -346,15 +404,21 @@
   }
 
   function loadState() {
+    var requestId = ++model.stateRequestId;
     return request('/v1/session/project').then(function(data) {
+      if (requestId !== model.stateRequestId) return data;
       model.projects = data.projects || [];
       model.activeProjectId = data.active_project_id || null;
       renderList();
       if (model.activeProjectId) return loadProject(model.activeProjectId);
       model.project = null;
       renderEditor();
-      if (!model.projects.length && !model.open) setOpen(true);
-    }).catch(function(error) { setStatus(error.message, true); });
+      var drawerState = global.AIRPWorkspace && global.AIRPWorkspace.state && global.AIRPWorkspace.state.studioDrawer;
+      if (!model.projects.length && !model.open && !(drawerState && drawerState.open)) setOpen(true);
+    }).catch(function(error) {
+      if (requestId === model.stateRequestId) setStatus(error.message, true);
+      return null;
+    });
   }
 
   function waitForIdle() {
@@ -396,6 +460,11 @@
       model.activeProjectId = data.active_project_id || projectId;
       model.projects = data.projects || model.projects;
       model.project = data.project || null;
+      model.worldbooks = [];
+      model.worldbooksLoading = false;
+      model.worldbooksLoaded = false;
+      model.worldbooksError = '';
+      model.worldbooksRequestId += 1;
       model.tab = 'card';
       renderList();
       renderEditor();

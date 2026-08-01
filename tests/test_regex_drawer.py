@@ -23,7 +23,7 @@ def test_game_page_mounts_regex_collection_drawer_and_api_controls():
     assert '<link rel="stylesheet" href="regex-drawer.css">' in page
     assert '<script src="regex-drawer.js"></script>' in page
     assert 'data-airp-drawer-view="worldbooks"' in page
-    assert "data-studio-drawer-panel" in script
+    assert "document.getElementById('regex-drawer-panel')" in script
     assert "studio:drawer-opened" in script
     for control in (
         "regex-drawer-library-search",
@@ -99,10 +99,22 @@ def test_regex_drawer_reads_rules_tests_collection_and_agent_binding(tmp_path: P
         assert status == 201
 
         with _HeadlessBrowser(f"{server.base_url}/", tmp_path / "chrome-profile") as browser:
-            browser.wait_for('document.querySelector("#studio-regex-toggle")')
+            browser.wait_for('window.AIRPRegexDrawer && window.AIRPStudioAgentsDrawer && document.querySelector("#studio-regex-toggle")')
             browser.click("#studio-regex-toggle")
             browser.wait_for('document.querySelector("[data-regex-drawer-view=\\"regex-collections\\"]")')
             browser.wait_for('document.querySelector("#regex-drawer-list [data-regex-collection-id]")')
+            assert browser.evaluate("document.getElementById('regex-drawer-panel').parentElement.id === 'studio-drawer-host'")
+            assert browser.evaluate("document.getElementById('studio-drawer-panel').hidden")
+
+            browser.click("#studio-model-toggle")
+            browser.wait_for("!document.getElementById('studio-model-view').hidden")
+            assert browser.evaluate("document.getElementById('regex-drawer-panel').hidden")
+            browser.click("#studio-agents-toggle")
+            browser.wait_for("!document.getElementById('studio-agents-view').hidden")
+            assert browser.evaluate("document.getElementById('studio-model-view').hidden")
+            browser.click("#studio-regex-toggle")
+            browser.wait_for("!document.getElementById('regex-drawer-panel').hidden")
+            assert browser.evaluate("document.getElementById('studio-drawer-panel').hidden")
             assert browser.evaluate("document.getElementById('regex-drawer-list').textContent.includes('Strip prose')")
 
             browser.click(f'#regex-drawer-list [data-regex-collection-id="{collection_id}"]')
@@ -122,16 +134,18 @@ def test_regex_drawer_reads_rules_tests_collection_and_agent_binding(tmp_path: P
             browser.wait_for("document.getElementById('regex-drawer-test-output').textContent === 'Hello'")
             assert browser.evaluate("document.getElementById('regex-drawer-diagnostics').textContent.includes('Strip markup')")
 
-            browser.wait_for("document.querySelectorAll('#regex-drawer-agent-bindings select').length === 1")
+            browser.wait_for(
+                "document.querySelector('#regex-drawer-agent-bindings select[data-agent-id=drawer-agent]')"
+            )
             browser.evaluate(
                 f"""(() => {{
-                    const select = document.querySelector('#regex-drawer-agent-bindings select');
+                    const select = document.querySelector('#regex-drawer-agent-bindings select[data-agent-id=drawer-agent]');
                     select.value = {collection_id!r};
                     select.dispatchEvent(new Event('change', {{bubbles: true}}));
                     return true;
                 }})()"""
             )
-            browser.wait_for("document.getElementById('regex-drawer-notice').textContent.includes('binding saved')")
+            browser.wait_for("document.getElementById('regex-drawer-notice').textContent.includes('绑定已保存')")
 
         status, payload = _json_request("GET", f"{server.base_url}/v1/studio/agents/drawer-agent")
         assert status == 200

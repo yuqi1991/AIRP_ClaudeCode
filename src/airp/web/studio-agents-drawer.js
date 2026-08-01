@@ -119,7 +119,7 @@
     try {
       return JSON.parse(text);
     } catch (_) {
-      setStatus('Advanced JSON 或预览 JSON 无法解析', true);
+      setStatus('高级参数或预览 JSON 无法解析', true);
       return null;
     }
   }
@@ -129,6 +129,9 @@
     if (global.AIRPGameDrawer && typeof global.AIRPGameDrawer.close === 'function') global.AIRPGameDrawer.close();
     if (global.AIRPWorldbookDrawer && typeof global.AIRPWorldbookDrawer.close === 'function') global.AIRPWorldbookDrawer.close();
     state.view = nextView;
+    var api = contract();
+    if (api && typeof api.activateDrawerSurface === 'function') api.activateDrawerSurface('studio');
+    else if ($('studio-drawer-panel')) $('studio-drawer-panel').hidden = false;
     openHost();
     var toggle = $('studio-agents-toggle');
     setNavigation(nextView === 'orchestration' ? 'agents' : nextView);
@@ -145,7 +148,7 @@
       modeToggle.title = nextView === 'agents' ? '切换到编排' : '切换到 Agents';
     }
     var title = $('studio-drawer-title');
-    if (title) title.textContent = nextView === 'orchestration' ? '编排' : (nextView === 'agents' ? 'Agents' : (nextView === 'model' ? '模型' : 'Regex Collections'));
+    if (title) title.textContent = nextView === 'orchestration' ? '编排' : (nextView === 'agents' ? 'Agents' : (nextView === 'model' ? '模型' : '正则集合'));
     patchWorkspace({ open: true, view: 'agents-orchestration:' + nextView });
     emit('studio:drawer-opened', { view: nextView });
     renderDrawerView();
@@ -173,7 +176,9 @@
   }
 
   function renderDrawerView() {
-    qa('[data-studio-drawer-panel]').forEach(function (panel) {
+    var studioPanel = $('studio-drawer-panel');
+    if (!studioPanel) return;
+    Array.prototype.slice.call(studioPanel.querySelectorAll('[data-studio-drawer-panel]')).forEach(function (panel) {
       var active = panel.getAttribute('data-studio-drawer-panel') === state.view;
       panel.classList.toggle('is-active', active);
       panel.hidden = !active;
@@ -205,7 +210,7 @@
       title.textContent = agent.name || agent.agent_id;
       var meta = document.createElement('span');
       meta.className = 'studio-object-item-meta';
-      meta.textContent = agent.model_id || 'Provider default';
+      meta.textContent = agent.model_id || '服务商默认模型';
       row.append(title, meta);
       row.addEventListener('click', function () { selectAgent(agent.agent_id); });
       list.appendChild(row);
@@ -268,14 +273,14 @@
       }),
       jsonFetch('/v1/studio/regex-collections').then(function (data) {
         state.regexCollections = data.collections || [];
-        fillSelect($('studio-agent-regex'), state.regexCollections, '不绑定 Regex Collection', state.selectedAgent && state.selectedAgent.regex_collection_id);
+        fillSelect($('studio-agent-regex'), state.regexCollections, '不绑定正则集合', state.selectedAgent && state.selectedAgent.regex_collection_id);
       })
     ]).then(function () {
       state.referencesLoaded = true;
       fillAgentSelects();
       if (state.graphDraft) renderTopology();
     }).catch(function (error) {
-      setStatus(error.message || '读取 Provider 或 Regex Collection 失败', true);
+      setStatus(error.message || '读取服务商或正则集合失败', true);
     });
   }
 
@@ -299,7 +304,7 @@
   function agentPayload() {
     var advanced = readJson('studio-agent-advanced', {});
     if (advanced === null || typeof advanced !== 'object' || Array.isArray(advanced)) {
-      setStatus('Advanced JSON 必须是 JSON object', true);
+      setStatus('高级参数必须是 JSON 对象', true);
       return null;
     }
     var generation = {};
@@ -385,6 +390,33 @@
     return value;
   }
 
+  function withActiveProjectCard(context) {
+    return jsonFetch('/v1/session/project').then(function (data) {
+      var project = data && data.project;
+      if (!project || typeof project !== 'object') return context;
+      var prompt = project.card_prompt && typeof project.card_prompt === 'object' ? project.card_prompt : {};
+      var openings = Array.isArray(project.openings) ? project.openings : [];
+      var opening = openings.filter(function (item) { return item && item.is_default; })[0] || openings[0] || {};
+      var cardFacts = {
+        name: project.name || '',
+        avatar: project.avatar || '',
+        description: project.description || '',
+        personality: project.personality || '',
+        scenario: project.scenario || '',
+        system_prompt: prompt.system || '',
+        post_history_instructions: prompt.post_history || '',
+        first_mes: opening.content || '',
+        alternate_greetings: openings.filter(function (item) { return item && item !== opening; }).map(function (item) { return item.content || ''; })
+      };
+      var supplied = context && typeof context === 'object' ? context : {};
+      var suppliedFacts = supplied.card_facts && typeof supplied.card_facts === 'object' ? supplied.card_facts : {};
+      return Object.assign({}, supplied, { card_facts: Object.assign(cardFacts, suppliedFacts) });
+    }).catch(function () {
+      // Preview remains usable with manually supplied Runtime context when no game is active.
+      return context;
+    });
+  }
+
   function compilePreview() {
     if (!state.selectedAgentId) return;
     var body;
@@ -397,16 +429,19 @@
       };
     } catch (_) { return; }
     Object.keys(body).forEach(function (key) { if (body[key] === undefined) delete body[key]; });
-    setStatus('编译 Prompt…');
-    jsonFetch('/v1/studio/agents/' + encodeURIComponent(state.selectedAgentId) + '/prompt-preview', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-      body: JSON.stringify(body)
+    setStatus('编译提示词…');
+    withActiveProjectCard(body.context).then(function (context) {
+      body.context = context;
+      return jsonFetch('/v1/studio/agents/' + encodeURIComponent(state.selectedAgentId) + '/prompt-preview', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+        body: JSON.stringify(body)
+      });
     }).then(function (data) {
       renderPreview(data.preview || {});
-      setStatus('Prompt 预览已更新');
+      setStatus('提示词预览已更新');
       emit('studio:agent-previewed', data.preview);
-    }).catch(function (error) { setStatus(error.message || '编译 Prompt 失败', true); });
+    }).catch(function (error) { setStatus(error.message || '编译提示词失败', true); });
   }
 
   function renderPreview(preview) {
@@ -416,7 +451,7 @@
     if (!messages.length) {
       var empty = document.createElement('p');
       empty.className = 'studio-empty';
-      empty.textContent = '预览没有返回 messages。';
+      empty.textContent = '预览没有返回消息。';
       target.appendChild(empty);
       return;
     }
@@ -424,7 +459,9 @@
       var item = document.createElement('article');
       item.className = 'studio-preview-message';
       var label = document.createElement('strong');
-      label.textContent = (message.source || 'runtime') + ' · ' + (message.role || 'message');
+      var sourceLabels = { instruction: '指令', project_input: '游戏输入', handoff: '交接内容', tool_protocol: '工具协议', output_contract: '输出契约' };
+      var roleLabels = { system: '系统', user: '用户', assistant: '助手' };
+      label.textContent = (sourceLabels[message.source] || message.source || '运行时') + ' · ' + (roleLabels[message.role] || message.role || '消息');
       var content = document.createElement('span');
       content.textContent = message.content || '';
       item.append(label, content);
@@ -458,7 +495,7 @@
       title.textContent = graph.name || id;
       var meta = document.createElement('span');
       meta.className = 'studio-object-item-meta';
-      meta.textContent = (graph.nodes || []).length + ' 个节点' + (id === state.runtimeGraphId ? ' · Runtime' : '');
+      meta.textContent = (graph.nodes || []).length + ' 个节点' + (id === state.runtimeGraphId ? ' · 运行中' : '');
       row.append(title, meta);
       row.addEventListener('click', function () { selectGraph(id); });
       list.appendChild(row);
@@ -472,8 +509,8 @@
     $('studio-graph-form').reset();
     $('studio-graph-id').value = '';
     $('studio-graph-name').value = '';
-    $('studio-graph-selection').textContent = '新建 Graph';
-    $('studio-graph-title').textContent = 'Linear topology';
+    $('studio-graph-selection').textContent = '新建编排图';
+    $('studio-graph-title').textContent = '线性拓扑';
     setButtonDisabled('studio-graph-use', true);
     setButtonDisabled('studio-graph-copy', true);
     setButtonDisabled('studio-graph-delete', true);
@@ -503,7 +540,7 @@
     $('studio-graph-id').value = state.graphDraft.id || '';
     $('studio-graph-name').value = state.graphDraft.name || '';
     $('studio-graph-selection').textContent = state.graphDraft.name || state.graphDraft.id || '未选择 Graph';
-    $('studio-graph-title').textContent = state.graphDraft.name || 'Linear topology';
+    $('studio-graph-title').textContent = state.graphDraft.name || '线性拓扑';
     setButtonDisabled('studio-graph-use', false);
     setButtonDisabled('studio-graph-copy', false);
     setButtonDisabled('studio-graph-delete', false);
@@ -543,7 +580,7 @@
       if (node.enabled === false) return;
       var option = document.createElement('option');
       option.value = node.node_id;
-      option.textContent = (node.label || node.node_id) + (node.node_id === finalEnabledNodeId() ? ' · final' : '');
+      option.textContent = (node.label || node.node_id) + (node.node_id === finalEnabledNodeId() ? ' · 最终节点' : '');
       option.disabled = node.node_id !== finalEnabledNodeId();
       select.appendChild(option);
     });
@@ -599,7 +636,7 @@
       title.textContent = node.label || node.node_id;
       var status = document.createElement('span');
       status.className = 'studio-topology-node-state';
-      status.textContent = node.enabled === false ? '停用' : (node.node_id === state.graphDraft.output_node_id ? 'Output' : '启用');
+      status.textContent = node.enabled === false ? '停用' : (node.node_id === state.graphDraft.output_node_id ? '输出' : '启用');
       head.append(title, status);
       var meta = document.createElement('div');
       meta.className = 'studio-topology-node-meta';
@@ -610,7 +647,7 @@
       if (node.node_id === state.graphDraft.output_node_id) {
         var output = document.createElement('span');
         output.className = 'studio-output-label';
-        output.textContent = 'Output node';
+        output.textContent = '输出节点';
         card.appendChild(output);
       }
       var actions = document.createElement('div');
@@ -643,13 +680,13 @@
   }
 
   function selectGraph(graphId) {
-    setStatus('读取 Graph…');
+    setStatus('读取编排图…');
     return jsonFetch('/v1/studio/graphs/' + encodeURIComponent(graphId)).then(function (data) {
       fillGraph(data.graph);
       setStatus('');
       emit('studio:graph-selected', data.graph);
       return data.graph;
-    }).catch(function (error) { setStatus(error.message || '读取 Graph 失败', true); });
+    }).catch(function (error) { setStatus(error.message || '读取编排图失败', true); });
   }
 
   function loadGraphs() {
@@ -662,17 +699,17 @@
       } else if (state.graphs.length) {
         return selectGraph(state.graphs[0].id || state.graphs[0].graph_id);
       }
-    }).catch(function (error) { setStatus(error.message || '读取 Graphs 失败', true); });
+    }).catch(function (error) { setStatus(error.message || '读取编排图列表失败', true); });
   }
 
   function loadRuntimeGraph() {
     return jsonFetch('/v1/session/runtime/graph').then(function (data) {
       state.runtimeGraphId = data.selected && data.selected.graph_id || null;
-      $('studio-graph-runtime-state').textContent = state.runtimeGraphId ? 'Runtime: ' + state.runtimeGraphId : 'Runtime 未选择 Graph';
+      $('studio-graph-runtime-state').textContent = state.runtimeGraphId ? '运行时：' + state.runtimeGraphId : '运行时未选择编排图';
       renderGraphList();
       emit('studio:runtime-graph-loaded', data);
     }).catch(function () {
-      $('studio-graph-runtime-state').textContent = 'Runtime 选择不可用';
+      $('studio-graph-runtime-state').textContent = '运行时选择不可用';
     });
   }
 
@@ -701,16 +738,16 @@
   function graphPayload() {
     syncNodeFields();
     if (!state.graphDraft || !state.graphDraft.name.trim()) {
-      setStatus('Graph 名称不能为空', true);
+      setStatus('编排图名称不能为空', true);
       return null;
     }
     if (!state.graphDraft.nodes.length) {
-      setStatus('Graph 至少需要一个节点', true);
+      setStatus('编排图至少需要一个节点', true);
       return null;
     }
     ensureValidOutput();
     if (!state.graphDraft.output_node_id) {
-      setStatus('请设置 Output node', true);
+      setStatus('请设置输出节点', true);
       return null;
     }
     state.graphDraft.nodes.forEach(function (node, index) { node.order = index; });
@@ -737,25 +774,25 @@
       fillGraph(data.graph);
       return loadGraphs();
     }).then(function () {
-      setStatus('Graph 已保存');
+      setStatus('编排图已保存');
       emit('studio:graph-saved', state.graphDraft);
-    }).catch(function (error) { setStatus(error.message || '保存 Graph 失败', true); });
+    }).catch(function (error) { setStatus(error.message || '保存编排图失败', true); });
   }
 
   function useGraph() {
     if (!state.selectedGraphId) return;
-    setStatus('更新 Runtime 选择…');
+    setStatus('更新运行时选择…');
     jsonFetch('/v1/session/runtime/graph', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
       body: JSON.stringify({ graph_id: state.selectedGraphId })
     }).then(function (data) {
       state.runtimeGraphId = state.selectedGraphId;
-      $('studio-graph-runtime-state').textContent = 'Runtime: ' + state.runtimeGraphId;
+      $('studio-graph-runtime-state').textContent = '运行时：' + state.runtimeGraphId;
       renderGraphList();
-      setStatus('Runtime 选择已保存');
+      setStatus('运行时选择已保存');
       emit('studio:runtime-graph-selected', data);
-    }).catch(function (error) { setStatus(error.message || '更新 Runtime 选择失败', true); });
+    }).catch(function (error) { setStatus(error.message || '更新运行时选择失败', true); });
   }
 
   function copyGraph() {
@@ -768,16 +805,16 @@
     }).then(function (data) {
       fillGraph(data.graph);
       return loadGraphs();
-    }).then(function () { setStatus('Graph 已复制'); }).catch(function (error) { setStatus(error.message || '复制 Graph 失败', true); });
+    }).then(function () { setStatus('编排图已复制'); }).catch(function (error) { setStatus(error.message || '复制编排图失败', true); });
   }
 
   function deleteGraph() {
-    if (!state.selectedGraphId || !global.confirm('删除当前 Graph？')) return;
+    if (!state.selectedGraphId || !global.confirm('删除当前编排图？')) return;
     setStatus('删除中…');
     jsonFetch('/v1/studio/graphs/' + encodeURIComponent(state.selectedGraphId), { method: 'DELETE' })
       .then(function () { resetGraph(); return loadGraphs(); })
-      .then(function () { setStatus('Graph 已删除'); })
-      .catch(function (error) { setStatus(error.message || '删除 Graph 失败', true); });
+      .then(function () { setStatus('编排图已删除'); })
+      .catch(function (error) { setStatus(error.message || '删除编排图失败', true); });
   }
 
   function openNodeAgent() {

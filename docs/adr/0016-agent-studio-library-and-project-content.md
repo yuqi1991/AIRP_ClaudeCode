@@ -8,4 +8,6 @@ Agent Studio 将 Provider Profile、Agent Definition、Prompt Preset、Graph Def
 
 Worldbook Definition 是无版本历史的简单 skill-mode 文件对象，一个 Project 可以绑定多本，且所有 Session 共享 Project 的绑定。共享世界书保存后影响所有绑定 Project 的下一次 Graph Run；需要定制时复制文件并重新绑定。世界书条目标题在全局 Library 唯一，冲突时自动追加 `-copy` 后缀；角色卡内嵌、SillyTavern World Info 和 AIRP JSON 均可导入，第一阶段只承诺 AIRP JSON 导出。
 
+导入带有 `character_book` 的 SillyTavern 角色卡时，Project 导入边界同时创建对应的 Worldbook Definition，并立即写入该 Project 的 Worldbook Bindings；若 Project 创建失败，刚创建的世界书随事务回滚。删除游戏会删除 Project Definition；若删除的是当前游戏且仍有其他游戏，Runtime 自动切换到剩余游戏。
+
 全局复用会让一次世界书编辑影响多个 Project，因此 Studio 必须显示引用关系并在删除被引用对象时阻止操作。该取舍避免 Session 覆盖、绑定层条目覆盖和世界书版本系统，同时保持通用资料与文风设定的跨角色复用。

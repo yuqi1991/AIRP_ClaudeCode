@@ -33,53 +33,53 @@
     '<div class="worldbook-drawer-backdrop" data-worldbook-drawer-close="true"></div>',
     '<section class="worldbook-drawer-panel" role="dialog" aria-modal="true" aria-labelledby="worldbook-drawer-title" data-airp-drawer-view="worldbooks" data-studio-drawer-panel="worldbooks">',
       '<header class="worldbook-drawer-header">',
-        '<div><div class="worldbook-drawer-kicker">AIRP Studio</div><div class="worldbook-drawer-title" id="worldbook-drawer-title">Worldbook Definitions</div></div>',
+        '<div><div class="worldbook-drawer-kicker">AIRP 工作室</div><div class="worldbook-drawer-title" id="worldbook-drawer-title">世界书定义</div></div>',
         '<button class="worldbook-drawer-close" id="worldbook-drawer-close" type="button" data-worldbook-drawer-close="true" aria-label="关闭世界书抽屉" title="关闭">×</button>',
       '</header>',
       '<div class="worldbook-drawer-toolbar">',
-        '<input class="worldbook-drawer-search" id="worldbook-drawer-library-search" type="search" placeholder="Search Worldbooks" aria-label="Search Worldbooks">',
-        '<button class="worldbook-drawer-button primary" id="worldbook-drawer-new" type="button">New</button>',
-        '<button class="worldbook-drawer-button" id="worldbook-drawer-import-button" type="button">Import JSON</button>',
+        '<input class="worldbook-drawer-search" id="worldbook-drawer-library-search" type="search" placeholder="搜索世界书" aria-label="搜索世界书">',
+        '<button class="worldbook-drawer-button primary" id="worldbook-drawer-new" type="button">新建</button>',
+        '<button class="worldbook-drawer-button" id="worldbook-drawer-import-button" type="button">导入 JSON</button>',
         '<input id="worldbook-drawer-import" type="file" accept="application/json,.json" hidden>',
       '</div>',
       '<div class="worldbook-drawer-body">',
-        '<aside class="worldbook-drawer-column worldbook-library-column" aria-label="Worldbook library">',
-          '<div class="worldbook-drawer-column-heading"><h2>Library</h2><span class="worldbook-drawer-count" id="worldbook-drawer-count">0 saved</span></div>',
+        '<aside class="worldbook-drawer-column worldbook-library-column" aria-label="世界书库">',
+          '<div class="worldbook-drawer-column-heading"><h2>世界书库</h2><span class="worldbook-drawer-count" id="worldbook-drawer-count">已保存 0 个</span></div>',
           '<div class="worldbook-library-list" id="worldbook-drawer-list" aria-live="polite"></div>',
         '</aside>',
-        '<main class="worldbook-drawer-column worldbook-editor-column" aria-label="Worldbook editor">',
+        '<main class="worldbook-drawer-column worldbook-editor-column" aria-label="世界书编辑器">',
           '<div class="worldbook-editor-header">',
-            '<input class="worldbook-drawer-input" id="worldbook-drawer-name" required autocomplete="off" placeholder="Worldbook name" aria-label="Worldbook name">',
-            '<button class="worldbook-drawer-button" id="worldbook-drawer-rename" type="button" hidden>Rename</button>',
+            '<input class="worldbook-drawer-input" id="worldbook-drawer-name" required autocomplete="off" placeholder="世界书名称" aria-label="世界书名称">',
+            '<button class="worldbook-drawer-button" id="worldbook-drawer-rename" type="button" hidden>重命名</button>',
           '</div>',
           '<div class="worldbook-editor-actions">',
-            '<button class="worldbook-drawer-button" id="worldbook-drawer-copy" type="button" hidden>Copy</button>',
-            '<button class="worldbook-drawer-button" id="worldbook-drawer-export" type="button" hidden>Export JSON</button>',
+            '<button class="worldbook-drawer-button" id="worldbook-drawer-copy" type="button" hidden>复制</button>',
+            '<button class="worldbook-drawer-button" id="worldbook-drawer-export" type="button" hidden>导出 JSON</button>',
           '</div>',
           '<div class="worldbook-entry-toolbar">',
-            '<h2>Entries</h2>',
+            '<h2>条目</h2>',
             '<div class="worldbook-entry-toolbar-controls">',
-              '<input class="worldbook-drawer-search" id="worldbook-drawer-entry-search" type="search" placeholder="Search entries" aria-label="Search entries">',
-              '<select class="worldbook-drawer-select" id="worldbook-drawer-entry-sort" aria-label="Sort entries"><option value="order">Order</option><option value="title">Title</option><option value="enabled">Enabled</option></select>',
-              '<button class="worldbook-drawer-button" id="worldbook-drawer-add-entry" type="button">Add entry</button>',
+              '<input class="worldbook-drawer-search" id="worldbook-drawer-entry-search" type="search" placeholder="搜索条目" aria-label="搜索条目">',
+              '<select class="worldbook-drawer-select" id="worldbook-drawer-entry-sort" aria-label="条目排序"><option value="order">原始顺序</option><option value="title">标题</option><option value="enabled">启用状态</option></select>',
+              '<button class="worldbook-drawer-button" id="worldbook-drawer-add-entry" type="button">添加条目</button>',
             '</div>',
           '</div>',
           '<div class="worldbook-drawer-hint" id="worldbook-drawer-entry-count"></div>',
           '<div class="worldbook-entry-list" id="worldbook-drawer-entries"></div>',
         '</main>',
-        '<aside class="worldbook-drawer-column worldbook-binding-column" aria-label="Project Worldbook bindings">',
-          '<div class="worldbook-binding-heading"><h2>Project bindings</h2></div>',
-          '<div class="worldbook-drawer-hint">Choose which Worldbooks the selected Project loads on the next Graph Run.</div>',
-          '<div class="worldbook-binding-project"><label class="worldbook-binding-label" for="worldbook-drawer-project">Project</label><select class="worldbook-drawer-select" id="worldbook-drawer-project" aria-label="Project"></select></div>',
+        '<aside class="worldbook-drawer-column worldbook-binding-column" aria-label="游戏世界书绑定">',
+          '<div class="worldbook-binding-heading"><h2>游戏绑定</h2></div>',
+          '<div class="worldbook-drawer-hint">选择下次运行编排时由当前游戏加载的世界书。</div>',
+          '<div class="worldbook-binding-project"><label class="worldbook-binding-label" for="worldbook-drawer-project">游戏</label><select class="worldbook-drawer-select" id="worldbook-drawer-project" aria-label="游戏"></select></div>',
           '<div class="worldbook-binding-list" id="worldbook-drawer-bindings"></div>',
-          '<button class="worldbook-drawer-button primary" id="worldbook-drawer-save-bindings" type="button">Save bindings</button>',
+          '<button class="worldbook-drawer-button primary" id="worldbook-drawer-save-bindings" type="button">保存绑定</button>',
         '</aside>',
       '</div>',
       '<footer class="worldbook-drawer-footer">',
         '<div class="worldbook-drawer-notice" id="worldbook-drawer-notice" role="status" aria-live="polite"></div>',
         '<div class="worldbook-drawer-actions">',
-          '<button class="worldbook-drawer-button primary" id="worldbook-drawer-save" type="button">Save Worldbook</button>',
-          '<button class="worldbook-drawer-button danger" id="worldbook-drawer-delete" type="button" hidden>Delete</button>',
+          '<button class="worldbook-drawer-button primary" id="worldbook-drawer-save" type="button">保存世界书</button>',
+          '<button class="worldbook-drawer-button danger" id="worldbook-drawer-delete" type="button" hidden>删除</button>',
         '</div>',
       '</footer>',
     '</section>'
@@ -118,6 +118,14 @@
   }
 
   function activateSharedPanel() {
+    if (workspace && typeof workspace.activateDrawerSurface === 'function') workspace.activateDrawerSurface('worldbooks');
+    else {
+      var studioPanel = document.getElementById('studio-drawer-panel');
+      var gamePanel = document.getElementById('game-drawer-panel');
+      if (studioPanel) studioPanel.hidden = true;
+      if (gamePanel) gamePanel.hidden = true;
+      mount.hidden = false;
+    }
     var panels = host.querySelectorAll('[data-studio-drawer-panel]');
     var worldbookPanel = host.querySelector('.worldbook-drawer-panel');
     Array.prototype.forEach.call(panels, function(panel) {
@@ -141,6 +149,7 @@
     if (!notice) return;
     notice.className = 'worldbook-drawer-notice' + (kind ? ' ' + kind : '');
     notice.textContent = message || '';
+    if (message && typeof notice.scrollIntoView === 'function') notice.scrollIntoView({ block: 'nearest' });
   }
 
   async function request(path, options) {
@@ -148,7 +157,7 @@
     var payload = {};
     try { payload = await response.json(); } catch (_) { payload = {}; }
     if (!response.ok) {
-      var error = new Error(payload.message || payload.error || 'Studio request failed');
+      var error = new Error(payload.message || payload.error || '工作室请求失败');
       error.payload = payload;
       error.status = response.status;
       throw error;
@@ -158,7 +167,9 @@
 
   function errorMessage(error, fallback) {
     if (error && error.payload && Array.isArray(error.payload.references) && error.payload.references.length) {
-      return (error.message || fallback) + ' Referenced by ' + error.payload.references.map(function(item) { return item.name || item.id; }).join(', ') + '.';
+      var references = error.payload.references.map(function(item) { return item.name || item.id; }).join('、');
+      if (error.payload.error === 'worldbook_in_use') return '无法删除：此世界书仍被以下游戏引用：' + references + '。请先解除绑定。';
+      return (error.message || fallback) + '；仍被以下对象引用：' + references + '。';
     }
     return error && error.message ? error.message : fallback;
   }
@@ -184,7 +195,7 @@
     if ($('worldbook-drawer-entry-search')) $('worldbook-drawer-entry-search').value = '';
     if ($('worldbook-drawer-entry-sort')) $('worldbook-drawer-entry-sort').value = 'order';
     renderAll();
-    showNotice('New Worldbook Definition');
+    showNotice('新建世界书定义');
     if ($('worldbook-drawer-name')) $('worldbook-drawer-name').focus();
   }
 
@@ -217,7 +228,7 @@
     var target = $('worldbook-drawer-list');
     if (!target) return;
     var count = $('worldbook-drawer-count');
-    if (count) count.textContent = state.worldbooks.length + ' saved';
+    if (count) count.textContent = '已保存 ' + state.worldbooks.length + ' 个';
     var rows = visibleBooks().map(function(book) {
       var row = document.createElement('button');
       row.type = 'button';
@@ -229,7 +240,7 @@
       title.textContent = book.name;
       var meta = document.createElement('span');
       meta.className = 'worldbook-library-meta';
-      meta.textContent = (book.entries || []).length + ' entr' + ((book.entries || []).length === 1 ? 'y' : 'ies');
+      meta.textContent = (book.entries || []).length + ' 个条目';
       row.append(title, meta);
       row.addEventListener('click', function() { loadWorldbook(book.id); });
       return row;
@@ -237,7 +248,7 @@
     if (!rows.length) {
       var empty = document.createElement('div');
       empty.className = 'worldbook-empty';
-      empty.textContent = state.libraryQuery ? 'No matching Worldbooks.' : 'No Worldbooks yet.';
+      empty.textContent = state.libraryQuery ? '没有匹配的世界书。' : '还没有世界书。';
       rows.push(empty);
     }
     target.replaceChildren.apply(target, rows);
@@ -287,7 +298,7 @@
     number.className = 'worldbook-entry-number';
     number.textContent = String(position + 1).padStart(2, '0');
     var title = document.createElement('strong');
-    title.textContent = entry.title || 'Untitled entry';
+    title.textContent = entry.title || '未命名条目';
     var enabledLabel = document.createElement('label');
     enabledLabel.className = 'worldbook-entry-enabled';
     var enabled = document.createElement('input');
@@ -299,18 +310,18 @@
       card.classList.toggle('is-disabled', !enabled.checked);
       renderEntryCount();
     });
-    enabledLabel.append(enabled, ' Enabled');
+    enabledLabel.append(enabled, ' 启用');
     header.append(number, title, enabledLabel);
 
     var grid = document.createElement('div');
     grid.className = 'worldbook-entry-grid';
-    var titleField = field('Entry title', 'title', entry.title);
-    var orderField = field('Order', 'order', entry.order);
-    var usageField = field('Usage', 'usage', entry.usage, 'input', true);
-    var contentField = field('Content', 'content', entry.content, 'textarea', true);
-    var tagsField = field('Tags (comma separated)', 'tags', (entry.tags || []).join(', '), 'input', true);
+    var titleField = field('条目标题', 'title', entry.title);
+    var orderField = field('顺序', 'order', entry.order);
+    var usageField = field('用途说明', 'usage', entry.usage, 'input', true);
+    var contentField = field('内容', 'content', entry.content, 'textarea', true);
+    var tagsField = field('标签（逗号分隔）', 'tags', (entry.tags || []).join(', '), 'input', true);
     [titleField, orderField, usageField, contentField, tagsField].forEach(function(part) { grid.appendChild(part.wrapper); });
-    titleField.control.addEventListener('input', function() { entry.title = titleField.control.value; title.textContent = entry.title || 'Untitled entry'; });
+    titleField.control.addEventListener('input', function() { entry.title = titleField.control.value; title.textContent = entry.title || '未命名条目'; });
     orderField.control.type = 'number';
     orderField.control.min = '0';
     orderField.control.step = '1';
@@ -324,7 +335,7 @@
     var remove = document.createElement('button');
     remove.type = 'button';
     remove.className = 'worldbook-drawer-button danger';
-    remove.textContent = 'Remove entry';
+    remove.textContent = '移除条目';
     remove.addEventListener('click', function() {
       state.book.entries.splice(item.index, 1);
       renderEntries();
@@ -341,7 +352,7 @@
     var all = state.book && Array.isArray(state.book.entries) ? state.book.entries : [];
     var visible = sortedEntries();
     var enabled = all.filter(function(entry) { return entry.enabled !== false; }).length;
-    target.textContent = visible.length + ' shown · ' + all.length + ' total · ' + enabled + ' enabled';
+    target.textContent = '显示 ' + visible.length + ' 个 · 共 ' + all.length + ' 个 · 已启用 ' + enabled + ' 个';
   }
 
   function renderEntries() {
@@ -351,7 +362,7 @@
     if (!cards.length) {
       var empty = document.createElement('div');
       empty.className = 'worldbook-empty';
-      empty.textContent = state.entryQuery ? 'No matching entries.' : 'Add an entry to this Worldbook.';
+      empty.textContent = state.entryQuery ? '没有匹配的条目。' : '请为此世界书添加条目。';
       cards.push(empty);
     }
     target.replaceChildren.apply(target, cards);
@@ -396,7 +407,7 @@
     if (!projects.length) {
       var option = document.createElement('option');
       option.value = '';
-      option.textContent = 'No Project selected';
+      option.textContent = '未选择游戏';
       select.appendChild(option);
     }
   }
@@ -419,7 +430,7 @@
     if (!rows.length) {
       var empty = document.createElement('div');
       empty.className = 'worldbook-empty';
-      empty.textContent = 'Save a Worldbook before binding it.';
+      empty.textContent = '请先保存世界书，再进行绑定。';
       rows.push(empty);
     }
     target.replaceChildren.apply(target, rows);
@@ -443,9 +454,9 @@
     try {
       var payload = await request(endpoint + '/' + encodeURIComponent(id));
       fillEditor(payload.worldbook);
-      showNotice('Loaded ' + payload.worldbook.name + '.');
+      showNotice('已加载“' + payload.worldbook.name + '”。');
     } catch (error) {
-      showNotice(errorMessage(error, 'Could not load this Worldbook.'), 'error');
+      showNotice(errorMessage(error, '无法加载此世界书。'), 'error');
     }
   }
 
@@ -483,7 +494,7 @@
     } catch (error) {
       state.boundIds = [];
       renderBindings();
-      showNotice(errorMessage(error, 'Could not load Project bindings.'), 'error');
+      showNotice(errorMessage(error, '无法加载游戏绑定。'), 'error');
     }
   }
 
@@ -507,7 +518,7 @@
   async function saveWorldbook() {
     var payload = editorPayload();
     if (!payload || !payload.name) {
-      showNotice('Worldbook name is required.', 'error');
+      showNotice('世界书名称不能为空。', 'error');
       $('worldbook-drawer-name').focus();
       return;
     }
@@ -521,9 +532,9 @@
         body: JSON.stringify(payload)
       });
       await loadWorldbooks(response.worldbook.id);
-      showNotice('Worldbook saved.', 'success');
+      showNotice('世界书已保存。', 'success');
     } catch (error) {
-      showNotice(errorMessage(error, 'Could not save this Worldbook.'), 'error');
+      showNotice(errorMessage(error, '无法保存此世界书。'), 'error');
     } finally {
       button.disabled = false;
     }
@@ -531,11 +542,11 @@
 
   async function renameWorldbook() {
     if (!state.selectedId || !state.book) return;
-    var nextName = global.prompt('New Worldbook name', state.book.name || '');
+    var nextName = global.prompt('新的世界书名称', state.book.name || '');
     if (nextName === null) return;
     nextName = nextName.trim();
     if (!nextName) {
-      showNotice('Worldbook name is required.', 'error');
+      showNotice('世界书名称不能为空。', 'error');
       return;
     }
     $('worldbook-drawer-name').value = nextName;
@@ -547,20 +558,20 @@
     try {
       var payload = await request(endpoint + '/' + encodeURIComponent(state.selectedId) + '/copy', { method: 'POST', headers: { Accept: 'application/json', 'Content-Type': 'application/json' }, body: '{}' });
       await loadWorldbooks(payload.worldbook.id);
-      showNotice('Worldbook copied.', 'success');
+      showNotice('世界书已复制。', 'success');
     } catch (error) {
-      showNotice(errorMessage(error, 'Could not copy this Worldbook.'), 'error');
+      showNotice(errorMessage(error, '无法复制此世界书。'), 'error');
     }
   }
 
   async function deleteWorldbook() {
-    if (!state.selectedId || !global.confirm('Delete this Worldbook?')) return;
+    if (!state.selectedId || !global.confirm('删除此世界书？')) return;
     try {
       await request(endpoint + '/' + encodeURIComponent(state.selectedId), { method: 'DELETE' });
       await loadWorldbooks();
-      showNotice('Worldbook deleted.', 'success');
+      showNotice('世界书已删除。', 'success');
     } catch (error) {
-      showNotice(errorMessage(error, 'Could not delete this Worldbook.'), 'error');
+      showNotice(errorMessage(error, '无法删除此世界书。'), 'error');
     }
   }
 
@@ -574,9 +585,9 @@
       link.download = (state.book && state.book.name ? state.book.name : 'worldbook') + '.airp.json';
       link.click();
       URL.revokeObjectURL(link.href);
-      showNotice('Worldbook export ready.', 'success');
+      showNotice('世界书导出文件已就绪。', 'success');
     } catch (error) {
-      showNotice(errorMessage(error, 'Could not export this Worldbook.'), 'error');
+      showNotice(errorMessage(error, '无法导出此世界书。'), 'error');
     }
   }
 
@@ -588,7 +599,7 @@
     try {
       documentValue = JSON.parse(await file.text());
     } catch (_) {
-      showNotice('The selected file is not valid JSON.', 'error');
+      showNotice('所选文件不是有效的 JSON。', 'error');
       return;
     }
     var body = { name: file.name.replace(/\.json$/i, ''), document: documentValue };
@@ -597,17 +608,17 @@
     try {
       var payload = await request(endpoint + '/import', { method: 'POST', headers: { Accept: 'application/json', 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
       await loadWorldbooks(payload.worldbook.id);
-      showNotice('Worldbook imported.', 'success');
-      if (payload.renamed_entries && payload.renamed_entries.length) showNotice('Worldbook imported; duplicate entry titles were renamed.', 'success');
+      showNotice('世界书已导入。', 'success');
+      if (payload.renamed_entries && payload.renamed_entries.length) showNotice('世界书已导入；重复的条目标题已自动重命名。', 'success');
       await loadBindings();
     } catch (error) {
-      showNotice(errorMessage(error, 'Could not import this Worldbook.'), 'error');
+      showNotice(errorMessage(error, '无法导入此世界书。'), 'error');
     }
   }
 
   async function saveBindings() {
     if (!state.projectId) {
-      showNotice('Select a Project before saving bindings.', 'error');
+      showNotice('请先选择游戏，再保存绑定。', 'error');
       return;
     }
     var checked = Array.prototype.slice.call(document.querySelectorAll('#worldbook-drawer-bindings input:checked')).map(function(input) { return input.value; });
@@ -621,9 +632,9 @@
       });
       state.boundIds = payload.project && Array.isArray(payload.project.worldbook_ids) ? payload.project.worldbook_ids.slice() : checked;
       renderBindings();
-      showNotice('Project bindings saved.', 'success');
+      showNotice('游戏绑定已保存。', 'success');
     } catch (error) {
-      showNotice(errorMessage(error, 'Could not save Project bindings.'), 'error');
+      showNotice(errorMessage(error, '无法保存游戏绑定。'), 'error');
     } finally {
       button.disabled = false;
     }
@@ -644,7 +655,7 @@
         await loadProjects();
         renderAll();
       } catch (error) {
-        showNotice(errorMessage(error, 'Could not load Worldbooks.'), 'error');
+        showNotice(errorMessage(error, '无法加载世界书。'), 'error');
       }
     } else {
       renderAll();

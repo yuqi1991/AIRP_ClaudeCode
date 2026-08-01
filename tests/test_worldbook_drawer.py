@@ -70,10 +70,13 @@ def test_game_worldbook_drawer_reads_edits_and_binds_existing_api(tmp_path: Path
                 })()"""
             )
             browser.wait_for("document.querySelector('#worldbook-drawer-project option:checked').value === 'drawer-project'")
-            browser.wait_for("document.querySelectorAll('#worldbook-drawer-bindings input').length === 1")
-            browser.click("#worldbook-drawer-bindings input")
+            browser.wait_for(f'document.querySelector(\'#worldbook-drawer-bindings input[value="{book_id}"]\')')
+            browser.click(f'#worldbook-drawer-bindings input[value="{book_id}"]')
             browser.click("#worldbook-drawer-save-bindings")
-            browser.wait_for("document.getElementById('worldbook-drawer-notice').textContent.includes('bindings saved')")
+            browser.wait_for("document.getElementById('worldbook-drawer-notice').textContent.includes('绑定已保存')")
+            browser.evaluate("window.confirm = () => true")
+            browser.click("#worldbook-drawer-delete")
+            browser.wait_for("document.getElementById('worldbook-drawer-notice').textContent.includes('请先解除绑定')")
 
         status, binding = _json_request(
             "GET",
@@ -81,3 +84,46 @@ def test_game_worldbook_drawer_reads_edits_and_binds_existing_api(tmp_path: Path
         )
         assert status == 200
         assert binding["project"]["worldbook_ids"] == [book_id]
+
+
+@pytest.mark.skipif(
+    shutil.which("google-chrome") is None or _connect is None,
+    reason="requires google-chrome and websockets",
+)
+def test_worldbook_drawer_delete_button_deletes_unbound_worldbook(tmp_path: Path):
+    styles = tmp_path / "styles"
+    shutil.copytree(WEB_ROOT, styles)
+    card = tmp_path / "drawer-card"
+    (card / "memory").mkdir(parents=True)
+    (card / ".initvar.json").write_text("{}", encoding="utf-8")
+    (card / "chat_log.json").write_text("[]", encoding="utf-8")
+    (card / ".card_data.json").write_text('{"name":"Drawer Card"}', encoding="utf-8")
+    runtime = SessionTurnRuntime(
+        database_path=tmp_path / "runtime.sqlite3",
+        card_folder=card,
+        projection_root=styles,
+        bootstrap_legacy_history=False,
+    )
+
+    with SessionRuntimeServer(runtime, static_root=styles) as server:
+        status, created = _json_request(
+            "POST",
+            f"{server.base_url}/v1/studio/worldbooks",
+            {"name": "Disposable Lore", "entries": []},
+        )
+        assert status == 201
+        book_id = created["worldbook"]["id"]
+
+        with _HeadlessBrowser(f"{server.base_url}/", tmp_path / "chrome-profile") as browser:
+            browser.wait_for('document.querySelector("#studio-worldbooks-toggle")')
+            browser.click("#studio-worldbooks-toggle")
+            browser.wait_for(f'document.querySelector(\'[data-worldbook-id="{book_id}"]\')')
+            browser.click(f'[data-worldbook-id="{book_id}"]')
+            browser.wait_for("document.getElementById('worldbook-drawer-delete').hidden === false")
+            browser.evaluate("window.confirm = () => true")
+            browser.click("#worldbook-drawer-delete")
+            browser.wait_for(f'!document.querySelector(\'[data-worldbook-id="{book_id}"]\')')
+
+        status, missing = _json_request("GET", f"{server.base_url}/v1/studio/worldbooks/{book_id}")
+        assert status == 404
+        assert missing["error"] == "worldbook_not_found"

@@ -97,7 +97,9 @@
     var agentsToggle = $('studio-agents-toggle');
     if (modelToggle) modelToggle.setAttribute('aria-expanded', active ? 'true' : 'false');
     if (agentsToggle) agentsToggle.setAttribute('aria-expanded', 'false');
-    document.querySelectorAll('[data-studio-drawer-panel]').forEach(function (panel) {
+    var studioPanel = $('studio-drawer-panel');
+    if (!studioPanel) return;
+    studioPanel.querySelectorAll('[data-studio-drawer-panel]').forEach(function (panel) {
       var isActive = panel.getAttribute('data-studio-drawer-panel') === 'model';
       panel.classList.toggle('is-active', isActive);
       panel.hidden = !isActive;
@@ -145,12 +147,12 @@
     var profiles = state.profiles.filter(function (profile) {
       return !filter || [profile.name, profile.id, profile.base_url, profile.api_format].join(' ').toLowerCase().indexOf(filter) >= 0;
     });
-    $('studio-provider-count').textContent = state.profiles.length + ' 个 Provider Profile';
+    $('studio-provider-count').textContent = state.profiles.length + ' 个服务商配置';
     list.replaceChildren();
     if (!profiles.length) {
       var empty = document.createElement('p');
       empty.className = 'studio-empty';
-      empty.textContent = state.profiles.length ? '没有匹配的 Provider。' : '还没有 Provider Profile。';
+      empty.textContent = state.profiles.length ? '没有匹配的服务商。' : '还没有服务商配置。';
       list.appendChild(empty);
       return;
     }
@@ -163,10 +165,10 @@
       title.textContent = profile.name || profile.id;
       var meta = document.createElement('span');
       meta.className = 'studio-object-item-meta';
-      meta.textContent = (profile.enabled ? 'Enabled' : 'Disabled') + ' · ' + profile.api_format;
+      meta.textContent = (profile.enabled ? '已启用' : '已停用') + ' · ' + profile.api_format;
       var key = document.createElement('span');
       key.className = 'studio-object-item-meta';
-      key.textContent = profile.key_configured ? 'Key configured · ' + (profile.model_ids || []).length + ' models' : 'Key not configured · ' + (profile.model_ids || []).length + ' models';
+      key.textContent = profile.key_configured ? '已配置密钥 · ' + (profile.model_ids || []).length + ' 个模型' : '未配置密钥 · ' + (profile.model_ids || []).length + ' 个模型';
       row.append(title, meta, key);
       row.addEventListener('click', function () { loadProfile(profile.id); });
       list.appendChild(row);
@@ -178,12 +180,12 @@
     if (!target) return;
     target.classList.toggle('is-configured', !!configured);
     var text = target.querySelector('span:last-child');
-    if (text) text.textContent = configured ? 'Configured' : 'Not configured';
+    if (text) text.textContent = configured ? '已配置' : '未配置';
   }
 
   function fillProfile(profile) {
     state.selectedId = profile.id;
-    $('studio-provider-title').textContent = 'Edit ' + (profile.name || profile.id);
+    $('studio-provider-title').textContent = '编辑 ' + (profile.name || profile.id);
     $('studio-provider-selection').textContent = profile.id || '';
     $('studio-provider-name').value = profile.name || '';
     $('studio-provider-base-url').value = profile.base_url || '';
@@ -204,8 +206,8 @@
     state.selectedId = null;
     $('studio-provider-form').reset();
     $('studio-provider-enabled').checked = true;
-    $('studio-provider-title').textContent = 'New Provider Profile';
-    $('studio-provider-selection').textContent = '未选择 Provider';
+    $('studio-provider-title').textContent = '新建服务商配置';
+    $('studio-provider-selection').textContent = '未选择服务商';
     $('studio-provider-api-key').value = '';
     $('studio-provider-models').value = '';
     keyStatus(false);
@@ -228,7 +230,7 @@
       emit('studio:provider-selected', data.profile);
       return data.profile;
     }).catch(function (error) {
-      setConnection(errorMessage(error, '读取 Provider 失败'), true);
+      setConnection(errorMessage(error, '读取服务商失败'), true);
     });
   }
 
@@ -245,7 +247,7 @@
         return loadProfile(state.profiles[0].id);
       }
     }).catch(function (error) {
-      setNotice(errorMessage(error, '读取 Provider Profiles 失败'), true);
+      setNotice(errorMessage(error, '读取服务商配置失败'), true);
     }).then(function () {
       state.loading = false;
     });
@@ -285,14 +287,14 @@
       setConnection('');
       var discovery = data.model_discovery;
       if (discovery && discovery.ok === false) {
-        setNotice('Provider 已保存，但模型发现失败: ' + (discovery.error && discovery.error.message || '请稍后重试'), true);
+        setNotice('服务商已保存，但模型发现失败：' + (discovery.error && discovery.error.message || '请稍后重试'), true);
       } else {
-        setNotice('Provider 已保存', false);
+        setNotice('服务商已保存', false);
       }
       emit('studio:provider-saved', data.profile);
     }).catch(function (error) {
       setConnection('');
-      setNotice(errorMessage(error, '保存 Provider 失败'), true);
+      setNotice(errorMessage(error, '保存服务商失败'), true);
     });
   }
 
@@ -332,36 +334,36 @@
   }
 
   function deleteKey() {
-    if (!state.selectedId || !global.confirm('删除当前 Provider 的 API key？')) return;
-    setConnection('删除 Key 中…');
+    if (!state.selectedId || !global.confirm('删除当前服务商的 API 密钥？')) return;
+    setConnection('删除密钥中…');
     jsonFetch(endpoint + '/' + encodeURIComponent(state.selectedId) + '/secret', { method: 'DELETE' })
       .then(function (data) {
         fillProfile(data.profile);
         return loadProfiles().then(function () { fillProfile(data.profile); });
       }).then(function () {
         setConnection('');
-        setNotice('API key 已删除');
+        setNotice('API 密钥已删除');
         emit('studio:provider-secret-deleted', { id: state.selectedId });
       }).catch(function (error) {
         setConnection('');
-        setNotice(errorMessage(error, '删除 API key 失败'), true);
+        setNotice(errorMessage(error, '删除 API 密钥失败'), true);
       });
   }
 
   function deleteProfile() {
-    if (!state.selectedId || !global.confirm('删除当前 Provider Profile？')) return;
-    setConnection('删除 Provider 中…');
+    if (!state.selectedId || !global.confirm('删除当前服务商配置？')) return;
+    setConnection('删除服务商中…');
     jsonFetch(endpoint + '/' + encodeURIComponent(state.selectedId), { method: 'DELETE' })
       .then(function () {
         resetForm();
         return loadProfiles();
       }).then(function () {
         setConnection('');
-        setNotice('Provider 已删除');
+        setNotice('服务商已删除');
         emit('studio:provider-deleted');
       }).catch(function (error) {
         setConnection('');
-        setNotice(errorMessage(error, '删除 Provider 失败'), true);
+        setNotice(errorMessage(error, '删除服务商失败'), true);
       });
   }
 

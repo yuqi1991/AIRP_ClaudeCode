@@ -71,6 +71,20 @@ def test_game_page_wires_integrated_project_drawer_contract():
     assert "/v1/session/project/switch" in drawer
 
 
+def test_worldbook_binding_pane_has_explicit_loading_empty_and_error_states():
+    drawer = (ROOT / "src" / "airp" / "web" / "game-drawer.js").read_text(encoding="utf-8")
+    for marker in (
+        "worldbooksLoading",
+        "worldbooksLoaded",
+        "worldbooksError",
+        "暂无可用世界书",
+        "读取世界书失败",
+        "data-game-retry-worldbooks",
+        "stateRequestId",
+    ):
+        assert marker in drawer
+
+
 def test_project_switch_restores_each_project_last_session(tmp_path: Path):
     with _server(tmp_path) as server:
         _create_project(server, "game-a")
@@ -101,6 +115,21 @@ def test_project_switch_restores_each_project_last_session(tmp_path: Path):
         assert catalog["active_project_id"] == "game-a"
         assert {item["id"] for item in catalog["projects"]} == {"game-a", "game-b"}
         assert next(item for item in catalog["projects"] if item["id"] == "game-a")["last_session_id"] == game_a_session
+
+
+def test_deleting_active_project_switches_to_remaining_game(tmp_path: Path):
+    with _server(tmp_path) as server:
+        _create_project(server, "game-a")
+        _create_project(server, "game-b")
+        status, switched = _request("POST", f"{server.base_url}/v1/session/project/switch", {"project_id": "game-b"})
+        assert status == 200
+        assert switched["active_project_id"] == "game-b"
+
+        status, deleted = _request("DELETE", f"{server.base_url}/v1/studio/projects/game-b")
+        assert status == 200
+        assert deleted["deleted_id"] == "game-b"
+        assert deleted["active_project_id"] == "game-a"
+        assert {item["id"] for item in deleted["projects"]} == {"game-a"}
 
 
 def test_project_switch_rejects_active_generation_without_mutating_project(tmp_path: Path):

@@ -547,7 +547,7 @@ def test_browser_studio_to_game_golden_path_renders_trace_detail_and_retry(tmp_p
             browser.wait_for("document.getElementById('project-notice').textContent === 'Project saved.'")
 
             browser.click('a[aria-label="Return to game"]')
-            browser.wait_for("location.pathname === '/' && document.getElementById('user-input')")
+            browser.wait_for("location.pathname === '/' && document.getElementById('user-input') && typeof loadActiveGraphPanel === 'function'")
             browser.evaluate("loadActiveGraphPanel(); true")
             browser.wait_for("document.querySelector('#runtime-graph-select option[value=\"browser-graph\"]')")
             browser.evaluate(
