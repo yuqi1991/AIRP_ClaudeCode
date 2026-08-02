@@ -1508,10 +1508,15 @@ class SessionTurnRuntime:
     def _fail_graph_run(self, task, error: GraphExecutionError):
         """Persist fail-fast Graph semantics without entering draft commit."""
         graph_result = getattr(error, "result", None)
+        graph_error = getattr(graph_result, "error", None)
+        retryable = bool(isinstance(graph_error, dict) and graph_error.get("retryable"))
+        task_status = "failed_retryable" if retryable else "failed_terminal"
         payload = {
             "task_id": task["id"],
             "plan_id": getattr(graph_result, "plan_id", None),
             "failed_node_id": getattr(graph_result, "failed_node_id", None),
+            "error": _redact_trace(graph_error),
+            "retryable": retryable,
         }
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -1522,14 +1527,14 @@ class SessionTurnRuntime:
             if row and not row["commit_id"] and self._lease_is_authoritative(connection, task):
                 connection.execute(
                     "UPDATE tasks SET status = ? WHERE id = ? AND commit_id IS NULL",
-                    ("failed_terminal", task["id"]),
+                    (task_status, task["id"]),
                 )
                 self._event(connection, "graph.run.failed", payload)
-                self._event(connection, "task.failed_terminal", payload)
-                return RuntimeResult(task["id"], None, row["revision"] or task["base_revision"], "failed_terminal")
+                self._event(connection, f"task.{task_status}", payload)
+                return RuntimeResult(task["id"], None, row["revision"] or task["base_revision"], task_status)
             if row:
                 return RuntimeResult(task["id"], row["commit_id"], row["revision"], row["status"])
-        return RuntimeResult(task["id"], None, task["base_revision"], "failed_terminal")
+        return RuntimeResult(task["id"], None, task["base_revision"], task_status)
 
     def _fail_graph_configuration(self, task):
         """Fail a leased task when no active Studio Graph was frozen into it."""
@@ -1787,7 +1792,12 @@ class SessionTurnRuntime:
         initvar = self._read_json(initvar_path, {})
         runtime_turns = self._source_recent_turns(base_revision)
         current_state = self._state_at_revision(base_revision)
-        card_facts = self._read_json(card_data_path, {})
+        # ``.card_data.json`` keeps the original SillyTavern envelope for
+        # compatibility, while prompt macros address normalized card fields
+        # directly (for example ``{{card_facts.scenario}}``).  Reuse the
+        # public projection here so the frozen Task snapshot and Studio
+        # preview expose the same shape.
+        card_facts = self.card_facts()
         card_structure = self._read_json(structure_path, {})
         recent_memory = self._recent_memory(project_path)
         worldbooks = self._worldbook_snapshot(catalog_path, reference_path, user_path)

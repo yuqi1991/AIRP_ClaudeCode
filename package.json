@@ -3,7 +3,13 @@
   "private": true,
   "description": "AIRP provider protocol fixtures",
   "type": "module",
+  "scripts": {
+    "test:browser": "playwright test"
+  },
   "dependencies": {
     "zod": "^3.24.4"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.54.1"
   }
 }

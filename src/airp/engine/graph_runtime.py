@@ -743,6 +743,21 @@ class GraphRunResult:
     def ok(self) -> bool:
         return self.status == "succeeded"
 
+    @property
+    def error(self) -> Any:
+        """Return the failed node's structured error, if one exists.
+
+        Keeping this lookup on the provider-independent result lets host
+        runtimes classify retryable provider failures without reaching into a
+        concrete NodeRunner or losing the original error at the graph seam.
+        """
+        if self.ok or not self.failed_node_id:
+            return None
+        for outcome in reversed(self.node_results):
+            if outcome.node_id == self.failed_node_id:
+                return _copy(outcome.result.error)
+        return None
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "status": self.status,
@@ -753,6 +768,7 @@ class GraphRunResult:
                 for item in self.node_results
             ],
             "failed_node_id": self.failed_node_id,
+            "error": self.error,
         }
 
 

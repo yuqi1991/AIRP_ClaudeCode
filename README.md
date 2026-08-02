@@ -63,9 +63,17 @@ pytest -q
 python3 -m compileall -q src tests
 pip wheel --no-deps --no-build-isolation .
 npm install --ignore-scripts   # 仅用于角色卡脚本 smoke test
+npm run test:browser           # Chrome/Playwright 桌面与移动发布矩阵
 ```
 
-真实 Provider 测试是 opt-in：设置对应的 secret 后运行 `pytest -q tests/test_real_deepseek_e2e.py`。
+真实 Provider 测试是 opt-in：设置对应的 secret 后运行单回合 smoke：
+`pytest -q tests/test_real_deepseek_e2e.py`。准备发布的 DeepSeek route 使用显式门控的
+20 回合 qualification（会产生真实模型调用）：
+
+```bash
+AIRP_RUN_REAL_QUALIFICATION=1 DEEPSEEK_API_KEY=... \
+  pytest -q tests/test_provider_qualification.py -k real_deepseek
+```
 
 ## 设计原则
 

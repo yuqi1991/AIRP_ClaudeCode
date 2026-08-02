@@ -77,10 +77,12 @@ qualification。最小 baseline 是：
 ## Evidence and maturity
 
 当前 `tests/test_provider_execution.py` 覆盖两种 loopback 协议、工具消息映射、错误分类、
-timeout 配置和 secret redaction；Graph/Runtime 测试覆盖工具循环、取消、Trace、durable
-events 和恢复；`tests/test_real_deepseek_e2e.py` 已通过 opt-in Chat Completions 中文流式
-usage smoke。20 回合真实 soak、双重 SSE 重连和重启 qualification 是后续发布证据，当前
-功能状态保持 `Experimental`。
+timeout 配置和 secret redaction；`tests/test_provider_qualification.py` 在无密钥默认 CI
+中覆盖 20 回合 bounded soak、两次 `Last-Event-ID` SSE 重连、Runtime 重启、任务级
+Token/latency/cost、失败 Trace 和重试分类；Playwright 发布矩阵覆盖桌面/移动几何门槛。
+`tests/test_real_deepseek_e2e.py` 已通过 opt-in Chat Completions 中文流式 usage smoke。
+真实 20 回合 route 测试也已提供，但必须由维护者显式运行并保存证据；在此之前功能状态
+保持 `Experimental`。
 
 ## Out of scope
 

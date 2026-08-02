@@ -9,7 +9,7 @@
 | 卡片导入与存档 | `src/airp/import_card.py`、`src/airp/import_prepare.py`、`tests/test_import_compatibility.py` | PNG/JSON/TXT 与代表性 SillyTavern JSON v2 已覆盖；兼容矩阵仍可扩充 |
 | RP Session/Revision/Projection | `src/airp/host/rp/session_runtime.py`、`tests/test_graph_execution.py` | 单 server 服务一张卡；card-local multi-session 已持久化 |
 | GraphRuntime 与顺序 Agent Graph | `src/airp/engine/graph_runtime.py`、`src/airp/engine/graph_definitions.py`、`tests/test_graph_execution.py` | 当前是稳定顺序 pipeline，不支持任意条件 DSL |
-| Provider Node Runner | `src/airp/engine/node_runner.py`、`src/airp/engine/provider.py`、`tests/test_provider_execution.py` | canonical 能力为流式 chat completions/responses、tool loop、abort、input/output Regex；真实 route 仍需 ADR-0022 qualification |
+| Provider Node Runner | `src/airp/engine/node_runner.py`、`src/airp/engine/provider.py`、`tests/test_provider_execution.py`、`tests/test_provider_qualification.py` | canonical 能力为流式 chat completions/responses、tool loop、abort、input/output Regex；任务级 telemetry 保留每个节点调用；真实 route 仍需显式 qualification |
 | Studio 配置库 | `src/airp/engine/studio_library.py`、`src/airp/server.py`、`src/airp/web/studio.html` | Provider、Agent、Graph、Project、Worldbook、Regex Collection 由 Workspace 持有 |
 | 集成式游戏工作区与 Studio 抽屉 | `src/airp/web/index.html`、`src/airp/web/game-workspace-contract.js`、`src/airp/web/game-drawer.js`、`docs/specs/integrated-game-studio-workspace.md` | 游戏页提供互斥的顶部下拉抽屉；游戏抽屉支持 Project 搜索、导入、删除、编辑、活动 Project 切换与每个 Project 的最后 Session 恢复；右侧 Monitor 保持存档和 Graph/Trace 上下文 |
 | 游戏抽屉与跨 Project 存档恢复 | `src/airp/host/rp/project_runtime.py`、`src/airp/web/game-drawer.js`、`tests/test_game_project_drawer.py`、`tests/test_studio_projects.py` | 导入入口接收 JSON；SillyTavern 内嵌 `character_book` 会创建并绑定 Worldbook；删除当前 Project 时自动切换到剩余 Project |
@@ -28,7 +28,7 @@
 
 | 功能 | 当前情况 | 主要缺口 |
 |---|---|---|
-| Provider 发布 qualification / 浏览器真实长会话 | ADR-0022 已锁定能力契约；DeepSeek 单回合 opt-in smoke 存在 | 仍需每个发布 route 的 20 回合 soak、2 次 SSE 重连和 1 次 Runtime 重启证据 |
+| Provider 发布 qualification / 浏览器真实长会话 | 默认 CI 已覆盖 deterministic 20 回合、两次 `Last-Event-ID` SSE 重连、Runtime 重启、失败分类和任务级 Token/latency/cost；Playwright 已覆盖 1440/1280 桌面与 390/360 移动几何门槛；DeepSeek 单回合 opt-in smoke 通过，20 回合真实 route 命令已提供 | 每个发布 route 仍需由维护者显式运行 `AIRP_RUN_REAL_QUALIFICATION=1` 并保存真实 20 回合证据；未运行前保持 Experimental |
 | 后台 NPC 与剧情规划 | 作为用户 Agent instruction/Worldbook 内容运行 | 引擎不提供内置叙事规则，质量取决于用户配置 |
 
 ## 明确不属于引擎

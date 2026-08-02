@@ -121,6 +121,9 @@ def test_monitor_debug_overlay_keeps_live_trace_model_and_tool_sections():
     assert "scheduleNodeDetailRefresh" in page
     assert "tool_calls" in page
     assert "model_calls" in page
+    assert "model_call.failed" in page
+    assert "调试重放" in page
+    assert "等待实时追踪" in page
 def test_agents_orchestration_drawer_exposes_linear_editor_contract():
     page = (WEB_ROOT / "index.html").read_text(encoding="utf-8")
     script = (WEB_ROOT / "studio-agents-drawer.js").read_text(encoding="utf-8")

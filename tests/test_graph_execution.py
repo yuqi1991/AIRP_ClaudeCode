@@ -25,7 +25,13 @@ from airp.engine.graph_runtime import (  # noqa: E402
     NodeResult,
 )
 from airp.engine.node_runner import ProviderNodeRunner  # noqa: E402
-from airp.engine.provider import AbortSignal, FakeProvider, ProviderDelta, ProviderResult  # noqa: E402
+from airp.engine.provider import (  # noqa: E402
+    AbortSignal,
+    CostEstimate,
+    FakeProvider,
+    ProviderDelta,
+    ProviderResult,
+)
 from airp.host.rp.session_runtime import SessionTurnRuntime  # noqa: E402
 from airp.server import SessionRuntimeServer  # noqa: E402
 
@@ -642,6 +648,112 @@ def test_graph_output_artifact_uses_existing_runtime_draft_commit_path(tmp_path)
     assert result.commit_id
     log = json.loads((card / "chat_log.json").read_text(encoding="utf-8"))
     assert "final artifact" in log[0]["ai"]
+
+
+def test_graph_provider_calls_persist_aggregate_usage_latency_and_cost(tmp_path):
+    styles = tmp_path / "styles"
+    styles.mkdir()
+    card = tmp_path / "card"
+    (card / "memory").mkdir(parents=True)
+    (card / ".initvar.json").write_text("{}", encoding="utf-8")
+    (card / "chat_log.json").write_text("[]", encoding="utf-8")
+    (card / ".card_data.json").write_text('{"name":"Test"}', encoding="utf-8")
+    project = {"id": "project", "worldbook_ids": []}
+    graph = {
+        "id": "writing",
+        "nodes": [{"node_id": "writer-node", "agent_id": "writer"}],
+        "output_node_id": "writer-node",
+    }
+    provider = FakeProvider(
+        [{"type": "text", "text": "<content>telemetry</content>"}, {"type": "final"}],
+        usage={"prompt_tokens": 7, "completion_tokens": 5, "total_tokens": 12},
+        rates=CostEstimate(amount=0.012, currency="USD", rate_version="fixture-v1"),
+        model="fixture-model",
+    )
+    compiler = ExecutionPlanCompiler(
+        project_store=_MemoryStore({"project": project}),
+        graph_store=_MemoryStore({"writing": graph}),
+        agent_store=_MemoryStore({"writer": _agent("writer")}),
+    )
+    runtime = SessionTurnRuntime(
+        database_path=tmp_path / "runtime.sqlite3",
+        card_folder=card,
+        projection_root=styles,
+        execution_plan_compiler=compiler,
+        graph_runtime=GraphRuntime(ProviderNodeRunner(lambda _node: provider)),
+        project_id="project",
+        execution_graph_id="writing",
+        bootstrap_legacy_history=False,
+    )
+
+    result = runtime.submit("Enter", "graph-telemetry")
+
+    assert result.status == "succeeded"
+    calls = runtime.model_calls_for_task(result.task_id)
+    assert len(calls) == 1
+    assert calls[0]["model"] == "model"
+    assert calls[0]["prompt_tokens"] == 7
+    assert calls[0]["completion_tokens"] == 5
+    assert calls[0]["total_tokens"] == 12
+    assert calls[0]["stop_reason"] == "stop"
+    assert calls[0]["latency_ms"] >= 0
+    assert calls[0]["cost_amount"] == 0.012
+    assert calls[0]["cost_rate_version"] == "fixture-v1"
+
+    run = runtime.graph_run_detail(runtime.graph_run_id_for_task(result.task_id))
+    assert run["nodes"][0]["model_calls"][0]["latency_ms"] == calls[0]["latency_ms"]
+
+
+def test_graph_provider_telemetry_keeps_one_task_wide_call_per_node(tmp_path):
+    styles = tmp_path / "styles"
+    styles.mkdir()
+    card = tmp_path / "card"
+    (card / "memory").mkdir(parents=True)
+    (card / ".initvar.json").write_text("{}", encoding="utf-8")
+    (card / "chat_log.json").write_text("[]", encoding="utf-8")
+    (card / ".card_data.json").write_text('{"name":"Test"}', encoding="utf-8")
+    project = {"id": "project", "worldbook_ids": []}
+    graph = {
+        "id": "writing",
+        "nodes": [
+            {"node_id": "planner-node", "agent_id": "planner"},
+            {"node_id": "writer-node", "agent_id": "writer"},
+        ],
+        "output_node_id": "writer-node",
+    }
+    provider = FakeProvider(
+        [{"type": "text", "text": "telemetry"}, {"type": "final"}],
+        usage={"prompt_tokens": 7, "completion_tokens": 5, "total_tokens": 12},
+        model="fixture-model",
+    )
+    compiler = ExecutionPlanCompiler(
+        project_store=_MemoryStore({"project": project}),
+        graph_store=_MemoryStore({"writing": graph}),
+        agent_store=_MemoryStore(
+            {"planner": _agent("planner"), "writer": _agent("writer")}
+        ),
+    )
+    runtime = SessionTurnRuntime(
+        database_path=tmp_path / "runtime.sqlite3",
+        card_folder=card,
+        projection_root=styles,
+        execution_plan_compiler=compiler,
+        graph_runtime=GraphRuntime(ProviderNodeRunner(lambda _node: provider)),
+        project_id="project",
+        execution_graph_id="writing",
+        bootstrap_legacy_history=False,
+    )
+
+    result = runtime.submit("Enter", "graph-multi-node-telemetry")
+
+    assert result.status == "succeeded"
+    calls = runtime.model_calls_for_task(result.task_id)
+    assert [call["call_ordinal"] for call in calls] == [1, 2]
+    assert [call["total_tokens"] for call in calls] == [12, 12]
+    run = runtime.graph_run_detail(runtime.graph_run_id_for_task(result.task_id))
+    assert [
+        node["model_calls"][0]["aggregate_call_ordinal"] for node in run["nodes"]
+    ] == [1, 2]
 
 
 def test_graph_node_failure_aborts_session_task_without_story_commit(tmp_path):

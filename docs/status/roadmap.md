@@ -57,5 +57,5 @@ commit、projection 和 durable events 的回合生命周期。真实 Provider�
 - 重新设计前端状态协议。
 
 **已锁定的持久化边界**：ADR-0023 规定 Project 拥有私有 runtime/session 状态，Workspace
-可保存多个 Project/Session，但一个进程只维护一个 active projection；删除清理和孤儿状态
-恢复仍是实现缺口。
+可保存多个 Project/Session，但一个进程只维护一个 active projection；删除清理、孤儿状态
+恢复和重启后的 active/recent metadata 回归已实现。

@@ -218,8 +218,8 @@
       field('角色描述', 'game-card-description', model.project.description, true, true) +
       field('性格', 'game-card-personality', model.project.personality, true, true) +
       field('场景', 'game-card-scenario', model.project.scenario, true, true) +
-      field('System Prompt', 'game-card-system', prompt.system, true, true) +
-      field('Post-history Instruction', 'game-card-post-history', prompt.post_history, true, true) +
+      field('系统提示词', 'game-card-system', prompt.system, true, true) +
+      field('历史后置指令', 'game-card-post-history', prompt.post_history, true, true) +
       '</div><div class="airp-game-form-actions"><button class="airp-game-button primary" type="button" data-game-save-card>保存角色卡</button></div>';
     pane.querySelector('[data-game-save-card]').addEventListener('click', saveCard);
   }

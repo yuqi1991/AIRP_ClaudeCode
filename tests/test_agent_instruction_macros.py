@@ -12,6 +12,7 @@ from airp.engine.macros import DEFAULT_MACRO_ROOTS
 from airp.engine.graph_runtime import AgentArtifact, ExecutionPlanCompiler
 from airp.engine.node_runner import ProviderNodeRunner
 from airp.engine.provider import FakeProvider
+from airp.host.rp.session_runtime import SessionTurnRuntime
 
 
 def test_new_agent_is_instruction_only_and_expands_nested_runtime_macros(tmp_path: Path):
@@ -90,6 +91,29 @@ def test_execution_plan_freezes_macro_expansion_from_runtime_context(tmp_path: P
     )
 
     assert plan.graph.nodes[0].agent.prompt[0]["content"] == "state=夜晚"
+
+
+def test_task_snapshot_flattens_imported_card_envelope_for_nested_macros(tmp_path: Path):
+    card = tmp_path / "card"
+    (card / "memory").mkdir(parents=True)
+    (card / ".initvar.json").write_text("{}", encoding="utf-8")
+    (card / "chat_log.json").write_text("[]", encoding="utf-8")
+    (card / ".card_data.json").write_text(
+        '{"spec":"chara_card_v2","data":{"name":"刻晴","scenario":"璃月港的夜雨"}}',
+        encoding="utf-8",
+    )
+    runtime = SessionTurnRuntime(
+        database_path=tmp_path / "runtime.sqlite3",
+        card_folder=card,
+        projection_root=tmp_path / "styles",
+        bootstrap_legacy_history=False,
+    )
+
+    snapshot = runtime._source_snapshot(0, player_input="继续")
+
+    assert snapshot["card_facts"]["name"] == "刻晴"
+    assert snapshot["card_facts"]["scenario"] == "璃月港的夜雨"
+    assert "data" not in snapshot["card_facts"]
 
 
 def test_studio_agent_editor_uses_instruction_and_context_without_prompt_preset():

@@ -10,9 +10,12 @@ import copy
 import json
 import re
 import time
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from airp.engine.graph_runtime import ExecutionPlan
+
+if TYPE_CHECKING:
+    from airp.host.rp.session_runtime import SessionTurnRuntime
 _TRACE_SECRET_RE = re.compile(r"(?i)(bearer\s+|(?:api[_ -]?key|token|secret|password)\s*[:=]\s*)([^\s,;]+)")
 _TRACE_SECRET_KEYS = frozenset(
     {
@@ -68,6 +71,11 @@ class GraphRunObserver:
         self.retry_of = retry_of
         self.graph_run_id: str | None = None
         self.node_run_ids: dict[str, str] = {}
+        # Provider calls are observed synchronously by NodeRunner, but their
+        # latency must be measured at this boundary so the durable model_calls
+        # table and the node debug payload cannot drift apart.
+        self._model_call_started_at: dict[tuple[str, int], float] = {}
+        self._aggregate_call_ordinals: dict[tuple[str, int], int] = {}
 
     def graph_started(self, plan: ExecutionPlan) -> None:
         self._ensure_started(plan)
@@ -160,6 +168,7 @@ class GraphRunObserver:
         node_run_id = self.node_run_ids.get(node.node_id)
         if node_run_id is None:
             return
+        self._model_call_started_at[(node.node_id, int(call_ordinal))] = time.monotonic()
         request_data = self._request_payload(request)
         call = {
             "call_ordinal": call_ordinal,
@@ -172,6 +181,10 @@ class GraphRunObserver:
             connection.execute("BEGIN IMMEDIATE")
             if not self._can_persist(connection):
                 return
+            aggregate_call_ordinal = self._aggregate_call_ordinal(
+                connection, node.node_id, call_ordinal
+            )
+            call["aggregate_call_ordinal"] = aggregate_call_ordinal
             calls = self._column_json(connection, node_run_id, "model_calls_json", [])
             calls.append(call)
             connection.execute(
@@ -179,7 +192,13 @@ class GraphRunObserver:
                 (_trace_json(calls), node_run_id, self.runtime.session_id),
             )
             payload = self._node_payload(node, node_run_id, state="running")
-            payload.update({"call_ordinal": call_ordinal, "model": request_data.get("model")})
+            payload.update(
+                {
+                    "call_ordinal": call_ordinal,
+                    "aggregate_call_ordinal": aggregate_call_ordinal,
+                    "model": request_data.get("model"),
+                }
+            )
             self.runtime._event(connection, "model_call.started", payload)
 
     def model_call_finished(self, node, call_ordinal: int, request, text: str, result) -> None:
@@ -187,9 +206,12 @@ class GraphRunObserver:
         node_run_id = self.node_run_ids.get(node.node_id)
         if node_run_id is None:
             return
+        started_at = self._model_call_started_at.pop((node.node_id, int(call_ordinal)), None)
+        latency_ms = int(max(0.0, (time.monotonic() - started_at) * 1000.0)) if started_at is not None else 0
         usage = result.usage.as_dict() if result is not None and hasattr(result, "usage") else {}
         cost = result.cost_estimate.as_dict() if result is not None and hasattr(result, "cost_estimate") else {}
         stop_reason = getattr(result, "stop_reason", "") if result is not None else ""
+        request_data = self._request_payload(request)
         with self.runtime._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             if not self._can_persist(connection):
@@ -207,22 +229,200 @@ class GraphRunObserver:
                     "usage": usage,
                     "stop_reason": stop_reason,
                     "cost_estimate": cost,
+                    "latency_ms": latency_ms,
                 }
             )
             connection.execute(
                 "UPDATE node_runs SET model_calls_json = ? WHERE id = ? AND session_id = ?",
                 (_trace_json(calls), node_run_id, self.runtime.session_id),
             )
+            # ``model_calls`` is the runtime's aggregate telemetry source used
+            # by projections and lineage token totals.  Graph runs historically
+            # only populated ``node_runs.model_calls_json``; persist the same
+            # redacted result here and make callback re-entry idempotent.
+            aggregate_call_ordinal = self._aggregate_call_ordinal(
+                connection, node.node_id, call_ordinal
+            )
+            manifest_id = self._manifest_id(connection)
+            prompt_tokens = int(usage.get("prompt_tokens") or 0)
+            completion_tokens = int(usage.get("completion_tokens") or 0)
+            total_tokens = int(usage.get("total_tokens") or (prompt_tokens + completion_tokens))
+            cost_amount = float(cost.get("amount") or 0.0)
+            cost_currency = str(cost.get("currency") or "USD")
+            cost_rate_version = str(cost.get("rate_version") or "unknown")
+            self._upsert_model_call(
+                connection,
+                aggregate_call_ordinal,
+                manifest_id=manifest_id,
+                model=request_data.get("model") or "",
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                total_tokens=total_tokens,
+                stop_reason=stop_reason,
+                latency_ms=latency_ms,
+                cost_amount=cost_amount,
+                cost_currency=cost_currency,
+                cost_rate_version=cost_rate_version,
+            )
             payload = self._node_payload(node, node_run_id, state="running")
             payload.update({
                 "call_ordinal": call_ordinal,
-                "model": self._request_payload(request).get("model"),
+                "aggregate_call_ordinal": aggregate_call_ordinal,
+                "model": request_data.get("model"),
                 "usage": usage,
                 "stop_reason": stop_reason,
                 "cost_estimate": cost,
+                "latency_ms": latency_ms,
                 "final_output": text,
             })
             self.runtime._event(connection, "model_call.finished", payload)
+
+    def model_call_failed(self, node, call_ordinal: int, request, error) -> None:
+        """Persist a terminal provider/transport failure for an active call."""
+        self._ensure_started()
+        node_run_id = self.node_run_ids.get(node.node_id)
+        if node_run_id is None:
+            return
+        started_at = self._model_call_started_at.pop((node.node_id, int(call_ordinal)), None)
+        latency_ms = int(max(0.0, (time.monotonic() - started_at) * 1000.0)) if started_at is not None else 0
+        code = str(getattr(error, "category", None) or error.__class__.__name__ or "provider_error")
+        message = str(error)
+        retryable = bool(getattr(error, "retryable", False))
+        request_data = self._request_payload(request)
+        error_payload = {"code": code, "message": message, "retryable": retryable}
+        with self.runtime._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            if not self._can_persist(connection):
+                return
+            calls = self._column_json(connection, node_run_id, "model_calls_json", [])
+            call = next((item for item in calls if item.get("call_ordinal") == call_ordinal), None)
+            if call is None:
+                call = {"call_ordinal": call_ordinal, "request": request_data}
+                calls.append(call)
+            call.update({"status": "failed", "error": error_payload, "latency_ms": latency_ms})
+            connection.execute(
+                "UPDATE node_runs SET model_calls_json = ? WHERE id = ? AND session_id = ?",
+                (_trace_json(calls), node_run_id, self.runtime.session_id),
+            )
+            aggregate_call_ordinal = self._aggregate_call_ordinal(
+                connection, node.node_id, call_ordinal
+            )
+            self._upsert_model_call(
+                connection,
+                aggregate_call_ordinal,
+                manifest_id=self._manifest_id(connection),
+                model=request_data.get("model") or "",
+                prompt_tokens=0,
+                completion_tokens=0,
+                total_tokens=0,
+                stop_reason=code,
+                latency_ms=latency_ms,
+                cost_amount=0.0,
+                cost_currency="USD",
+                cost_rate_version="failure-v1",
+            )
+            payload = self._node_payload(node, node_run_id, state="failed")
+            payload.update(
+                {
+                    "call_ordinal": call_ordinal,
+                    "aggregate_call_ordinal": aggregate_call_ordinal,
+                    "model": request_data.get("model"),
+                    "error": _redact_trace(error_payload),
+                    "retryable": retryable,
+                    "latency_ms": latency_ms,
+                    "status": "failed",
+                }
+            )
+            self.runtime._event(connection, "model_call.failed", payload)
+
+    def _aggregate_call_ordinal(self, connection, node_id: str, call_ordinal: int) -> int:
+        """Map a node-local call ordinal onto the task-wide telemetry sequence.
+
+        ``ProviderNodeRunner`` restarts its ordinal at one for every node, while
+        ``model_calls`` is task-scoped.  Persisting the local ordinal directly
+        makes a later node overwrite an earlier node's aggregate telemetry.
+        Graph execution is sequential today, so allocating on the start event
+        produces a stable task-wide sequence without leaking storage concerns
+        into the provider-independent runner.
+        """
+        key = (node_id, int(call_ordinal))
+        existing = self._aggregate_call_ordinals.get(key)
+        if existing is not None:
+            return existing
+        row = connection.execute(
+            "SELECT COALESCE(MAX(call_ordinal), 0) AS maximum FROM model_calls "
+            "WHERE session_id = ? AND task_id = ?",
+            (self.runtime.session_id, self.task_id),
+        ).fetchone()
+        aggregate = int(row["maximum"] or 0) + 1
+        self._aggregate_call_ordinals[key] = aggregate
+        return aggregate
+
+    def _manifest_id(self, connection) -> str | None:
+        # A Graph Task freezes one task-level context manifest (ordinal zero).
+        # All node calls share that frozen source snapshot; node-specific prompt
+        # provenance remains in ``node_runs``.
+        row = connection.execute(
+            "SELECT id FROM context_manifests WHERE session_id = ? AND task_id = ? "
+            "ORDER BY call_ordinal LIMIT 1",
+            (self.runtime.session_id, self.task_id),
+        ).fetchone()
+        return row["id"] if row else None
+
+    def _upsert_model_call(
+        self,
+        connection,
+        call_ordinal: int,
+        *,
+        manifest_id: str | None,
+        model: str,
+        prompt_tokens: int,
+        completion_tokens: int,
+        total_tokens: int,
+        stop_reason: str,
+        latency_ms: int,
+        cost_amount: float,
+        cost_currency: str,
+        cost_rate_version: str,
+    ) -> None:
+        existing = connection.execute(
+            "SELECT id FROM model_calls WHERE session_id = ? AND task_id = ? AND call_ordinal = ?",
+            (self.runtime.session_id, self.task_id, int(call_ordinal)),
+        ).fetchone()
+        values = (
+            manifest_id,
+            model,
+            int(prompt_tokens),
+            int(completion_tokens),
+            int(total_tokens),
+            stop_reason,
+            int(latency_ms),
+            float(cost_amount),
+            cost_currency,
+            cost_rate_version,
+        )
+        if existing:
+            connection.execute(
+                "UPDATE model_calls SET manifest_id = ?, model = ?, prompt_tokens = ?, "
+                "completion_tokens = ?, total_tokens = ?, stop_reason = ?, latency_ms = ?, "
+                "cost_amount = ?, cost_currency = ?, cost_rate_version = ? "
+                "WHERE id = ? AND session_id = ?",
+                (*values, existing["id"], self.runtime.session_id),
+            )
+            return
+        connection.execute(
+            "INSERT INTO model_calls "
+            "(id, session_id, task_id, call_ordinal, manifest_id, model, prompt_tokens, "
+            "completion_tokens, total_tokens, stop_reason, latency_ms, cost_amount, "
+            "cost_currency, cost_rate_version) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                self.runtime._id(),
+                self.runtime.session_id,
+                self.task_id,
+                int(call_ordinal),
+                *values,
+            ),
+        )
 
     def tool_call_started(self, node, call) -> None:
         self._ensure_started()
@@ -299,6 +499,8 @@ class GraphRunObserver:
     def graph_finished(self, result) -> None:
         self._ensure_started()
         state = "succeeded" if result.ok else "failed"
+        graph_error = _redact_trace(getattr(result, "error", None))
+        retryable = bool(isinstance(graph_error, dict) and graph_error.get("retryable"))
         now = int(time.time())
         with self.runtime._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -323,6 +525,8 @@ class GraphRunObserver:
                     "state": state,
                     "status": state,
                     "failed_node_id": result.failed_node_id,
+                    "error": graph_error,
+                    "retryable": retryable,
                 },
             )
         self.runtime._prune_graph_runs()

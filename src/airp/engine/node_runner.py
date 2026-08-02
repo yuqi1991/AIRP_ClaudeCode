@@ -57,6 +57,8 @@ class ProviderNodeRunner:
         observer: Any = None,
         execution_context: NodeExecutionContext | None = None,
     ) -> NodeResult:
+        active_request = None
+        active_call_ordinal = None
         try:
             provider = self.provider_factory(node)
             regex_transformer = self._resolve_regex_transformer(node)
@@ -114,6 +116,8 @@ class ProviderNodeRunner:
                     metadata={"node_id": node.node_id, "agent_id": node.agent_id},
                     parameters=parameters,
                 )
+                active_request = request
+                active_call_ordinal = call_ordinal
                 self._notify(observer, "model_call_started", node, call_ordinal, request)
                 text, tool_calls, provider_result = self._stream(
                     provider,
@@ -132,6 +136,8 @@ class ProviderNodeRunner:
                     text,
                     provider_result,
                 )
+                active_request = None
+                active_call_ordinal = None
                 if tool_calls:
                     tool_handler = self._tool_handler_for(node, execution_context)
                     if tool_handler is None:
@@ -179,8 +185,10 @@ class ProviderNodeRunner:
             self._notify(observer, "regex_transform_failed", node, exc)
             return NodeResult.failed(exc.to_dict())
         except ProviderAborted as exc:
+            self._notify_model_call_failed(observer, node, active_call_ordinal, active_request, exc)
             return NodeResult.failed({"code": "aborted", "message": str(exc)})
         except ProviderError as exc:
+            self._notify_model_call_failed(observer, node, active_call_ordinal, active_request, exc)
             return NodeResult.failed(
                 {
                     "code": exc.category,
@@ -189,6 +197,7 @@ class ProviderNodeRunner:
                 }
             )
         except Exception as exc:
+            self._notify_model_call_failed(observer, node, active_call_ordinal, active_request, exc)
             return NodeResult.failed({"code": "node_runner_failed", "message": str(exc)})
 
     @staticmethod
@@ -221,6 +230,18 @@ class ProviderNodeRunner:
                 callback(*args)
             except Exception:
                 return
+
+    @classmethod
+    def _notify_model_call_failed(cls, observer, node, call_ordinal, request, error):
+        """Close an in-flight model-call trace when the provider raises.
+
+        A provider failure must remain visible in the same durable trace as a
+        successful call; otherwise a node appears to have a permanently
+        ``running`` model call after a timeout or cancellation.
+        """
+        if call_ordinal is None or request is None:
+            return
+        cls._notify(observer, "model_call_failed", node, call_ordinal, request, error)
 
     @staticmethod
     def _tools(

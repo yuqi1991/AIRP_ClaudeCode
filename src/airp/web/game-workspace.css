@@ -839,7 +839,7 @@
   [data-airp-region="studio-drawer"] {
     top: var(--airp-drawer-top);
     width: 100vw;
-    height: calc(100vh - 35px);
+    height: calc(100vh - var(--airp-drawer-top));
     border-right: 0;
   }
 

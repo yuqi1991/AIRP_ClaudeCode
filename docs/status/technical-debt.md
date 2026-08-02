@@ -63,8 +63,9 @@ Python 回归、Studio API、Graph trace、浏览器黄金路径和 opt-in Provi
 `tests/`，默认 `pytest` 可运行。跨 provider、断线/代理 SSE 和长会话故障注入仍待补齐。
 
 Provider 发布边界已由 [ADR-0022](../adr/0022-provider-release-qualification.md) 固定：
-默认 CI 不使用真实 key；每个准备发布的 route 仍需 20 回合 bounded soak、两次 SSE 重连
-和一次 Runtime 重启 qualification。
+默认 CI 不使用真实 key；deterministic fixture 已覆盖 20 回合 bounded soak、两次 SSE
+重连、Runtime 重启、任务级 telemetry 和失败可重试语义。每个准备发布的真实 route 仍需
+显式运行带费用门控的 `AIRP_RUN_REAL_QUALIFICATION=1` 20 回合命令。
 
 ## P2：本地安全边界需审视
 

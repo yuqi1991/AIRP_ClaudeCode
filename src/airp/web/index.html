@@ -358,13 +358,19 @@ body {
 #toast.show { opacity: 1; }
 
 @media (max-width: 760px) {
+  :root { --airp-drawer-top: 66px; }
   #topbar {
-    min-height: 34px; height: 34px; padding: 4px 10px; gap: 8px;
-    position: relative; z-index: 70; overflow: hidden;
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    grid-template-rows: 26px 28px;
+    min-height: 66px; height: 66px; padding: 4px 10px; gap: 4px 8px;
+    position: relative; z-index: 70; overflow: visible;
   }
+  #topbar .airp-brand { grid-column: 1; grid-row: 1; align-self: center; }
+  #topbar .tag { grid-column: 2; grid-row: 1; justify-self: start; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+  #topbar .spacer { display: none; }
   #topbar > .dim { display: none; }
-  #topbar .tag { max-width: 110px; overflow: hidden; text-overflow: ellipsis; }
-  #sidebar-toggle { display: inline-grid; place-items: center; flex-shrink: 0; }
+  #sidebar-toggle { display: inline-grid; grid-column: 3; grid-row: 1; place-items: center; justify-self: end; flex-shrink: 0; }
   #main { min-width: 0; }
   #content-panel {
     min-width: 0; width: 100%; padding: 14px 16px;
@@ -372,7 +378,7 @@ body {
   }
   #content-panel #doc { max-width: none; }
   #sidebar {
-    position: fixed; z-index: 60; top: 34px; right: 0; bottom: 0;
+    position: fixed; z-index: 60; top: var(--airp-drawer-top); right: 0; bottom: 0;
     width: min(88vw, 340px); max-width: 100%;
     border-left: 1px solid var(--border);
     box-shadow: -8px 0 24px rgba(0,0,0,.18);
@@ -384,11 +390,11 @@ body {
     transition: transform .18s ease;
   }
   #sidebar-backdrop {
-    position: fixed; z-index: 50; top: 34px; right: 0; bottom: 0; left: 0;
+    position: fixed; z-index: 50; top: var(--airp-drawer-top); right: 0; bottom: 0; left: 0;
     background: rgba(0,0,0,.35);
   }
   body.sidebar-open #sidebar-backdrop { display: block; }
-  #node-detail-modal { top: 34px; right: 0; padding: 10px; }
+  #node-detail-modal { top: var(--airp-drawer-top); right: 0; padding: 10px; }
   #input-panel { padding: 8px 10px; min-width: 0; }
   #input-panel .input-row { gap: 7px; }
   #input-panel textarea { min-width: 0; padding: 8px 10px; }
@@ -962,8 +968,12 @@ html, body { color-scheme: dark; }
 @media (max-width: 760px) {
   #workspace-navigation {
     display: flex !important;
-    flex: 1 1 0;
+    grid-column: 1 / -1;
+    grid-row: 2;
+    align-items: center;
+    justify-content: space-between;
     min-width: 0;
+    width: 100%;
     max-width: 100%;
     gap: 4px;
     overflow-x: auto;
@@ -972,7 +982,7 @@ html, body { color-scheme: dark; }
   #workspace-navigation::-webkit-scrollbar { display: none; }
   #workspace-navigation button { flex: 0 0 auto; max-width: none; white-space: nowrap; }
   #workspace-navigation .workspace-studio-action,
-  #workspace-navigation .workspace-nav-button { padding-inline: 6px; font-size: .68em; }
+  #workspace-navigation .workspace-nav-button { padding-inline: 6px; font-size: .67em; }
   #studio-agents-toggle { max-width: 108px; overflow: hidden; text-overflow: ellipsis; }
   #studio-regex-toggle { max-width: 118px; overflow: hidden; text-overflow: ellipsis; }
 }
@@ -1215,13 +1225,13 @@ html, body { color-scheme: dark; }
     <div class="side-card" id="active-graph-card" data-airp-slot="monitor-runtime">
       <h4>运行时</h4>
       <div class="side-note" id="monitor-connection">桥接: 正在连接…</div>
-      <div class="side-note" id="active-graph-status">活动 Graph 状态: 未连接</div>
+      <div class="side-note" id="active-graph-status">活动编排图状态：未连接</div>
       <div class="side-note" id="runtime-task-status">任务: —</div>
-      <div class="side-note" id="runtime-task-id">Task ID: —</div>
+      <div class="side-note" id="runtime-task-id">任务 ID：—</div>
       <div class="side-note" id="runtime-task-meta"></div>
       <button class="side-button" id="runtime-cancel-button" onclick="cancelRuntimeTask()" hidden>取消当前任务</button>
       <div class="setting-row" style="display:block; margin-top:8px;">
-        <span class="label">Active Graph</span>
+        <span class="label">活动编排图</span>
         <select id="runtime-graph-select" class="config-select"></select>
       </div>
       <div class="side-buttons">
@@ -1231,7 +1241,7 @@ html, body { color-scheme: dark; }
     </div>
     <div class="side-card" id="agent-trace-card" data-airp-slot="monitor-graph">
       <h4>编排观察</h4>
-      <span class="studio-visually-hidden" data-monitor-contract="Graph Observation">Graph Observation</span>
+      <span class="studio-visually-hidden" data-monitor-contract="Graph Observation">编排观察</span>
       <div class="side-note monitor-run-status" id="agent-trace-status">等待运行时事件</div>
       <div id="agent-trace" class="monitor-topology" aria-live="polite" aria-label="Graph 节点拓扑"></div>
       <button class="side-button" id="graph-retry-button" type="button" onclick="retryGraphRun()" hidden>重试编排</button>
@@ -1288,26 +1298,26 @@ html, body { color-scheme: dark; }
 <div id="node-detail-modal" data-airp-region="node-debug-overlay" hidden role="dialog" aria-modal="true" aria-labelledby="node-detail-title" onclick="closeNodeDetail(event)">
   <div class="node-detail-panel node-debug-panel" onclick="event.stopPropagation()">
     <div class="node-detail-head">
-      <h3 id="node-detail-title">Node Run</h3>
-      <button class="node-detail-close" id="node-debug-replay-button" type="button" title="Runs a new billable model call without changing the story" onclick="runDebugReplay()">Debug Replay</button>
+      <h3 id="node-detail-title">节点运行</h3>
+      <button class="node-detail-close" id="node-debug-replay-button" type="button" title="发起一次新的模型调用，不改变故事存档" onclick="runDebugReplay()">调试重放</button>
       <button class="node-detail-close" type="button" title="关闭详情" aria-label="关闭详情" onclick="closeNodeDetail()">×</button>
     </div>
-    <div class="side-note">Live details stay scoped to this Node Run. Debug Replay makes a new model call and never commits a story turn.</div>
+    <div class="side-note">实时详情只属于当前节点运行。调试重放会发起新的模型调用，但不会提交故事回合。</div>
     <div id="node-debug-summary" class="node-debug-summary" aria-live="polite"></div>
     <section class="node-debug-section" aria-labelledby="node-debug-trace-title">
-      <h4 id="node-debug-trace-title">Live trace</h4>
+      <h4 id="node-debug-trace-title">实时追踪</h4>
       <pre id="node-detail-body" data-airp-slot="debug-body"></pre>
     </section>
     <section class="node-debug-section" aria-labelledby="node-debug-model-title">
-      <h4 id="node-debug-model-title">Model calls</h4>
+      <h4 id="node-debug-model-title">模型调用</h4>
       <div id="node-debug-model-calls" class="node-debug-list"></div>
     </section>
     <section class="node-debug-section" aria-labelledby="node-debug-tool-title">
-      <h4 id="node-debug-tool-title">Tool calls</h4>
+      <h4 id="node-debug-tool-title">工具调用</h4>
       <div id="node-debug-tool-calls" class="node-debug-list"></div>
     </section>
     <details class="node-debug-section">
-      <summary>Input and artifact</summary>
+      <summary>输入与产物</summary>
       <pre id="node-debug-input" class="node-debug-json"></pre>
     </details>
   </div>
@@ -2009,7 +2019,7 @@ const RUNTIME_EVENT_TYPES = [
   'task.cannot_reroll_opening', 'task.unknown_revision', 'turn.committed',
   'session.opening_switched',
   'session.head_moved', 'session.rolled_back', 'narrative.preview.delta',
-  'agent_node.started', 'agent_node.finished', 'model_call.started', 'model_call.finished',
+  'agent_node.started', 'agent_node.finished', 'model_call.started', 'model_call.finished', 'model_call.failed',
   'tool_run.started', 'tool_run.progress', 'tool_run.finished',
   'graph.run.started', 'graph.node.started', 'graph.node.delta', 'graph.node.finished', 'graph.run.finished'
 ];
@@ -2031,6 +2041,23 @@ const NODE_STATUS_LABELS = Object.freeze({
   succeeded: '已完成',
   failed: '失败'
 });
+const RUNTIME_STATUS_LABELS = Object.freeze({
+  idle: '等待生成', queued: '排队中', leased: '已接单', running: '生成中',
+  projection_pending: '正在保存', succeeded: '已完成', cancelled: '已取消',
+  failed_retryable: '失败（可重试）', failed_terminal: '失败', stale_revision: '版本已变化',
+  quality_exhausted: '质量校验耗尽', quality_gate_failed: '质量校验失败',
+  mvu_validation_failed: '状态校验失败', rolled_back: '已回滚',
+  cannot_reroll_opening: '开场不可重试', unknown_revision: '版本未知'
+});
+function runtimeStatusLabel(value) {
+  return RUNTIME_STATUS_LABELS[value] || value || '—';
+}
+function runtimeErrorText(value) {
+  if (!value) return '';
+  if (typeof value === 'string') return value;
+  if (typeof value === 'object') return value.message || value.code || debugValue(value, '未知错误');
+  return String(value);
+}
 
 // The legacy page still owns these values.  The workspace contract mirrors
 // them so future Studio/Monitor modules can subscribe without taking over the
@@ -2159,7 +2186,7 @@ function renderAgentTrace() {
   statusLabel.className = "monitor-run-status-value";
   statusLabel.dataset.status = runStatus;
   statusLabel.textContent = graphRunState.graphRunId
-    ? "Graph " + (graphRunState.graphId || "") + " · " + runStatus
+    ? "Graph " + (graphRunState.graphId || "") + " · " + runtimeStatusLabel(runStatus)
     : "等待运行时事件";
   status.appendChild(statusLabel);
   if (active) {
@@ -2258,14 +2285,20 @@ function recordAgentTrace(type, payload, sequence) {
       key = taskId + ":node:" + payload.agent_node_id;
       const previous = agentTrace.nodes[key] || {};
       const calls = (previous.modelCalls || []).slice();
+      const callFailed = type === "model_call.failed";
+      const callFinished = type === "model_call.finished";
       calls.push({
         call_ordinal: payload.call_ordinal || null,
         manifest_id: payload.manifest_id || null,
         model: payload.model || null,
         messages: payload.messages || [],
         tools: payload.tools || [],
-        output: payload.output || "",
-        state: type.endsWith("finished") ? "succeeded" : "running"
+        output: payload.output || payload.final_output || "",
+        state: callFailed ? "failed" : (callFinished ? "succeeded" : "running"),
+        error: payload.error || null,
+        latency_ms: payload.latency_ms || 0,
+        usage: payload.usage || {},
+        stop_reason: payload.stop_reason || ""
       });
       agentTrace.nodes[key] = Object.assign({}, previous, {
         sequence: sequence || 0, taskId: taskId, nodeId: payload.agent_node_id,
@@ -2278,9 +2311,13 @@ function recordAgentTrace(type, payload, sequence) {
       return;
     }
     key = taskId + ":model:" + (payload.call_ordinal || 0);
-    state = type.endsWith("finished") ? "succeeded" : "running";
+    state = type === "model_call.failed" ? "failed" : (type === "model_call.finished" ? "succeeded" : "running");
     label = "模型调用 #" + (payload.call_ordinal || "?") + (payload.model ? " · " + payload.model : "");
-    meta = type.endsWith("finished") ? "完成 · " + (payload.latency_ms || 0) + " ms · " + ((payload.usage || {}).total_tokens || 0) + " tokens" : "请求中";
+    meta = type === "model_call.failed"
+      ? "失败" + (payload.error && payload.error.code ? " · " + payload.error.code : "")
+      : type === "model_call.finished"
+        ? "完成 · " + (payload.latency_ms || 0) + " ms · " + ((payload.usage || {}).total_tokens || 0) + " tokens"
+        : "请求中";
   } else {
     if (agentTrace.graphMode) {
       scheduleNodeDetailRefresh(payload.node_run_id);
@@ -2319,7 +2356,7 @@ function renderDebugCallList(target, calls, kind) {
   if (!list.length) {
     const empty = document.createElement('div');
     empty.className = 'node-debug-muted';
-    empty.textContent = kind === 'tool' ? 'No tool calls recorded.' : 'No model calls recorded.';
+    empty.textContent = kind === 'tool' ? '暂无工具调用记录。' : '暂无模型调用记录。';
     target.appendChild(empty);
     return;
   }
@@ -2329,11 +2366,11 @@ function renderDebugCallList(target, calls, kind) {
     item.className = 'node-debug-call ' + state;
     const title = document.createElement('strong');
     if (kind === 'tool') {
-      title.textContent = (call.name || call.tool || 'tool') + ' · ' + (call.status || 'unknown');
+      title.textContent = (call.name || call.tool || '工具') + ' · ' + (call.status || '未知');
     } else {
       const request = call.request || {};
       const usage = call.usage || {};
-      title.textContent = 'Call #' + (call.call_ordinal || index + 1) + (request.model ? ' · ' + request.model : '') + ' · ' + (call.status || 'unknown');
+      title.textContent = '调用 #' + (call.call_ordinal || index + 1) + (request.model ? ' · ' + request.model : '') + ' · ' + (call.status || '未知');
       if (usage.total_tokens) title.textContent += ' · ' + usage.total_tokens + ' tokens';
     }
     item.appendChild(title);
@@ -2341,7 +2378,7 @@ function renderDebugCallList(target, calls, kind) {
     detail.className = 'node-debug-json';
     const payload = kind === 'tool'
       ? { args: call.args || {}, result: call.result, error: call.error }
-      : { request: call.request || {}, output: call.final_output || call.streamed_output || '', stop_reason: call.stop_reason, usage: call.usage };
+      : { request: call.request || {}, output: call.final_output || call.streamed_output || '', stop_reason: call.stop_reason, usage: call.usage, latency_ms: call.latency_ms, cost_estimate: call.cost_estimate, error: call.error };
     detail.textContent = debugValue(payload, '—');
     item.appendChild(detail);
     target.appendChild(item);
@@ -2355,7 +2392,7 @@ function renderNodeDetail(detail) {
   const state = NODE_STATUS_LABELS[detail.state] ? detail.state : (detail.status || 'idle');
   const modelCalls = Array.isArray(detail.model_calls) ? detail.model_calls : [];
   const toolCalls = Array.isArray(detail.tool_calls) ? detail.tool_calls : [];
-  if (title) title.textContent = (detail.label || detail.node_id || 'Node Run') + ' · ' + (NODE_STATUS_LABELS[state] || state);
+  if (title) title.textContent = (detail.label || detail.node_id || '节点运行') + ' · ' + (NODE_STATUS_LABELS[state] || state);
   const replayButton = document.getElementById('node-debug-replay-button');
   if (replayButton) replayButton.hidden = !nodeDetailState.nodeRunId;
 
@@ -2365,10 +2402,10 @@ function renderNodeDetail(detail) {
     [
       ['状态', NODE_STATUS_LABELS[state] || state],
       ['Agent', detail.agent_id || detail.role || detail.node_id || '—'],
-      ['Model calls', String(modelCalls.length)],
-      ['Tool calls', String(toolCalls.length)],
-      ['Node Run', detail.node_run_id || 'live trace'],
-      ['Updated', detail.finished_at ? new Date(detail.finished_at * 1000).toLocaleTimeString() : 'live']
+      ['模型调用', String(modelCalls.length)],
+      ['工具调用', String(toolCalls.length)],
+      ['节点运行', detail.node_run_id || '实时追踪'],
+      ['更新时间', detail.finished_at ? new Date(detail.finished_at * 1000).toLocaleTimeString() : '实时']
     ].forEach(function(pair) {
       const stat = document.createElement('div');
       stat.className = 'node-debug-stat';
@@ -2395,16 +2432,16 @@ function renderNodeDetail(detail) {
       tool_snapshot: detail.tool_snapshot || {},
       error: detail.error || null,
       debug_replay: nodeDetailState.debugReplay || null
-    }, stream || 'Waiting for live trace…');
+    }, stream || '等待实时追踪…');
   } else {
     body.textContent = debugValue({
-      label: detail.label || detail.node_id || 'Node Run',
+      label: detail.label || detail.node_id || '节点运行',
       state: detail.state || detail.status || 'idle',
       prompt: detail.prompt || null,
       output: stream,
       manifests: detail.manifests || [],
       model_calls: modelCalls
-    }, 'Waiting for live trace…');
+    }, '等待实时追踪…');
   }
   renderDebugCallList(document.getElementById('node-debug-model-calls'), modelCalls, 'model');
   renderDebugCallList(document.getElementById('node-debug-tool-calls'), toolCalls, 'tool');
@@ -2428,7 +2465,7 @@ async function openNodeDetail(nodeRunId, traceItem) {
   const fallback = traceItem ? {
     node_run_id: nodeRunId || null,
     node_id: traceItem.nodeId || null,
-    label: traceItem.label || traceItem.nodeId || 'Node Run',
+    label: traceItem.label || traceItem.nodeId || '节点运行',
     state: traceItem.state || 'idle',
     input: traceItem.input || null,
     output: traceItem.output || traceItem.streamedOutput || '',
@@ -2445,50 +2482,50 @@ async function openNodeDetail(nodeRunId, traceItem) {
   if (fallback) renderNodeDetail(fallback);
   if (!nodeRunId) {
     if (!traceItem || !traceItem.taskId || !traceItem.nodeId) return;
-    if (body) body.textContent = 'Loading trace details…';
+    if (body) body.textContent = '正在读取追踪详情…';
     try {
       const query = '?task_id=' + encodeURIComponent(traceItem.taskId) + '&node_id=' + encodeURIComponent(traceItem.nodeId);
       const response = await fetch(apiUrl('/v1/session/agent-traces' + query), { cache: 'no-store' });
       const data = await response.json();
-      if (!response.ok || !data.agent_trace) throw new Error(data.message || data.error || 'Agent trace unavailable');
+      if (!response.ok || !data.agent_trace) throw new Error(data.message || data.error || 'Agent 追踪不可用');
       nodeDetailState.data = data.agent_trace;
       renderNodeDetail(data.agent_trace);
     } catch (error) {
       if (fallback) renderNodeDetail(fallback);
-      else if (body) body.textContent = error.message || 'Agent trace unavailable';
+      else if (body) body.textContent = error.message || 'Agent 追踪不可用';
     }
     return;
   }
-  if (body) body.textContent = 'Loading…';
+  if (body) body.textContent = '正在读取…';
   try {
     const response = await fetch(apiUrl('/v1/studio/node-runs/' + encodeURIComponent(nodeRunId)), { cache: 'no-store' });
     const data = await response.json();
-    if (!response.ok || !data.node_run) throw new Error(data.message || data.error || 'Node detail unavailable');
+    if (!response.ok || !data.node_run) throw new Error(data.message || data.error || '节点详情不可用');
     nodeDetailState.data = data.node_run;
     renderNodeDetail(data.node_run);
   } catch (error) {
-    if (body) body.textContent = error.message || 'Node detail unavailable';
+    if (body) body.textContent = error.message || '节点详情不可用';
   }
 }
 
 async function runDebugReplay() {
   if (!nodeDetailState.nodeRunId) return;
   const button = document.getElementById('node-debug-replay-button');
-  if (button) { button.disabled = true; button.textContent = 'Replaying…'; }
+  if (button) { button.disabled = true; button.textContent = '重放中…'; }
   try {
     const response = await fetch(apiUrl('/v1/studio/node-runs/' + encodeURIComponent(nodeDetailState.nodeRunId) + '/replay'), {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ idempotency_key: 'debug-replay-' + nodeDetailState.nodeRunId + '-' + Date.now() })
     });
     const data = await response.json();
-    if (!response.ok || !data.debug_replay) throw new Error(data.message || data.error || 'Debug Replay unavailable');
+    if (!response.ok || !data.debug_replay) throw new Error(data.message || data.error || '调试重放不可用');
     nodeDetailState.debugReplay = data.debug_replay;
     renderNodeDetail(nodeDetailState.data);
   } catch (error) {
     const body = document.getElementById('node-detail-body');
-    if (body) body.textContent = error.message || 'Debug Replay unavailable';
+    if (body) body.textContent = error.message || '调试重放不可用';
   } finally {
-    if (button) { button.disabled = false; button.textContent = 'Debug Replay'; }
+    if (button) { button.disabled = false; button.textContent = '调试重放'; }
   }
 }
 
@@ -2536,7 +2573,7 @@ function apiUrl(path) {
 }
 
 function setActiveGraphStatus(msg) {
-  setText('active-graph-status', msg || '活动 Graph 状态: —');
+  setText('active-graph-status', msg || '活动编排图状态：—');
 }
 
 function setRuntimeTaskStatus(task) {
@@ -2547,12 +2584,12 @@ function setRuntimeTaskStatus(task) {
   const status = task && task.status ? task.status : 'idle';
   const taskId = task && task.task_id ? task.task_id : '—';
   const meta = [];
-  if (task && task.error) meta.push('错误: ' + task.error);
+  if (task && task.error) meta.push('错误：' + runtimeErrorText(task.error));
   if (task && task.message) meta.push('说明: ' + task.message);
   if (task && typeof task.retryable === 'boolean') meta.push(task.retryable ? '可重试' : '不可重试');
-  setText('runtime-task-status', '任务: ' + status);
-  setText('monitor-generation-state', status === 'idle' ? '等待生成' : '生成状态: ' + status);
-  setText('runtime-task-id', 'Task ID: ' + taskId);
+  setText('runtime-task-status', '任务：' + runtimeStatusLabel(status));
+  setText('monitor-generation-state', runtimeStatusLabel(status));
+  setText('runtime-task-id', '任务 ID：' + taskId);
   setText('runtime-task-meta', meta.join(' · '));
   const cancel = document.getElementById('runtime-cancel-button');
   if (cancel) {
@@ -2983,11 +3020,11 @@ async function checkBridge() {
     const data = await r.json();
     bridgeOk = true;
     const snapshot = data.snapshot || {};
-    setActiveGraphStatus('活动 Graph 状态: ' + (data.status || 'idle') + ' | Rev ' + (snapshot.active_revision || 0));
+    setActiveGraphStatus('活动编排图状态：' + runtimeStatusLabel(data.status || 'idle') + ' · Rev ' + (snapshot.active_revision || 0));
     setRuntimeTaskStatus(snapshot.current_task || { status: data.status, task_id: data.task_id });
   } catch(e) {
     bridgeOk = false;
-    setActiveGraphStatus('活动 Graph 状态: 未连接');
+    setActiveGraphStatus('活动编排图状态：未连接');
     setRuntimeTaskStatus(null);
   }
   const connection = document.getElementById('monitor-connection');
@@ -3016,13 +3053,13 @@ async function loadActiveGraphPanel() {
     workspaceSetState('activeGraph', activeGraphState);
     workspaceEmit('graph:selection-loaded', activeGraphState);
     setSelectOptions('runtime-graph-select', data.graphs, data.selected && data.selected.graph_id, '未选择 Graph');
-    setActiveGraphStatus('活动 Graph 接口已就绪');
+    setActiveGraphStatus('活动编排图接口已就绪');
   } catch(e) {
     activeGraphState = { graphs: [], selected: { graph_id: null } };
     workspaceSetState('activeGraph', activeGraphState);
     workspaceEmit('graph:selection-error', activeGraphState);
     setSelectOptions('runtime-graph-select', [], '', 'Graph 接口不可用');
-    setActiveGraphStatus('活动 Graph 接口不可用');
+    setActiveGraphStatus('活动编排图接口不可用');
   }
 }
 
@@ -3035,12 +3072,12 @@ async function applyActiveGraphSelection() {
       body: JSON.stringify({ graph_id: graphId })
     });
     const data = await r.json();
-    if (!r.ok || !data.ok) throw Object.assign(new Error(data.message || data.error || 'save failed'), { serverData: data });
+    if (!r.ok || !data.ok) throw Object.assign(new Error(data.message || data.error || '保存失败'), { serverData: data });
     showToast('✓ Runtime 选择已保存，改动将应用于下一任务');
     setRuntimeTaskStatus((data.snapshot || {}).current_task || null);
     await loadActiveGraphPanel();
   } catch(e) {
-    showError('应用活动 Graph 失败: ' + (e.message || '未知错误') + (e.serverData && e.serverData.path ? ' [' + e.serverData.path + ']' : ''));
+    showError('应用活动编排图失败：' + (e.message || '未知错误') + (e.serverData && e.serverData.path ? ' [' + e.serverData.path + ']' : ''));
   }
 }
 

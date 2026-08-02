@@ -37,6 +37,8 @@ src/airp/web/state.js
 src/airp/web/studio/
 !tests/
 !tests/*.py
+!tests/browser/
+!tests/browser/**
 !docs/
 !docs/**/
 !docs/**/*.md
