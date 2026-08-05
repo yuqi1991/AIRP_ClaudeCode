@@ -117,10 +117,10 @@ def test_task_snapshot_flattens_imported_card_envelope_for_nested_macros(tmp_pat
 
 
 def test_studio_agent_editor_uses_instruction_and_context_without_prompt_preset():
-    page = (REPO_ROOT / "src" / "airp" / "web" / "studio.html").read_text(encoding="utf-8")
+    page = (REPO_ROOT / "src" / "airp" / "web" / "index.html").read_text(encoding="utf-8")
 
-    assert 'id="agent-instruction"' in page
-    assert 'id="preview-context"' in page
+    assert 'id="studio-agent-instruction"' in page
+    assert 'id="studio-preview-context"' in page
     assert 'id="agent-preset"' not in page
     assert "/v1/studio/prompt-presets" not in page
 

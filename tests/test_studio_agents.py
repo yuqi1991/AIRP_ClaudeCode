@@ -24,7 +24,7 @@ def _write_card(card: Path) -> None:
 def _server(tmp_path: Path) -> SessionRuntimeServer:
     styles = tmp_path / "styles"
     styles.mkdir(exist_ok=True)
-    shutil.copy(REPO_ROOT / "src" / "airp" / "web" / "studio.html", styles / "studio.html")
+    shutil.copy(REPO_ROOT / "src" / "airp" / "web" / "index.html", styles / "index.html")
     card = tmp_path / "card"
     _write_card(card)
     runtime = SessionTurnRuntime(
@@ -208,9 +208,10 @@ def test_agents_view_and_api_contract_are_wired(tmp_path: Path):
         with urlopen(f"{server.base_url}/studio", timeout=5) as response:
             page = response.read().decode("utf-8")
         assert response.status == 200
-    assert "Agents" in page
-    assert 'id="agent-form"' in page
-    assert 'const endpoint = "/v1/studio/agents"' in page
-    assert "prompt-preview" in page
-    assert "Advanced JSON" in page
-    assert "Tool allowlist" in page
+    assert 'data-airp-app="game-workspace"' in page
+    assert 'id="studio-drawer-host"' in page
+    assert 'id="studio-agents-toggle"' in page
+    assert 'id="studio-agent-form"' in page
+    assert 'id="studio-agent-preview"' in page
+    assert 'id="studio-agent-advanced"' in page
+    assert 'src="studio-agents-drawer.js"' in page

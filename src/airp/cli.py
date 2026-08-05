@@ -66,6 +66,14 @@ def _ensure_web_assets(styles: Path) -> None:
         "__pycache__",
     )
     styles.mkdir(parents=True, exist_ok=True)
+    # The standalone Studio page was merged into the game workspace. Remove
+    # only this known obsolete shell; the projection's story/session files
+    # remain mutable user data and are intentionally left untouched.
+    retired_studio = styles / "studio.html"
+    try:
+        retired_studio.unlink()
+    except FileNotFoundError:
+        pass
     shutil.copytree(assets, styles, dirs_exist_ok=True, ignore=ignored)
 
 

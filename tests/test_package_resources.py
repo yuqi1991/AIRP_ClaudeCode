@@ -25,6 +25,7 @@ def test_existing_projection_refreshes_packaged_workspace_ui_without_overwriting
     projection = tmp_path / "projection"
     projection.mkdir()
     (projection / "index.html").write_text("<html>old workspace</html>", encoding="utf-8")
+    (projection / "studio.html").write_text("<html>old standalone studio</html>", encoding="utf-8")
     (projection / "content.js").write_text("const currentStory = true;", encoding="utf-8")
     (projection / "state.js").write_text("const currentState = true;", encoding="utf-8")
 
@@ -33,5 +34,6 @@ def test_existing_projection_refreshes_packaged_workspace_ui_without_overwriting
     page = (projection / "index.html").read_text(encoding="utf-8")
     assert 'data-airp-app="game-workspace"' in page
     assert 'id="studio-drawer-host"' in page
+    assert not (projection / "studio.html").exists()
     assert (projection / "content.js").read_text(encoding="utf-8") == "const currentStory = true;"
     assert (projection / "state.js").read_text(encoding="utf-8") == "const currentState = true;"

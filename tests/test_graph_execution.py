@@ -471,7 +471,7 @@ def _json_request(method: str, url: str, body: dict | None = None) -> tuple[int,
 def test_graph_http_api_can_create_and_reorder_agent_nodes(tmp_path):
     styles = tmp_path / "styles"
     styles.mkdir()
-    shutil.copy(REPO_ROOT / "src" / "airp" / "web" / "studio.html", styles / "studio.html")
+    shutil.copy(REPO_ROOT / "src" / "airp" / "web" / "index.html", styles / "index.html")
     card = tmp_path / "card"
     (card / "memory").mkdir(parents=True)
     (card / ".initvar.json").write_text("{}", encoding="utf-8")

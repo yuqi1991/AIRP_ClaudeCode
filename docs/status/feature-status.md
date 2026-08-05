@@ -10,7 +10,7 @@
 | RP Session/Revision/Projection | `src/airp/host/rp/session_runtime.py`、`tests/test_graph_execution.py` | 单 server 服务一张卡；card-local multi-session 已持久化 |
 | GraphRuntime 与顺序 Agent Graph | `src/airp/engine/graph_runtime.py`、`src/airp/engine/graph_definitions.py`、`tests/test_graph_execution.py` | 当前是稳定顺序 pipeline，不支持任意条件 DSL |
 | Provider Node Runner | `src/airp/engine/node_runner.py`、`src/airp/engine/provider.py`、`tests/test_provider_execution.py`、`tests/test_provider_qualification.py` | canonical 能力为流式 chat completions/responses、tool loop、abort、input/output Regex；任务级 telemetry 保留每个节点调用；真实 route 仍需显式 qualification |
-| Studio 配置库 | `src/airp/engine/studio_library.py`、`src/airp/server.py`、`src/airp/web/studio.html` | Provider、Agent、Graph、Project、Worldbook、Regex Collection 由 Workspace 持有 |
+| Studio 配置库 | `src/airp/engine/studio_library.py`、`src/airp/server.py`、`src/airp/web/index.html` | Provider、Agent、Graph、Project、Worldbook、Regex Collection 由 Workspace 持有 |
 | 集成式游戏工作区与 Studio 抽屉 | `src/airp/web/index.html`、`src/airp/web/game-workspace-contract.js`、`src/airp/web/game-drawer.js`、`docs/specs/integrated-game-studio-workspace.md` | 游戏页提供互斥的顶部下拉抽屉；游戏抽屉支持 Project 搜索、导入、删除、编辑、活动 Project 切换与每个 Project 的最后 Session 恢复；右侧 Monitor 保持存档和 Graph/Trace 上下文 |
 | 游戏抽屉与跨 Project 存档恢复 | `src/airp/host/rp/project_runtime.py`、`src/airp/web/game-drawer.js`、`tests/test_game_project_drawer.py`、`tests/test_studio_projects.py` | 导入入口接收 JSON；SillyTavern 内嵌 `character_book` 会创建并绑定 Worldbook；删除当前 Project 时自动切换到剩余 Project |
 | Agent instruction 宏 | `src/airp/engine/macros.py`、`src/airp/engine/context_compiler.py`、`tests/test_agent_instruction_macros.py` | 宏只读显式 runtime snapshot，不扫描 filesystem |

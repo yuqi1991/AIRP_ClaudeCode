@@ -2194,7 +2194,9 @@ class SessionRuntimeServer:
                 if path in ("", "/"):
                     rel = "index.html"
                 elif path == "/studio":
-                    rel = "studio.html"
+                    # Keep old bookmarks working without reviving a second
+                    # standalone Studio document.
+                    rel = "index.html"
                 else:
                     rel = path.lstrip("/")
                 target = (root / rel).resolve()

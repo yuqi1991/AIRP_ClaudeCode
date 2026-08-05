@@ -11,7 +11,7 @@ from airp.server import SessionRuntimeServer
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-STUDIO_SOURCE = REPO_ROOT / "src" / "airp" / "web" / "studio.html"
+STUDIO_SOURCE = REPO_ROOT / "src" / "airp" / "web" / "index.html"
 
 
 def _write_card(card: Path) -> None:
@@ -25,7 +25,7 @@ def _write_card(card: Path) -> None:
 def _server(tmp_path: Path, *, workspace: bool = False) -> SessionRuntimeServer:
     styles = tmp_path / "styles"
     styles.mkdir(exist_ok=True)
-    shutil.copy(REPO_ROOT / "src" / "airp" / "web" / "studio.html", styles / "studio.html")
+    shutil.copy(REPO_ROOT / "src" / "airp" / "web" / "index.html", styles / "index.html")
     card = tmp_path / "card"
     _write_card(card)
     runtime = SessionTurnRuntime(
@@ -296,19 +296,12 @@ def test_projects_view_exposes_normalized_editor_without_import_format_editors(t
         with urlopen(f"{server.base_url}/studio", timeout=5) as response:
             page = response.read().decode("utf-8")
         assert response.status == 200
-    assert 'id="project-form"' in page
-    assert 'id="project-name"' in page
-    assert 'id="project-avatar"' in page
-    assert 'id="project-description"' in page
-    assert 'id="project-personality"' in page
-    assert 'id="project-scenario"' in page
-    assert 'id="project-card-system"' in page
-    assert 'id="project-card-post-history"' in page
-    assert 'id="project-openings"' in page
-    assert 'id="project-variables"' in page
-    assert 'id="project-assets"' in page
+    assert 'data-airp-app="game-workspace"' in page
+    assert 'id="studio-drawer-host"' in page
+    assert 'id="game-drawer-toggle"' in page
+    assert 'id="game-drawer-panel"' in page
+    assert 'src="game-drawer.js"' in page
     assert 'id="project-graph"' not in page
-    assert "/v1/studio/projects" in page
     assert "alternate_greetings" not in page
     assert "example_messages" not in page
     assert "extensions JSON" not in page
@@ -361,19 +354,11 @@ def test_runtime_graph_selection_does_not_require_a_legacy_preset(tmp_path: Path
 def test_packaged_studio_owns_regex_collections_and_keeps_project_editor_minimal():
     page = STUDIO_SOURCE.read_text(encoding="utf-8")
 
-    assert 'data-studio-view="regex-collections"' in page
-    assert 'id="regex-collections-view"' in page
-    assert 'id="regex-collection-form"' in page
-    assert 'id="regex-collection-list"' in page
-    assert 'id="regex-collection-name"' in page
-    assert 'id="regex-rules"' in page
-    assert 'id="add-regex-rule"' in page
-    assert 'id="test-regex-collection"' in page
-    assert 'id="copy-regex-collection"' in page
-    assert 'id="delete-regex-collection"' in page
-    assert "/v1/studio/regex-collections" in page
-    assert "regex_collection_id" in page
-    assert 'id="agent-regex-collection"' in page
+    assert 'data-airp-app="game-workspace"' in page
+    assert 'id="studio-regex-toggle"' in page
+    assert 'id="regex-drawer-panel"' in page
+    assert 'src="regex-drawer.js"' in page
+    assert 'id="studio-agent-regex"' in page
 
     assert 'id="load-project"' not in page
     assert 'id="project-graph"' not in page

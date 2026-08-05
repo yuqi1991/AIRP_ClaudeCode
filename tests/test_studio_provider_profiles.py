@@ -159,7 +159,7 @@ def test_provider_profile_rejects_invalid_protocol(tmp_path):
 def test_studio_providers_view_is_served_from_runtime_and_uses_profile_seam(tmp_path):
     styles = tmp_path / "styles"
     styles.mkdir()
-    shutil.copy(REPO_ROOT / "src" / "airp" / "web" / "studio.html", styles / "studio.html")
+    shutil.copy(REPO_ROOT / "src" / "airp" / "web" / "index.html", styles / "index.html")
     card = tmp_path / "card"
     _write_card(card)
     runtime = SessionTurnRuntime(
@@ -171,17 +171,13 @@ def test_studio_providers_view_is_served_from_runtime_and_uses_profile_seam(tmp_
         with urlopen(f"{server.base_url}/studio", timeout=5) as response:
             page = response.read().decode("utf-8")
             assert response.status == 200
-    assert "Provider Profiles" in page
-    assert 'id="profile-form"' in page
-    assert 'const endpoint = "/v1/studio/providers"' in page
-    assert 'method: "DELETE"' in page
-    assert "payload.references" in page
-    assert "Provider profile saved." in page
-    assert "Provider profile deleted." in page
-    assert 'id="profile-api-key"' in page
-    assert 'id="test-profile"' in page
-    assert 'id="refresh-models"' in page
-    assert 'id="delete-key"' in page
+    assert 'data-airp-app="game-workspace"' in page
+    assert 'id="studio-drawer-host"' in page
+    assert 'id="studio-model-toggle"' in page
+    assert 'id="studio-provider-form"' in page
+    assert 'id="studio-provider-api-key"' in page
+    assert 'id="studio-provider-refresh"' in page
+    assert 'src="studio-model-drawer.js"' in page
 
 
 class _ModelsUpstream:

@@ -237,8 +237,12 @@ class _GoldenPathProvider:
 def test_studio_to_game_golden_path_drives_saved_configuration_live_trace_and_retry(tmp_path: Path):
     styles = tmp_path / "styles"
     styles.mkdir()
-    for name in ("studio.html", "index.html"):
-        shutil.copy(REPO_ROOT / "src" / "airp" / "web" / name, styles / name)
+    shutil.copytree(
+        REPO_ROOT / "src" / "airp" / "web",
+        styles,
+        dirs_exist_ok=True,
+        ignore=shutil.ignore_patterns("studio", "__pycache__"),
+    )
     card = tmp_path / "golden-path"
     (card / "memory").mkdir(parents=True)
     (card / ".initvar.json").write_text("{}", encoding="utf-8")
@@ -380,10 +384,11 @@ def test_studio_to_game_golden_path_drives_saved_configuration_live_trace_and_re
             studio_page = response.read().decode("utf-8")
         with urlopen(f"{server.base_url}/", timeout=5) as response:
             game_page = response.read().decode("utf-8")
-        assert 'data-studio-view="graphs"' in studio_page
-        assert 'id="graph-form"' in studio_page
-        assert "/v1/studio/graphs" in studio_page
-        assert "/v1/studio/project-context" in studio_page
+        assert 'data-airp-app="game-workspace"' in studio_page
+        assert 'id="studio-drawer-host"' in studio_page
+        assert 'id="studio-agents-toggle"' in studio_page
+        assert 'id="studio-graph-form"' in studio_page
+        assert 'id="studio-worldbooks-toggle"' in studio_page
         assert "retryGraphRun" in game_page
         assert "runDebugReplay" in game_page
 
@@ -395,8 +400,12 @@ def test_browser_game_exposes_integrated_drawers_and_trace_fallback_detail(tmp_p
     """The game page keeps its integrated drawers and Trace nodes inspectable before a run id exists."""
     styles = tmp_path / "styles"
     styles.mkdir()
-    for name in ("studio.html", "index.html"):
-        shutil.copy(REPO_ROOT / "src" / "airp" / "web" / name, styles / name)
+    shutil.copytree(
+        REPO_ROOT / "src" / "airp" / "web",
+        styles,
+        dirs_exist_ok=True,
+        ignore=shutil.ignore_patterns("studio", "__pycache__"),
+    )
     card = tmp_path / "browser-trace-fallback"
     (card / "memory").mkdir(parents=True)
     (card / ".initvar.json").write_text("{}", encoding="utf-8")
@@ -413,7 +422,7 @@ def test_browser_game_exposes_integrated_drawers_and_trace_fallback_detail(tmp_p
         with _HeadlessBrowser(f"{server.base_url}/", tmp_path / "chrome-profile") as browser:
             browser.wait_for('document.querySelector("#game-drawer-toggle")')
             assert browser.evaluate("!document.querySelector('#studio-link[href=\\\"/studio\\\"]')")
-            browser.evaluate(
+            assert browser.evaluate(
                 """(() => {
                     const originalFetch = window.fetch.bind(window);
                     window.fetch = (input, init) => {
@@ -432,10 +441,12 @@ def test_browser_game_exposes_integrated_drawers_and_trace_fallback_detail(tmp_p
                             meta: '节点未运行', streamedOutput: ''}
                     }};
                     renderAgentTrace();
+                    const node = document.querySelector('#agent-trace .trace-node');
+                    if (!node) return false;
+                    node.click();
                     return true;
                 })()"""
             )
-            browser.click("#agent-trace .trace-node")
             browser.wait_for("!document.getElementById('node-detail-modal').hidden")
             browser.wait_for("document.getElementById('node-detail-body').textContent.includes('TRACE_PROMPT')")
             browser.wait_for("document.getElementById('node-detail-body').textContent.includes('TRACE_OUTPUT')")
@@ -445,16 +456,20 @@ def test_browser_game_exposes_integrated_drawers_and_trace_fallback_detail(tmp_p
     shutil.which("google-chrome") is None or _connect is None,
     reason="requires google-chrome and websockets",
 )
-def test_browser_studio_to_game_golden_path_renders_trace_detail_and_retry(tmp_path: Path):
+def test_browser_studio_alias_exposes_integrated_workspace_drawers(tmp_path: Path):
     styles = tmp_path / "styles"
     styles.mkdir()
-    for name in ("studio.html", "index.html"):
-        shutil.copy(REPO_ROOT / "src" / "airp" / "web" / name, styles / name)
-    card = tmp_path / "browser-golden-path"
+    shutil.copytree(
+        REPO_ROOT / "src" / "airp" / "web",
+        styles,
+        dirs_exist_ok=True,
+        ignore=shutil.ignore_patterns("studio", "__pycache__"),
+    )
+    card = tmp_path / "browser-studio-alias"
     (card / "memory").mkdir(parents=True)
     (card / ".initvar.json").write_text("{}", encoding="utf-8")
     (card / "chat_log.json").write_text("[]", encoding="utf-8")
-    (card / ".card_data.json").write_text('{"name":"Browser Golden"}', encoding="utf-8")
+    (card / ".card_data.json").write_text('{"name":"Browser Studio Alias"}', encoding="utf-8")
     runtime = SessionTurnRuntime(
         database_path=tmp_path / "runtime.sqlite3",
         card_folder=card,
@@ -462,130 +477,17 @@ def test_browser_studio_to_game_golden_path_renders_trace_detail_and_retry(tmp_p
         bootstrap_legacy_history=False,
     )
 
-    with _GoldenPathProvider() as provider, SessionRuntimeServer(runtime, static_root=styles) as server:
+    with SessionRuntimeServer(runtime, static_root=styles) as server:
         with _HeadlessBrowser(f"{server.base_url}/studio", tmp_path / "chrome-profile") as browser:
-            browser.wait_for("document.getElementById('profile-form')")
-            browser.evaluate(
-                f"""(() => {{
-                    document.getElementById('profile-name').value = 'Browser Provider';
-                    document.getElementById('profile-base-url').value = {json.dumps(provider.base_url)};
-                    document.getElementById('profile-format').value = 'chat_completions';
-                    document.getElementById('profile-api-key').value = 'studio-secret';
-                    document.getElementById('profile-models').value = 'studio-model';
-                    return true;
-                }})()"""
-            )
-            browser.click("#save-profile")
-            browser.wait_for("document.getElementById('notice').textContent === 'Provider profile saved.'")
-
-            browser.click('[data-studio-view="agents"]')
-            browser.wait_for("document.querySelector('#agent-provider option[value]:not([value=\"\"])')")
-            browser.evaluate(
-                """(() => {
-                    const provider = [...document.querySelector('#agent-provider').options].find((option) => option.value);
-                    document.getElementById('agent-name').value = 'Browser Writer';
-                    document.getElementById('agent-instruction').value = 'Write the scene.';
-                    document.getElementById('agent-provider').value = provider.value;
-                    document.getElementById('agent-model').value = 'studio-model';
-                    return true;
-                })()"""
-            )
-            browser.click('#agent-form button[type="submit"]')
-            browser.wait_for("document.getElementById('agent-notice').textContent === 'Agent Definition saved.'")
-
-            browser.click('[data-studio-view="graphs"]')
-            browser.wait_for(
-                "document.querySelector('#graph-nodes [data-field=agent_id] option[value]:not([value=\"\"])')"
-            )
-            browser.evaluate(
-                """(() => {
-                    const node = document.querySelector('#graph-nodes .node-editor');
-                    const agent = [...node.querySelector('[data-field=agent_id]').options].find((option) => option.value);
-                    const nodeId = node.querySelector('[data-field=node_id]');
-                    nodeId.value = 'browser-writer';
-                    nodeId.dispatchEvent(new Event('input', { bubbles: true }));
-                    node.querySelector('[data-field=agent_id]').value = agent.value;
-                    node.querySelector('[data-field=label]').value = 'Browser writer';
-                    document.getElementById('graph-id').value = 'browser-graph';
-                    document.getElementById('graph-name').value = 'Browser Graph';
-                    document.getElementById('graph-output-node').value = 'browser-writer';
-                    return true;
-                })()"""
-            )
-            browser.click('#graph-form button[type="submit"]')
-            browser.wait_for("document.getElementById('graph-notice').textContent === 'Graph Definition saved.'")
-
-            browser.click('[data-studio-view="worldbooks"]')
-            browser.wait_for("document.querySelector('#worldbook-entries [data-field=title]')")
-            browser.evaluate(
-                """(() => {
-                    document.getElementById('worldbook-name').value = 'Browser Lore';
-                    const row = document.querySelector('#worldbook-entries');
-                    row.querySelector('[data-field=title]').value = 'Harbor';
-                    row.querySelector('[data-field=usage]').value = 'Harbor scenes';
-                    row.querySelector('[data-field=content]').value = 'Foggy docks.';
-                    return true;
-                })()"""
-            )
-            browser.click('#worldbook-form button[type="submit"]')
-            browser.wait_for("document.getElementById('worldbook-notice').textContent === 'Worldbook saved.'")
-
-            browser.click('[data-studio-view="projects"]')
-            browser.wait_for(
-                "document.querySelector('#project-worldbooks input')"
-            )
-            browser.evaluate(
-                """(() => {
-                    document.getElementById('project-id').value = 'browser-golden-path';
-                    document.getElementById('project-name').value = 'Browser Project';
-                    document.getElementById('project-description').value = 'A browser-saved project.';
-                    document.querySelector('#project-worldbooks input').checked = true;
-                    return true;
-                })()"""
-            )
-            browser.click('#project-form button[type="submit"]')
-            browser.wait_for("document.getElementById('project-notice').textContent === 'Project saved.'")
-
-            browser.click('a[aria-label="Return to game"]')
-            browser.wait_for("location.pathname === '/' && document.getElementById('user-input') && typeof loadActiveGraphPanel === 'function'")
-            browser.evaluate("loadActiveGraphPanel(); true")
-            browser.wait_for("document.querySelector('#runtime-graph-select option[value=\"browser-graph\"]')")
-            browser.evaluate(
-                """(() => {
-                    document.getElementById('runtime-graph-select').value = 'browser-graph';
-                    return true;
-                })()"""
-            )
-            browser.click('#active-graph-card .side-buttons .side-button')
-            browser.wait_for(
-                "(await fetch('/v1/session/runtime/graph').then((response) => response.json())).selected.graph_id === 'browser-graph'"
-            )
-            browser.evaluate("document.getElementById('user-input').value = 'Enter the harbor.'; true")
-            browser.click('.btn-submit')
-            browser.wait_for(
-                "(await fetch('/v1/studio/graph-runs').then((response) => response.json())).most_recent?.status === 'failed'",
-                timeout=15,
-            )
-            browser.wait_for("document.querySelector('#agent-trace .trace-node.failed')", timeout=15)
-            assert browser.evaluate("document.getElementById('agent-trace').textContent")
-
-            revision_before_replay = runtime.active_revision()
-            browser.click('#agent-trace .trace-node.failed')
-            browser.wait_for(
-                "!document.getElementById('node-detail-modal').hidden && document.getElementById('node-detail-body').textContent.includes('\"effective_config\"')"
-            )
-            detail_text = browser.evaluate("document.getElementById('node-detail-body').textContent")
-            assert '"prompt_provenance"' in detail_text
-            assert '"provider_unavailable"' in detail_text
-            browser.click('#node-debug-replay-button')
-            browser.wait_for("document.getElementById('node-detail-body').textContent.includes('\"debug_replay\"')")
-            assert runtime.active_revision() == revision_before_replay
-
-            browser.click('[aria-label="关闭详情"]')
-            browser.wait_for("document.getElementById('node-detail-modal').hidden === true")
-            browser.click('#graph-retry-button')
-            browser.wait_for("document.querySelector('#agent-trace .trace-node.succeeded')", timeout=15)
-            browser.wait_for("document.getElementById('agent-trace').textContent.includes('Studio output')")
-
-        assert runtime.active_revision() > revision_before_replay
-        assert all("studio-secret" not in json.dumps(request) for request in provider.requests)
+            browser.wait_for("document.body && document.body.dataset.airpApp === 'game-workspace'")
+            browser.wait_for("document.getElementById('studio-drawer-host')")
+            browser.click("#studio-model-toggle")
+            browser.wait_for("!document.getElementById('studio-drawer-host').hidden")
+            browser.wait_for("document.getElementById('studio-provider-form')")
+            browser.click("#studio-agents-toggle")
+            browser.wait_for("document.getElementById('studio-agent-form')")
+            browser.click("#studio-worldbooks-toggle")
+            browser.wait_for("document.getElementById('worldbook-drawer-mount')")
+            browser.click("#studio-regex-toggle")
+            browser.wait_for("document.getElementById('regex-drawer-panel')")
+            assert browser.evaluate("location.pathname === '/studio'")

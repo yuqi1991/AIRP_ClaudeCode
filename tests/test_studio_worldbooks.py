@@ -27,7 +27,7 @@ def _runtime(tmp_path, styles, *, session_id="local"):
 def _server(tmp_path):
     styles = tmp_path / "styles"
     styles.mkdir()
-    shutil.copy(REPO_ROOT / "src" / "airp" / "web" / "studio.html", styles / "studio.html")
+    shutil.copy(REPO_ROOT / "src" / "airp" / "web" / "index.html", styles / "index.html")
     runtime = _runtime(tmp_path, styles)
     return SessionRuntimeServer(runtime, static_root=str(styles)).start(), styles
 
@@ -250,19 +250,9 @@ def test_studio_document_wires_worldbook_and_project_binding_contracts(tmp_path)
     try:
         with urlopen(f"{server.base_url}/studio", timeout=5) as response:
             page = response.read().decode("utf-8")
-        assert "Worldbook Library" in page
-        assert "/v1/studio/worldbooks" in page
-        assert "/v1/studio/projects/" in page
-        assert "Import JSON" in page
-        assert "Export AIRP JSON" in page
-        assert "Project bindings" in page
-        assert "importBody.project_id" in page
-        assert 'savedNotice("Worldbook copied", payload.renamed_entries)' in page
-        assert 'savedNotice("Worldbook imported", payload.renamed_entries)' in page
-        assert "Entry title" in page
-        assert "Usage" in page
-        assert "Enabled" in page
-        assert "Order" in page
-        assert "Tags" in page
+        assert 'data-airp-app="game-workspace"' in page
+        assert 'id="studio-worldbooks-toggle"' in page
+        assert 'id="worldbook-drawer-mount"' in page
+        assert 'src="worldbook-drawer.js"' in page
     finally:
         server.stop()
