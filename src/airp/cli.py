@@ -43,15 +43,30 @@ def _resolve_styles_root(root: Path, workspace) -> Path:
 
 
 def _ensure_web_assets(styles: Path) -> None:
-    """Seed a writable projection with the immutable packaged web assets."""
-    if (styles / "index.html").is_file():
-        return
+    """Synchronize immutable web assets without touching runtime projection files."""
     from airp.resources import static_asset_root
 
     assets = static_asset_root()
     if assets.resolve() == styles.resolve() or not assets.is_dir():
         return
-    shutil.copytree(assets, styles, dirs_exist_ok=True)
+    # The projection directory also owns mutable story files. Refreshing the
+    # HTML/CSS/JS shell on startup must never replace those files or legacy
+    # Studio data left there by an older runtime.
+    ignored = shutil.ignore_patterns(
+        "content.js",
+        "state.js",
+        ".card_path",
+        "input.txt",
+        "response.txt",
+        ".pending",
+        ".var_diff.json",
+        "settings.json",
+        "secrets.json",
+        "studio",
+        "__pycache__",
+    )
+    styles.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(assets, styles, dirs_exist_ok=True, ignore=ignored)
 
 
 def _migrate_legacy_studio(root: Path, styles: Path, workspace) -> dict | None:
