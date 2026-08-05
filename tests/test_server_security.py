@@ -6,6 +6,7 @@ from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 from airp.host.rp.session_runtime import SessionTurnRuntime
+from airp.cli import _wait_server_ready
 from airp.server import MAX_REQUEST_BODY_BYTES, SessionRuntimeServer
 
 
@@ -61,6 +62,16 @@ def test_exposed_server_requires_capability_and_sets_same_origin_cookie(tmp_path
         )
         assert status == 401
         assert json.loads(body)["error"] == "capability_required"
+
+
+def test_cli_readiness_probe_authenticates_exposed_server(tmp_path: Path):
+    runtime, styles = _runtime(tmp_path)
+    with SessionRuntimeServer(runtime, host="0.0.0.0", static_root=styles) as server:
+        assert _wait_server_ready(
+            server.base_url,
+            timeout=1,
+            capability=server.capability,
+        )
 
 
 def test_disallowed_origin_and_oversized_body_are_rejected(tmp_path: Path):

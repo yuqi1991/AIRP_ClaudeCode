@@ -198,12 +198,20 @@ def _deliver_opening(
     return "generated"
 
 
-def _wait_server_ready(url: str, timeout: float = MAX_WAIT) -> bool:
+def _wait_server_ready(
+    url: str,
+    timeout: float = MAX_WAIT,
+    *,
+    capability: str | None = None,
+) -> bool:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         try:
-            subprocess.run(["curl", "-sf", "--max-time", "2", f"{url}/v1/session/snapshot"],
-                           check=True, capture_output=True, timeout=3)
+            command = ["curl", "-sf", "--max-time", "2"]
+            if capability:
+                command.extend(["-H", f"Authorization: Bearer {capability}"])
+            command.append(f"{url}/v1/session/snapshot")
+            subprocess.run(command, check=True, capture_output=True, timeout=3)
             return True
         except Exception:
             time.sleep(0.3)
@@ -316,7 +324,7 @@ def main() -> None:
     # 6. Start unified server on :8765
     server.start()
     url = f"http://{server.host}:{PORT}"
-    if not _wait_server_ready(url):
+    if not _wait_server_ready(url, capability=server.capability):
         _die(f"服务器未在 {url} 就绪")
     print(json.dumps({"ok": True, "url": url,
                       "exposed": server.host not in {"127.0.0.1", "localhost", "::1"},
