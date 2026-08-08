@@ -76,6 +76,7 @@ from urllib.parse import parse_qs, urlparse
 from airp.workspace import Workspace
 from airp.application import Application
 from airp.engine.agent_definitions import AgentDefinitionError
+from airp.engine.active_graph import ActiveGraphSelectionError
 from airp.host.rp.commands import SessionCommandService
 from airp.engine.graph_definitions import GraphDefinitionError
 from airp.engine.graph_runtime import ExecutionPlanCompiler, GraphRuntime
@@ -657,13 +658,19 @@ class SessionRuntimeServer:
             return {"graph_id": None}
         try:
             return {"graph_id": self.active_graphs.graph_id_for(self.runtime.project_id)}
+        except ActiveGraphSelectionError:
+            raise
         except ValueError:
             return {"graph_id": None}
 
     def _active_graph_payload(self) -> dict[str, Any]:
+        try:
+            selected = self._runtime_selection()
+        except ActiveGraphSelectionError as exc:
+            return {"ok": False, "error": exc.code, "message": str(exc)}
         return {
             "ok": True,
-            "selected": self._runtime_selection(),
+            "selected": selected,
             "graphs": self._studio_graph_options(),
         }
 
@@ -709,16 +716,14 @@ class SessionRuntimeServer:
                 project_id=self.runtime.project_id,
                 card_facts=self.runtime.card_facts(),
             )
-            selection = self._runtime_selection().get("graph_id")
             graphs = self.graph_definitions.list_graphs() if self.graph_definitions else []
-            if not selection:
-                legacy_selection = (self._read_legacy_settings().get("runtime") or {}).get("graph_id")
-                graph_ids = {item["id"] for item in graphs}
-                selected = legacy_selection if legacy_selection in graph_ids else None
-                if selected is None and len(graphs) == 1:
-                    selected = graphs[0]["id"]
-                if selected:
-                    self.active_graphs.select(self.runtime.project_id, selected)
+            legacy_selection = (self._read_legacy_settings().get("runtime") or {}).get("graph_id")
+            graph_ids = {item["id"] for item in graphs}
+            selected = legacy_selection if legacy_selection in graph_ids else None
+            if selected is None and len(graphs) == 1:
+                selected = graphs[0]["id"]
+            if selected:
+                self.active_graphs.select_if_unset(self.runtime.project_id, selected)
         except Exception:
             # A malformed optional legacy file must not prevent the game from
             # starting; Studio will still expose any valid existing objects.
@@ -978,14 +983,30 @@ class SessionRuntimeServer:
     def _studio_graph_delete(self, graph_id: str) -> tuple[dict[str, Any], int]:
         if self.graph_definitions is None:
             return {"ok": False, "error": "studio_library_unavailable"}, 501
+        affected_projects = ()
         try:
+            self.graph_definitions.get_graph(graph_id)
+            if self.active_graphs is not None:
+                affected_projects = self.active_graphs.clear_graph(graph_id)
             self.graph_definitions.delete_graph(graph_id)
-            affected_projects = self.active_graphs.clear_graph(graph_id) if self.active_graphs is not None else ()
-            if self.runtime.project_id in affected_projects:
-                self._configure_runtime_studio_graph()
-            return {"ok": True, "deleted_id": graph_id}, 200
+        except ActiveGraphSelectionError as exc:
+            return {"ok": False, "error": exc.code, "message": str(exc)}, 500
         except GraphDefinitionError as exc:
+            if self.active_graphs is not None:
+                for project_id in affected_projects:
+                    try:
+                        self.active_graphs.select_if_unset(project_id, graph_id)
+                    except ActiveGraphSelectionError as restore_exc:
+                        return {
+                            "ok": False,
+                            "error": restore_exc.code,
+                            "message": str(restore_exc),
+                            "cause": exc.code,
+                        }, 500
             return self._studio_graph_error(exc)
+        if self.runtime.project_id in affected_projects:
+            self._configure_runtime_studio_graph()
+        return {"ok": True, "deleted_id": graph_id}, 200
 
     # ── Studio Worldbooks and Project bindings ────────────────────────
 
@@ -1015,7 +1036,10 @@ class SessionRuntimeServer:
                 return
             project = projects[0]
             self.runtime.project_id = project["id"]
-        selected_graph = self._runtime_selection().get("graph_id")
+        try:
+            selected_graph = self._runtime_selection().get("graph_id")
+        except ActiveGraphSelectionError:
+            return
         if not selected_graph:
             if self._studio_graph_configured:
                 self.runtime.configure_execution_graph(None, None)
@@ -1490,7 +1514,8 @@ class SessionRuntimeServer:
                     self._send_json(200, server_ref._sessions_payload())
                     return
                 if path == "/api/runtime/graph":
-                    self._send_json(200, server_ref._active_graph_payload())
+                    payload = server_ref._active_graph_payload()
+                    self._send_json(200 if payload.get("ok") else 500, payload)
                     return
 
                 # ── Static files from styles dir (index.html/content.js/...) ──
@@ -2260,12 +2285,18 @@ class SessionRuntimeServer:
     def _write_runtime_selection(self, body: dict) -> tuple[dict[str, Any], int]:
         if not isinstance(body, dict):
             return {"ok": False, "error": "invalid_payload"}, 400
-        current = self._runtime_selection()
+        try:
+            current = self._runtime_selection()
+        except ActiveGraphSelectionError as exc:
+            return {"ok": False, "error": exc.code, "message": str(exc)}, 500
         graph_id = body.get("graph_id", current.get("graph_id"))
         if self.graph_definitions is None or self.active_graphs is None:
             return {"ok": False, "error": "studio_library_unavailable"}, 501
         if graph_id in (None, ""):
-            self.active_graphs.clear(self.runtime.project_id)
+            try:
+                self.active_graphs.clear(self.runtime.project_id)
+            except ActiveGraphSelectionError as exc:
+                return {"ok": False, "error": exc.code, "message": str(exc)}, 500
             self._configure_runtime_studio_graph()
             return {
                 "ok": True,
@@ -2279,6 +2310,8 @@ class SessionRuntimeServer:
             self.active_graphs.select(self.runtime.project_id, graph_id)
         except GraphDefinitionError as exc:
             return {"ok": False, **exc.to_dict()}, exc.status
+        except ActiveGraphSelectionError as exc:
+            return {"ok": False, "error": exc.code, "message": str(exc)}, 500
         except ValueError as exc:
             return {"ok": False, "error": "invalid_graph_selection", "message": str(exc)}, 400
         self._configure_runtime_studio_graph()

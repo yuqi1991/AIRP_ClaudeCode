@@ -121,6 +121,18 @@ test.describe('desktop 1440x900 release baseline', () => {
       };
     });
     expect(markdown).toEqual({ bold: true, table: true, wrapperOverflow: 'auto', pageOverflow: false });
+
+    const emptyOutput = await page.evaluate(() => {
+      const turn = document.createElement('div');
+      turn.className = 'turn-ai';
+      const text = document.createElement('div');
+      text.className = 'turn-text';
+      text.textContent = ' \n\t ';
+      turn.appendChild(text);
+      formatMessageBubbles(turn);
+      return { text: text.textContent, marked: text.dataset.airpEmptyOutput };
+    });
+    expect(emptyOutput).toEqual({ text: '本回合提交了空正文', marked: 'true' });
   });
 });
 

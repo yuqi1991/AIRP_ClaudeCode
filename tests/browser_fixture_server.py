@@ -39,7 +39,11 @@ def main() -> None:
             projection_root=root / "projection",
             bootstrap_legacy_history=False,
         )
-        with SessionRuntimeServer(runtime, static_root=WEB_ROOT) as server:
+        with SessionRuntimeServer(
+            runtime,
+            static_root=WEB_ROOT,
+            workspace=root / "workspace",
+        ) as server:
             print(server.base_url, flush=True)
             stopped.wait()
 

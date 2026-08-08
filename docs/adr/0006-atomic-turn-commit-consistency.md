@@ -1,4 +1,4 @@
-# ADR-0006：原子回合提交一致性（质量门禁 + 严格 MVU 校验 + 幂等投影）
+# ADR-0006：原子回合提交一致性（严格 MVU 校验 + 幂等投影）
 
 - **状态**：Experimental
 - **日期**：2026-07-25
@@ -15,14 +15,14 @@ Ticket 05 的目标：无论质量重试、MVU/schema 拒绝、provider 错误�
 
 ## Decision
 
-> **⚠️ Partially superseded by ADR-0011**：commit 不再由模型通过 `commit_turn_draft` 工具发起，而由 harness 在解析模型叙事文本后自动执行。本 ADR 的门禁语义（质量门禁、严格 MVU/schema 校验、有界修订、optimistic revision、唯一 commit、幂等投影）全部保留，只是 commit 的归属从「模型工具」变为「harness 内部动作」。
+> **⚠️ Partially superseded by ADR-0011 and issue #26**：commit 不再由模型工具发起，而由 harness 自动执行。自 issue #26 起，引擎内置的正文质量/长度门禁也已取消；空字符串和纯空白都是可正常提交的 opaque text。严格 MVU/schema 校验、optimistic revision、唯一 commit 和幂等投影仍保留。
 
 在 Ticket 03 的单一写入边界之上，补齐提交门禁与一致性保证，全部在提交事务内、写盘前完成：
 
-- **技术门禁 seam**（`engine/quality.py`）：`QualityGate.validate(draft, context) → QualityVerdict`。自 2026-07-27 起，默认 `DefaultQualityGate` 只要求 `draft.content` 含非空可见正文；`settings.wordCount`、文风、人称、NSFW、摘要和选项等均由可编辑 preset 表达，不再阻止 commit。嵌入方仍可显式传入 `QualityPolicy(min_chars/max_chars)` 增加技术长度边界。
+- **正文不设内置质量门禁**：引擎把 Graph 最终输出作为 opaque text 提交，不校验空值、长度、文风或标签。这些要求由用户可编辑的 Agent Prompt 和 Regex Collection 表达，引擎不兜底。
 - **严格 MVU/schema 校验**（提交时，写盘前）：对 `draft.mvu_commands or content` 抽命令，用 `generate_schema(base_state, strict_template=True)`（非可扩展）逐条 `validate_command_strict`，再 dry-run `execute_commands`。任一不过返回稳定错误码，**不写 commit/revision/snapshot/投影**。基线读自 `_state_at_revision(task["base_revision"])`，不碰可变的 `state.js`/`chat_log.json`。
-- **同 task 有界修订**：被拒 draft 回传稳定错误给 director，同 task 内可重产修正稿；`validation_failures` 计数，达 `max_commit_validation_retries`（默认 3）落 `quality_exhausted` 终态，不推进 revision。修订在提交历史里不可见（无部分 commit、无重复 chat 行）。
-- **失败表面不冒充成功**：质量/MVU/stale/provider-terminal/abort/投影失败一律落非提交终态（`commit_id is None`、revision 不变、`chat_log.json` 不变、无 `turn.committed` 事件）。
+- 历史数据中的 `quality_gate_failed` / `quality_exhausted` 状态仍可读、可展示，但新运行不再产生这两种状态。
+- **失败表面不冒充成功**：MVU/stale/provider-terminal/abort/投影失败一律落非提交终态（`commit_id is None`、revision 不变、`chat_log.json` 不变、无 `turn.committed` 事件）。
 - **幂等且可重试的投影**：`projection_checkpoints` 增加 `applied_marker`；`_project` 在 `state=='applied'` 或 `applied_marker==commit_id` 时短路，重入安全。首次投影失败保留 backup/restore（Ticket 03）使任务停在 `projection_pending`，二次 `_project` 可恢复，最终只产生一条 chat 行、不重复 MVU、输出结构等价。
 - schema 迁移：`tasks.validation_failures`、`tasks.validation_exhausted`、`projection_checkpoints.applied_marker` 三列带 `ALTER TABLE` 升级路径。
 

@@ -9,7 +9,7 @@ from urllib.request import Request, urlopen
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from airp.host.rp.session_runtime import SessionTurnRuntime
-from airp.engine.active_graph import ActiveGraphSelectionStore
+from airp.engine.active_graph import ActiveGraphSelectionError, ActiveGraphSelectionStore
 from airp.engine.agent_definitions import AgentDefinitionStore
 from airp.engine.graph_definitions import GraphDefinitionStore
 from airp.engine.project_library import ProjectLibrary
@@ -106,6 +106,60 @@ def test_server_bootstraps_legacy_runtime_into_studio_and_binds_project(tmp_path
         assert active["selected"]["graph_id"] == "default"
         assert active["graphs"][0]["id"] == "default"
         assert server.active_graphs.graph_id_for(runtime.project_id) == "default"
+
+        graph_root = Workspace.from_root(tmp_path / "workspace").graphs_root
+        graph_root.chmod(0o500)
+        try:
+            status, failed_delete = _json_request(
+                "DELETE",
+                f"{server.base_url}/v1/studio/graphs/default",
+            )
+        finally:
+            graph_root.chmod(0o700)
+        assert status == 500
+        assert failed_delete["error"] == "graph_delete_failed"
+        assert server.graph_definitions.get_graph("default")["id"] == "default"
+        assert server.active_graphs.graph_id_for(runtime.project_id) == "default"
+
+        class UnreadableSelections:
+            def graph_id_for(self, project_id):
+                raise ActiveGraphSelectionError(
+                    "active_graph_selection_unreadable",
+                    "cannot read active Graph selections",
+                )
+
+            def clear_graph(self, graph_id):
+                raise ActiveGraphSelectionError(
+                    "active_graph_selection_unreadable",
+                    "cannot read active Graph selections",
+                )
+
+        server.active_graphs = UnreadableSelections()
+        server._configure_runtime_studio_graph()
+        assert runtime.execution_graph_id == "default"
+
+        status, damaged = _json_request(
+            "GET",
+            f"{server.base_url}/api/runtime/graph",
+        )
+        assert status == 500
+        assert damaged["error"] == "active_graph_selection_unreadable"
+
+        status, damaged_write = _json_request(
+            "PUT",
+            f"{server.base_url}/api/runtime/graph",
+            {"graph_id": "default"},
+        )
+        assert status == 500
+        assert damaged_write["error"] == "active_graph_selection_unreadable"
+
+        status, damaged_delete = _json_request(
+            "DELETE",
+            f"{server.base_url}/v1/studio/graphs/default",
+        )
+        assert status == 500
+        assert damaged_delete["error"] == "active_graph_selection_unreadable"
+        assert server.graph_definitions.get_graph("default")["id"] == "default"
 
 
 def test_migrate_legacy_studio_directory_is_idempotent_and_preserves_worldbooks(tmp_path: Path):

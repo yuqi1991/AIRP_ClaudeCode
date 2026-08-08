@@ -14,14 +14,30 @@ import threading
 from pathlib import Path
 
 
+class ActiveGraphSelectionError(ValueError):
+    """A stable Active Graph selection persistence failure."""
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+
+
 class ActiveGraphSelectionStore:
     """Persist one active Graph id per Project behind a small interface."""
 
+    _path_locks_guard = threading.Lock()
+    _path_locks: dict[Path, threading.RLock] = {}
+
     def __init__(self, workspace=None) -> None:
-        runtime_root = getattr(workspace, "runtime_root", None)
-        self._path = Path(runtime_root).resolve() / "active_graphs.json" if runtime_root else None
+        selection_path = getattr(workspace, "active_graph_selections_path", None)
+        self._path = Path(selection_path).resolve() if selection_path is not None else None
         self._memory: dict[str, str] = {}
-        self._lock = threading.RLock()
+        self._lock = self._lock_for_path(self._path) if self._path is not None else threading.RLock()
+
+    @classmethod
+    def _lock_for_path(cls, path: Path) -> threading.RLock:
+        with cls._path_locks_guard:
+            return cls._path_locks.setdefault(path, threading.RLock())
 
     def graph_id_for(self, project_id: str) -> str | None:
         self._validate_project_id(project_id)
@@ -38,6 +54,20 @@ class ActiveGraphSelectionStore:
             selections[project_id] = graph_id
             self._write(selections)
         return graph_id
+
+    def select_if_unset(self, project_id: str, graph_id: str) -> bool:
+        """Select ``graph_id`` only when the Project has no selection."""
+        self._validate_project_id(project_id)
+        if not isinstance(graph_id, str) or not graph_id.strip():
+            raise ValueError("graph_id must be a non-empty string")
+        graph_id = graph_id.strip()
+        with self._lock:
+            selections = self._read()
+            if project_id in selections:
+                return False
+            selections[project_id] = graph_id
+            self._write(selections)
+            return True
 
     def clear(self, project_id: str) -> None:
         self._validate_project_id(project_id)
@@ -74,30 +104,62 @@ class ActiveGraphSelectionStore:
     def _read(self) -> dict[str, str]:
         if self._path is None:
             return dict(self._memory)
-        if not self._path.is_file():
-            return {}
         try:
-            raw = json.loads(self._path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+            serialized = self._path.read_text(encoding="utf-8")
+        except FileNotFoundError:
             return {}
-        if not isinstance(raw, dict):
-            return {}
-        return {
-            project_id: graph_id
+        except (OSError, UnicodeDecodeError) as exc:
+            raise ActiveGraphSelectionError(
+                "active_graph_selection_unreadable",
+                "cannot read active Graph selections",
+            ) from exc
+        try:
+            raw = json.loads(serialized)
+        except json.JSONDecodeError as exc:
+            raise ActiveGraphSelectionError(
+                "active_graph_selection_unreadable",
+                "cannot read active Graph selections",
+            ) from exc
+        if not isinstance(raw, dict) or not all(
+            isinstance(project_id, str)
+            and bool(project_id.strip())
+            and isinstance(graph_id, str)
+            and bool(graph_id.strip())
             for project_id, graph_id in raw.items()
-            if isinstance(project_id, str) and project_id and isinstance(graph_id, str) and graph_id
-        }
+        ):
+            raise ActiveGraphSelectionError(
+                "active_graph_selection_unreadable",
+                "cannot read active Graph selections",
+            )
+        return dict(raw)
 
     def _write(self, selections: dict[str, str]) -> None:
         if self._path is None:
             self._memory = dict(selections)
             return
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        fd, name = tempfile.mkstemp(prefix=".active-graphs-", suffix=".json", dir=self._path.parent)
+        temporary: str | None = None
         try:
+            self._path.parent.mkdir(parents=True, exist_ok=True)
+            fd, temporary = tempfile.mkstemp(
+                prefix=".active-graphs-",
+                suffix=".json",
+                dir=self._path.parent,
+            )
             with os.fdopen(fd, "w", encoding="utf-8") as handle:
                 json.dump(selections, handle, ensure_ascii=False, sort_keys=True, indent=2)
                 handle.write("\n")
-            Path(name).replace(self._path)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, self._path)
+            temporary = None
+        except OSError as exc:
+            raise ActiveGraphSelectionError(
+                "active_graph_selection_write_failed",
+                "cannot write active Graph selections",
+            ) from exc
         finally:
-            Path(name).unlink(missing_ok=True)
+            if temporary is not None:
+                try:
+                    os.unlink(temporary)
+                except OSError:
+                    pass

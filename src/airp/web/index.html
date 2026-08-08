@@ -1974,7 +1974,13 @@ function formatMessageTextNodes(root) {
 
 function formatMessageBubbles(root) {
   if (!root) return;
-  root.querySelectorAll('.turn-user .turn-text, .turn-ai .turn-text').forEach(formatMessageTextNodes);
+  root.querySelectorAll('.turn-user .turn-text, .turn-ai .turn-text').forEach(function(bubble) {
+    formatMessageTextNodes(bubble);
+    if (bubble.closest('.turn-ai') && !bubble.innerHTML.trim()) {
+      bubble.textContent = '本回合提交了空正文';
+      bubble.dataset.airpEmptyOutput = 'true';
+    }
+  });
 }
 
 function renderOptions(container, opts) {
@@ -2045,7 +2051,7 @@ const RUNTIME_STATUS_LABELS = Object.freeze({
   idle: '等待生成', queued: '排队中', leased: '已接单', running: '生成中',
   projection_pending: '正在保存', succeeded: '已完成', cancelled: '已取消',
   failed_retryable: '失败（可重试）', failed_terminal: '失败', stale_revision: '版本已变化',
-  quality_exhausted: '质量校验耗尽', quality_gate_failed: '质量校验失败',
+  quality_exhausted: '旧版质量校验耗尽', quality_gate_failed: '旧版质量校验失败',
   mvu_validation_failed: '状态校验失败', rolled_back: '已回滚',
   cannot_reroll_opening: '开场不可重试', unknown_revision: '版本未知'
 });

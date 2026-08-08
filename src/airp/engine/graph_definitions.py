@@ -183,7 +183,14 @@ class GraphDefinitionStore:
                     f"Graph Definition {graph_id!r} was not found",
                     status=404,
                 )
-            path.unlink()
+            try:
+                path.unlink()
+            except OSError as exc:
+                raise GraphDefinitionError(
+                    "graph_delete_failed",
+                    f"Graph Definition {graph_id!r} could not be deleted",
+                    status=500,
+                ) from exc
 
     def _normalize(self, payload: dict[str, Any], *, graph_id: str) -> dict[str, Any]:
         self._validate_id(graph_id)

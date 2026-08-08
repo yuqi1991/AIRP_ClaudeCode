@@ -40,7 +40,6 @@ from airp.engine.mvu import (
     validate_command_strict,
 )
 from airp.engine.provider import AbortSignal
-from airp.engine.quality import DefaultQualityGate, QualityContext, QualityGate, QualityPolicy
 from airp.host.rp.tools import ToolRegistry
 from airp.host.card_projection import CardProjection
 from airp.host.graph_turn_commit import GraphTurnCommitExecutor, turn_draft_from_artifact
@@ -58,9 +57,6 @@ class SessionTurnRuntime:
         session_id="local",
         manifest_policy=None,
         session_settings=None,
-        quality_gate: QualityGate | None = None,
-        quality_policy: QualityPolicy | None = None,
-        max_commit_validation_retries: int = 1,
         execution_plan_compiler: ExecutionPlanCompiler | None = None,
         graph_runtime: GraphRuntime | None = None,
         bootstrap_legacy_history: bool = True,
@@ -82,12 +78,6 @@ class SessionTurnRuntime:
         self.bootstrap_legacy_history = bool(bootstrap_legacy_history)
         self.worldbook_snapshot_provider = worldbook_snapshot_provider
         self.project_id = project_id or self.card_folder.name
-        self.quality_policy = quality_policy or QualityPolicy()
-        self.quality_gate = quality_gate or DefaultQualityGate(self.quality_policy)
-        # Commit validation is terminal for this task. A user retry creates a
-        # fresh graph run, so there is no in-task regeneration budget.
-        # Kept as an ignored constructor argument for old embedders. A failed
-        # validation is terminal for this graph run; the user retries the run.
         self.projection = CardProjection(card_folder, projection_root)
         self._lock = threading.RLock()
         self._abort_signals: dict[str, AbortSignal] = {}
@@ -1561,14 +1551,6 @@ class SessionTurnRuntime:
         return RuntimeResult(task["id"], None, task["base_revision"], "failed_terminal")
 
     def _validate_draft_before_commit(self, connection, task, draft, base_state=None):
-        verdict = self.quality_gate.validate(
-            draft,
-            self._quality_context(task),
-        )
-        if not verdict.ok:
-            details = (verdict.metrics or {}) | {"reasons": list(verdict.reasons)}
-            return self._reject_precommit(connection, task, "quality_gate_failed", details=details)
-
         if base_state is None:
             base_state = self._state_at_revision(task["base_revision"])
         source = draft.mvu_commands if draft.mvu_commands else draft.content
@@ -1608,15 +1590,6 @@ class SessionTurnRuntime:
             return fallback
         return schema_from_definition(raw, fallback=fallback) or fallback
 
-    def _quality_context(self, task):
-        snapshot = json.loads(task["source_snapshot"]) if task["source_snapshot"] else {}
-        settings = snapshot.get("settings") if isinstance(snapshot, dict) else {}
-        return QualityContext(
-            settings=settings or {},
-            task_id=task["id"],
-            base_revision=task["base_revision"],
-        )
-
     def _reject_precommit(self, connection, task, code, details=None):
         row = connection.execute(
             "SELECT validation_failures, validation_exhausted FROM tasks WHERE id = ?",
@@ -1625,8 +1598,6 @@ class SessionTurnRuntime:
         failures = ((row["validation_failures"] if row else 0) or 0) + 1
         exhausted = True
         terminal_code = code
-        if exhausted and code == "quality_gate_failed":
-            terminal_code = "quality_exhausted"
         connection.execute(
             "UPDATE tasks SET status = ?, validation_failures = ?, validation_exhausted = ? WHERE id = ?",
             (terminal_code, failures, 1 if exhausted else 0, task["id"]),

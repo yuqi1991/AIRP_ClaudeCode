@@ -78,6 +78,10 @@ class Workspace:
     def runtime_root(self) -> Path:
         return self.root / "runtime"
 
+    @property
+    def active_graph_selections_path(self) -> Path:
+        return self.runtime_root / "active_graphs.json"
+
     def ensure(self) -> "Workspace":
         for path in (
             self.providers_root,

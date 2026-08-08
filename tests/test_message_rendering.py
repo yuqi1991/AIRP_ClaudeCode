@@ -40,6 +40,8 @@ def test_index_declares_message_formatting_for_bubbles():
     assert "white-space: pre-wrap" in index
     assert "formatMessageBubbles(contentEl)" in index
     assert "renderInlineMarkdown" in index
+    assert "本回合提交了空正文" in index
+    assert "bubble.dataset.airpEmptyOutput = 'true'" in index
 
 
 def test_index_supports_full_markdown_subset_without_card_script_execution():
