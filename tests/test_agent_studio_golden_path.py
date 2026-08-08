@@ -356,7 +356,7 @@ def test_studio_to_game_golden_path_drives_saved_configuration_live_trace_and_re
             {"idempotency_key": "golden-retry"},
         )
         assert status in {200, 202}
-        assert retry["task_id"]
+        assert retry["task_id"], json.dumps(retry, sort_keys=True)
         succeeded = _wait_for(
             f"{server.base_url}/v1/studio/graph-runs",
             lambda payload: (payload.get("most_recent") or {}).get("status") == "succeeded",
@@ -364,6 +364,15 @@ def test_studio_to_game_golden_path_drives_saved_configuration_live_trace_and_re
         assert succeeded["retry_of"] == failed["graph_run_id"]
         node_run_id = succeeded["nodes"][0]["node_run_id"]
         assert "graph.node.delta" in _sse_events(server.base_url)
+
+        # Graph execution finishes before the host has necessarily completed
+        # its distinct commit/projection phase. A debug replay must not be
+        # blamed for that in-flight task's one legitimate revision.
+        deadline = time.monotonic() + 5
+        while runtime.task(retry["task_id"]).status != "succeeded":
+            if time.monotonic() >= deadline:
+                raise AssertionError("retry task did not complete its commit/projection")
+            time.sleep(0.02)
 
         revision_before = runtime.active_revision()
         status, replay = _json_request(

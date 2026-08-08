@@ -1157,26 +1157,38 @@ html, body { color-scheme: dark; }
           <label class="studio-search"><span class="studio-visually-hidden">搜索编排图</span><input id="studio-graph-search" type="search" placeholder="搜索编排图…" autocomplete="off"></label>
           <div class="studio-object-items" id="studio-graph-list" aria-live="polite"></div>
         </aside>
-        <section class="studio-drawer-column studio-topology-column" aria-label="线性编排拓扑">
+        <section class="studio-drawer-column studio-topology-column" aria-label="接力链">
           <div class="studio-column-head">
-            <div><h3 id="studio-graph-title">线性拓扑</h3><span id="studio-graph-runtime-state" class="studio-muted">运行时使用已保存配置</span></div>
+            <div><h3 id="studio-graph-title">接力链</h3><span id="studio-graph-runtime-state" class="studio-muted">运行时使用已保存配置</span></div>
             <button class="studio-text-button" id="studio-graph-add-node" type="button">添加节点</button>
           </div>
-          <div class="studio-runtime-note"><span class="studio-runtime-dot"></span><span>线性运行 · 节点按从上到下顺序执行</span></div>
+          <div class="studio-runtime-note"><span class="studio-runtime-dot"></span><span>串行接力 · 上游产物经正则处理后交给下一节点</span></div>
           <div class="studio-topology" id="studio-graph-topology" aria-live="polite"></div>
           <div class="studio-empty" id="studio-graph-empty" hidden>新建编排图后添加 Agent 节点。</div>
         </section>
-        <aside class="studio-drawer-column studio-settings-column" aria-label="编排图和节点设置">
+        <aside class="studio-drawer-column studio-settings-column" aria-label="接力链设置">
           <div class="studio-column-head studio-column-head-stacked"><div><h3>编排设置</h3><span id="studio-graph-selection" class="studio-muted">未选择编排图</span></div></div>
           <form id="studio-graph-form" class="studio-form">
             <label class="studio-field" for="studio-graph-name"><span>编排图名称</span><input id="studio-graph-name" required placeholder="写作流程" autocomplete="off"></label>
             <label class="studio-field" for="studio-graph-id"><span>编排图 ID</span><input id="studio-graph-id" placeholder="保存时自动生成" autocomplete="off"></label>
+            <label class="studio-field" for="studio-graph-mode"><span>运行方式</span><select id="studio-graph-mode"><option value="handoff">接力链</option><option value="sequential">顺序传递（兼容旧图）</option></select></label>
             <fieldset class="studio-node-settings"><legend>当前节点</legend>
               <label class="studio-field" for="studio-node-id"><span>节点 ID</span><input id="studio-node-id" placeholder="writer-node" autocomplete="off"></label>
               <label class="studio-field" for="studio-node-label"><span>显示名称</span><input id="studio-node-label" placeholder="草稿" autocomplete="off"></label>
               <label class="studio-field" for="studio-node-agent"><span>Agent</span><select id="studio-node-agent"><option value="">选择 Agent</option></select></label>
               <label class="studio-check"><input id="studio-node-enabled" type="checkbox" checked><span>节点启用</span></label>
+              <label class="studio-field" for="studio-node-handoff"><span>交接提示词</span><textarea id="studio-node-handoff" rows="5" placeholder="告诉下一位 Agent 如何使用以下产物；可使用宏。"></textarea></label>
+              <p class="studio-field-hint">当前节点完成后，产物先经过该 Agent 绑定的输出正则，再与这里的提示词一起交给下一节点。最后一个节点不交接。</p>
               <div class="studio-node-actions"><button class="studio-button studio-button-muted" id="studio-node-agent-open" type="button" disabled>打开 Agent</button><button class="studio-button studio-button-danger" id="studio-node-remove" type="button" disabled>移除节点</button></div>
+            </fieldset>
+            <fieldset class="studio-node-settings" id="studio-loop-settings"><legend>固定循环</legend>
+              <label class="studio-field" for="studio-loop-start"><span>循环起点</span><select id="studio-loop-start"><option value="">选择起点</option></select></label>
+              <label class="studio-field" for="studio-loop-end"><span>循环终点</span><select id="studio-loop-end"><option value="">选择终点</option></select></label>
+              <label class="studio-field" for="studio-loop-iterations"><span>重复次数</span><input id="studio-loop-iterations" type="number" min="1" max="100" value="2"></label>
+              <label class="studio-field" for="studio-loop-exit-handoff"><span>出口交接提示词（可选）</span><textarea id="studio-loop-exit-handoff" rows="3" placeholder="留空则沿用循环终点的交接提示词。"></textarea></label>
+              <p class="studio-field-hint">循环只能覆盖连续节点，并且必须在循环后保留一个出口节点。每轮严格按从上到下串行运行。</p>
+              <div class="studio-node-actions"><button class="studio-button studio-button-muted" id="studio-loop-save" type="button">添加循环</button><button class="studio-button studio-button-danger" id="studio-loop-remove" type="button" disabled>移除循环</button></div>
+              <div class="studio-loop-list" id="studio-loop-list" aria-live="polite"></div>
             </fieldset>
             <fieldset class="studio-node-settings"><legend>输出节点</legend>
               <label class="studio-field" for="studio-graph-output"><span>输出节点</span><select id="studio-graph-output"><option value="">选择输出节点</option></select></label>
@@ -1299,6 +1311,7 @@ html, body { color-scheme: dark; }
   <div class="node-detail-panel node-debug-panel" onclick="event.stopPropagation()">
     <div class="node-detail-head">
       <h3 id="node-detail-title">节点运行</h3>
+      <label class="node-debug-text-toggle" title="隐藏状态、令牌、模型与工具元信息，仅按顺序显示文本"><input id="node-debug-text-only" type="checkbox" onchange="setNodeDebugTextOnly(this.checked)"><span>仅文本</span></label>
       <button class="node-detail-close" id="node-debug-replay-button" type="button" title="发起一次新的模型调用，不改变故事存档" onclick="runDebugReplay()">调试重放</button>
       <button class="node-detail-close" type="button" title="关闭详情" aria-label="关闭详情" onclick="closeNodeDetail()">×</button>
     </div>
@@ -2027,7 +2040,7 @@ const RUNTIME_EVENT_TYPES = [
   'session.head_moved', 'session.rolled_back', 'narrative.preview.delta',
   'agent_node.started', 'agent_node.finished', 'model_call.started', 'model_call.finished', 'model_call.failed',
   'tool_run.started', 'tool_run.progress', 'tool_run.finished',
-  'graph.run.started', 'graph.node.started', 'graph.node.delta', 'graph.node.finished', 'graph.run.finished'
+  'graph.run.started', 'graph.node.started', 'graph.node.delta', 'graph.node.finished', 'graph.node.handoff', 'graph.run.finished'
 ];
 const RUNTIME_AFTER_KEY = 'rp-runtime-last-event-sequence';
 const RUNTIME_SESSION_KEY = 'rp-runtime-session-id';
@@ -2041,6 +2054,7 @@ let agentTrace = { nodes: {}, events: [], graphMode: false };
 let graphRunState = { graphRunId: null, status: null };
 let nodeDetailState = { nodeRunId: null, data: null, debugReplay: null };
 let nodeDetailRefreshTimer = null;
+let nodeDebugTextOnly = false;
 const NODE_STATUS_LABELS = Object.freeze({
   idle: '待运行',
   running: '运行中',
@@ -2089,7 +2103,7 @@ workspaceSetState('runtimeTask', runtimeTask);
 workspaceSetState('session', sessionState);
 workspaceSetState('conversation', { content: null, stream: streamingPreview });
 workspaceSetState('monitor', { sidebarOpen: false, trace: agentTrace });
-workspaceSetState('nodeDebug', { open: false, nodeRunId: null });
+workspaceSetState('nodeDebug', { open: false, nodeRunId: null, textOnly: false });
 
 function renderStreamingPreview() {
   const doc = document.getElementById("doc");
@@ -2252,6 +2266,26 @@ function recordAgentTrace(type, payload, sequence) {
     };
     renderAgentTrace();
     return;
+  } else if (type === "graph.node.handoff") {
+    agentTrace.graphMode = true;
+    key = taskId + ":node:" + (payload.node_id || "unknown");
+    const prior = agentTrace.nodes[key] || {};
+    const loopLabel = payload.loop_iteration ? " · 循环第 " + payload.loop_iteration + " 次" : "";
+    agentTrace.nodes[key] = Object.assign({}, prior, {
+      sequence: sequence || prior.sequence || 0,
+      taskId: taskId,
+      nodeRunId: payload.node_run_id || prior.nodeRunId,
+      nodeId: payload.node_id || prior.nodeId,
+      state: "succeeded",
+      label: payload.label || prior.label || payload.node_id || "节点",
+      meta: "已交接给 " + (payload.target_node_id || "下一节点") + loopLabel,
+      handoff: payload.handoff_artifact || null
+    });
+    if (nodeDetailState.nodeRunId && nodeDetailState.nodeRunId === payload.node_run_id) {
+      scheduleNodeDetailRefresh(payload.node_run_id);
+    }
+    renderAgentTrace();
+    return;
   } else if (type === "graph.node.started" || type === "graph.node.finished" || type === "graph.node.delta") {
     agentTrace.graphMode = true;
     key = taskId + ":node:" + (payload.node_id || "unknown");
@@ -2391,6 +2425,52 @@ function renderDebugCallList(target, calls, kind) {
   });
 }
 
+function artifactText(value) {
+  if (typeof value === 'string') return value;
+  if (value && typeof value.content === 'string') return value.content;
+  return '';
+}
+
+function appendTextTrace(parts, title, value) {
+  const text = artifactText(value);
+  if (!text) return;
+  parts.push(title + '\n' + text);
+}
+
+function textOnlyNodeTrace(detail, modelCalls) {
+  const parts = [];
+  appendTextTrace(parts, '输入', detail.input_artifact || detail.input);
+  modelCalls.forEach(function(call, index) {
+    const messages = (call.request && call.request.messages) || call.messages || [];
+    const input = messages.map(function(message) {
+      const content = artifactText(message && message.content);
+      return content ? (message.role ? message.role + ':\n' : '') + content : '';
+    }).filter(Boolean).join('\n\n');
+    if (input) parts.push('模型输入 ' + (index + 1) + '\n' + input);
+    const output = call.final_output || call.streamed_output || call.output || '';
+    if (output) parts.push('模型文本 ' + (index + 1) + '\n' + output);
+  });
+  const config = detail.effective_config || {};
+  ['input', 'output'].forEach(function(target) {
+    const transform = config['regex_' + target + '_transform'];
+    if (!transform) return;
+    const text = transform.transformed || transform.text || '';
+    if (text) parts.push('正则' + (target === 'input' ? '输入' : '输出') + '结果\n' + text);
+  });
+  const finalOutput = detail.final_output || detail.output || '';
+  if (finalOutput) parts.push('节点产物\n' + finalOutput);
+  appendTextTrace(parts, '交接文本', detail.handoff_artifact);
+  return parts.length ? parts.join('\n\n') : '等待文本内容…';
+}
+
+function setNodeDebugTextOnly(enabled) {
+  nodeDebugTextOnly = !!enabled;
+  const toggle = document.getElementById('node-debug-text-only');
+  if (toggle) toggle.checked = nodeDebugTextOnly;
+  if (nodeDetailState.data) renderNodeDetail(nodeDetailState.data);
+  workspacePatchState('nodeDebug', { textOnly: nodeDebugTextOnly });
+}
+
 function renderNodeDetail(detail) {
   const body = document.getElementById('node-detail-body');
   const title = document.getElementById('node-detail-title');
@@ -2398,6 +2478,10 @@ function renderNodeDetail(detail) {
   const state = NODE_STATUS_LABELS[detail.state] ? detail.state : (detail.status || 'idle');
   const modelCalls = Array.isArray(detail.model_calls) ? detail.model_calls : [];
   const toolCalls = Array.isArray(detail.tool_calls) ? detail.tool_calls : [];
+  const panel = document.querySelector('#node-detail-modal .node-debug-panel');
+  if (panel) panel.classList.toggle('is-text-only', nodeDebugTextOnly);
+  const textOnlyToggle = document.getElementById('node-debug-text-only');
+  if (textOnlyToggle) textOnlyToggle.checked = nodeDebugTextOnly;
   if (title) title.textContent = (detail.label || detail.node_id || '节点运行') + ' · ' + (NODE_STATUS_LABELS[state] || state);
   const replayButton = document.getElementById('node-debug-replay-button');
   if (replayButton) replayButton.hidden = !nodeDetailState.nodeRunId;
@@ -2427,7 +2511,9 @@ function renderNodeDetail(detail) {
   }
 
   const stream = detail.streamed_output || detail.final_output || detail.output || '';
-  if (detail.node_run_id) {
+  if (nodeDebugTextOnly) {
+    body.textContent = textOnlyNodeTrace(detail, modelCalls);
+  } else if (detail.node_run_id) {
     body.textContent = debugValue({
       node_run_id: detail.node_run_id,
       state: detail.state || detail.status || 'idle',
@@ -2463,7 +2549,7 @@ function renderNodeDetail(detail) {
   }
   const view = Object.assign({}, detail);
   if (nodeDetailState.debugReplay) view.debug_replay = nodeDetailState.debugReplay;
-  workspacePatchState('nodeDebug', { open: true, nodeRunId: nodeDetailState.nodeRunId, data: view });
+  workspacePatchState('nodeDebug', { open: true, nodeRunId: nodeDetailState.nodeRunId, data: view, textOnly: nodeDebugTextOnly });
   workspaceEmit('node-debug:rendered', view);
 }
 
@@ -2480,7 +2566,7 @@ async function openNodeDetail(nodeRunId, traceItem) {
     detail_source: nodeRunId ? 'live trace' : 'live trace (node run not created yet)'
   } : null;
   nodeDetailState = { nodeRunId: nodeRunId || null, data: fallback, debugReplay: null };
-  workspaceSetState('nodeDebug', { open: true, nodeRunId: nodeDetailState.nodeRunId, data: fallback });
+  workspaceSetState('nodeDebug', { open: true, nodeRunId: nodeDetailState.nodeRunId, data: fallback, textOnly: nodeDebugTextOnly });
   workspaceEmit('node-debug:opened', { nodeRunId: nodeDetailState.nodeRunId, traceItem: traceItem || null });
   const modal = document.getElementById('node-detail-modal');
   const body = document.getElementById('node-detail-body');
@@ -2544,7 +2630,7 @@ function closeNodeDetail(event) {
     nodeDetailRefreshTimer = null;
   }
   nodeDetailState = { nodeRunId: null, data: null, debugReplay: null };
-  workspaceSetState('nodeDebug', { open: false, nodeRunId: null, data: null });
+  workspaceSetState('nodeDebug', { open: false, nodeRunId: null, data: null, textOnly: nodeDebugTextOnly });
   workspaceEmit('node-debug:closed');
 }
 

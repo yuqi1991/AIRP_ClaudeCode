@@ -21,6 +21,7 @@
     graphFilter: '',
     graphDraft: null,
     selectedNodeIndex: -1,
+    selectedLoopId: null,
     runtimeGraphId: null,
     referencesLoaded: false
   };
@@ -504,13 +505,15 @@
 
   function resetGraph() {
     state.selectedGraphId = null;
-    state.graphDraft = { id: '', name: '', nodes: [], output_node_id: '' };
+    state.graphDraft = { id: '', name: '', mode: 'handoff', nodes: [], loops: [], output_node_id: '' };
     state.selectedNodeIndex = -1;
+    state.selectedLoopId = null;
     $('studio-graph-form').reset();
     $('studio-graph-id').value = '';
     $('studio-graph-name').value = '';
     $('studio-graph-selection').textContent = '新建编排图';
-    $('studio-graph-title').textContent = '线性拓扑';
+    $('studio-graph-title').textContent = '接力链';
+    $('studio-graph-mode').value = 'handoff';
     setButtonDisabled('studio-graph-use', true);
     setButtonDisabled('studio-graph-copy', true);
     setButtonDisabled('studio-graph-delete', true);
@@ -528,6 +531,15 @@
       node.node_id = node.node_id || node.id || 'node-' + (index + 1);
       node.order = index;
       node.enabled = node.enabled !== false;
+      node.handoff_prompt = typeof node.handoff_prompt === 'string' ? node.handoff_prompt : '';
+    });
+    copy.mode = copy.mode === 'handoff' ? 'handoff' : 'sequential';
+    copy.loops = Array.isArray(copy.loops) ? copy.loops : [];
+    copy.loops.forEach(function (loop, index) {
+      loop.id = loop.id || loop.loop_id || 'loop-' + (index + 1);
+      loop.mode = 'fixed';
+      loop.iterations = Number.isInteger(loop.iterations) ? loop.iterations : Number(loop.count) || 1;
+      if (typeof loop.exit_handoff_prompt !== 'string') delete loop.exit_handoff_prompt;
     });
     copy.output_node_id = copy.output_node_id || '';
     return copy;
@@ -537,16 +549,19 @@
     state.selectedGraphId = graph.id || graph.graph_id;
     state.graphDraft = normalizeGraph(graph);
     state.selectedNodeIndex = state.graphDraft.nodes.length ? 0 : -1;
+    state.selectedLoopId = null;
     $('studio-graph-id').value = state.graphDraft.id || '';
     $('studio-graph-name').value = state.graphDraft.name || '';
+    $('studio-graph-mode').value = state.graphDraft.mode;
     $('studio-graph-selection').textContent = state.graphDraft.name || state.graphDraft.id || '未选择 Graph';
-    $('studio-graph-title').textContent = state.graphDraft.name || '线性拓扑';
+    $('studio-graph-title').textContent = state.graphDraft.name || '接力链';
     setButtonDisabled('studio-graph-use', false);
     setButtonDisabled('studio-graph-copy', false);
     setButtonDisabled('studio-graph-delete', false);
     renderGraphList();
     renderTopology();
     fillNodeSettings(currentNode());
+    fillLoopSettings(null);
   }
 
   function currentNode() {
@@ -561,10 +576,13 @@
     $('studio-node-id').value = node ? node.node_id || '' : '';
     $('studio-node-label').value = node ? node.label || '' : '';
     $('studio-node-enabled').checked = !node || node.enabled !== false;
+    $('studio-node-handoff').value = node ? node.handoff_prompt || '' : '';
+    $('studio-node-handoff').disabled = !node || node.node_id === finalEnabledNodeId();
     fillAgentSelects();
     setButtonDisabled('studio-node-agent-open', !node || !node.agent_id);
     setButtonDisabled('studio-node-remove', !node);
     refreshOutputOptions();
+    refreshLoopNodeOptions();
   }
 
   function refreshOutputOptions() {
@@ -603,12 +621,138 @@
   function syncNodeFields() {
     var node = currentNode();
     if (!node) return;
-    node.node_id = $('studio-node-id').value.trim() || node.node_id;
+    var oldNodeId = node.node_id;
+    var nextNodeId = $('studio-node-id').value.trim() || oldNodeId;
+    node.node_id = nextNodeId;
     node.label = $('studio-node-label').value.trim();
     node.agent_id = $('studio-node-agent').value;
     node.enabled = $('studio-node-enabled').checked;
+    node.handoff_prompt = $('studio-node-handoff').value;
     node.order = state.selectedNodeIndex;
+    if (nextNodeId !== oldNodeId) {
+      state.graphDraft.loops.forEach(function (loop) {
+        if (loop.start_node_id === oldNodeId) loop.start_node_id = nextNodeId;
+        if (loop.end_node_id === oldNodeId) loop.end_node_id = nextNodeId;
+      });
+    }
     ensureValidOutput();
+  }
+
+  function currentLoop() {
+    if (!state.graphDraft || !state.selectedLoopId) return null;
+    return state.graphDraft.loops.find(function (loop) { return loop.id === state.selectedLoopId; }) || null;
+  }
+
+  function fillLoopNodeSelect(select, selected, placeholder) {
+    if (!select) return;
+    select.replaceChildren();
+    var empty = document.createElement('option');
+    empty.value = '';
+    empty.textContent = placeholder;
+    select.appendChild(empty);
+    (state.graphDraft ? state.graphDraft.nodes : []).forEach(function (node) {
+      if (node.enabled === false) return;
+      var option = document.createElement('option');
+      option.value = node.node_id;
+      option.textContent = node.label || node.node_id;
+      select.appendChild(option);
+    });
+    select.value = selected || '';
+  }
+
+  function refreshLoopNodeOptions() {
+    var loop = currentLoop();
+    var start = $('studio-loop-start');
+    var end = $('studio-loop-end');
+    fillLoopNodeSelect(start, loop ? loop.start_node_id : start.value, '选择起点');
+    fillLoopNodeSelect(end, loop ? loop.end_node_id : end.value, '选择终点');
+    renderLoopList();
+  }
+
+  function fillLoopSettings(loop) {
+    state.selectedLoopId = loop && loop.id || null;
+    fillLoopNodeSelect($('studio-loop-start'), loop && loop.start_node_id, '选择起点');
+    fillLoopNodeSelect($('studio-loop-end'), loop && loop.end_node_id, '选择终点');
+    $('studio-loop-iterations').value = loop ? loop.iterations : 2;
+    $('studio-loop-exit-handoff').value = loop ? loop.exit_handoff_prompt || '' : '';
+    $('studio-loop-save').textContent = loop ? '更新循环' : '添加循环';
+    setButtonDisabled('studio-loop-remove', !loop);
+    renderLoopList();
+  }
+
+  function loopPayloadFromFields() {
+    var start = $('studio-loop-start').value;
+    var end = $('studio-loop-end').value;
+    var iterations = Number($('studio-loop-iterations').value);
+    if (!start || !end) {
+      setStatus('循环需要起点和终点', true);
+      return null;
+    }
+    if (!Number.isInteger(iterations) || iterations < 1 || iterations > 100) {
+      setStatus('循环次数必须在 1 到 100 之间', true);
+      return null;
+    }
+    var loop = currentLoop() || { id: 'loop-' + (state.graphDraft.loops.length + 1) };
+    loop.mode = 'fixed';
+    loop.start_node_id = start;
+    loop.end_node_id = end;
+    loop.iterations = iterations;
+    var exitPrompt = $('studio-loop-exit-handoff').value;
+    if (exitPrompt) loop.exit_handoff_prompt = exitPrompt;
+    else delete loop.exit_handoff_prompt;
+    return loop;
+  }
+
+  function saveLoop() {
+    if (!state.graphDraft) return;
+    syncNodeFields();
+    var loop = loopPayloadFromFields();
+    if (!loop) return;
+    var index = state.graphDraft.loops.findIndex(function (entry) { return entry.id === loop.id; });
+    if (index < 0) state.graphDraft.loops.push(loop);
+    else state.graphDraft.loops[index] = loop;
+    state.graphDraft.mode = 'handoff';
+    $('studio-graph-mode').value = 'handoff';
+    state.selectedLoopId = loop.id;
+    renderTopology();
+    fillLoopSettings(loop);
+    setStatus('固定循环已加入未保存的接力链');
+  }
+
+  function removeLoop() {
+    if (!state.graphDraft || !state.selectedLoopId) return;
+    state.graphDraft.loops = state.graphDraft.loops.filter(function (loop) { return loop.id !== state.selectedLoopId; });
+    state.selectedLoopId = null;
+    renderTopology();
+    fillLoopSettings(null);
+  }
+
+  function renderLoopList() {
+    var target = $('studio-loop-list');
+    if (!target) return;
+    target.replaceChildren();
+    var loops = state.graphDraft && state.graphDraft.loops || [];
+    if (!loops.length) {
+      var empty = document.createElement('p');
+      empty.className = 'studio-loop-empty';
+      empty.textContent = '未配置固定循环。';
+      target.appendChild(empty);
+      return;
+    }
+    loops.forEach(function (loop) {
+      var button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'studio-loop-item' + (loop.id === state.selectedLoopId ? ' is-active' : '');
+      button.textContent = (loop.start_node_id || '?') + ' → ' + (loop.end_node_id || '?') + ' · ' + loop.iterations + ' 次';
+      button.addEventListener('click', function () { fillLoopSettings(loop); });
+      target.appendChild(button);
+    });
+  }
+
+  function loopsEndingAt(nodeId) {
+    return state.graphDraft && state.graphDraft.loops.filter(function (loop) {
+      return loop.end_node_id === nodeId;
+    }) || [];
   }
 
   function renderTopology() {
@@ -675,6 +819,45 @@
       });
       card.appendChild(actions);
       target.appendChild(card);
+
+      loopsEndingAt(node.node_id).forEach(function (loop) {
+        var marker = document.createElement('button');
+        marker.type = 'button';
+        marker.className = 'studio-loop-marker' + (loop.id === state.selectedLoopId ? ' is-active' : '');
+        marker.textContent = '固定循环 · ' + loop.start_node_id + ' → ' + loop.end_node_id + ' · ' + loop.iterations + ' 次';
+        marker.title = '编辑固定循环';
+        marker.addEventListener('click', function (event) {
+          event.stopPropagation();
+          fillLoopSettings(loop);
+        });
+        target.appendChild(marker);
+      });
+
+      var next = nodes.slice(index + 1).find(function (candidate) { return candidate.enabled !== false; });
+      if (next) {
+        var edge = document.createElement('button');
+        edge.type = 'button';
+        edge.className = 'studio-handoff-edge' + (node.node_id === state.graphDraft.output_node_id ? ' is-output' : '');
+        var edgeTitle = document.createElement('span');
+        edgeTitle.className = 'studio-handoff-edge-title';
+        edgeTitle.textContent = state.graphDraft.mode === 'handoff'
+          ? '交接 → ' + (next.label || next.node_id)
+          : '顺序传递 → ' + (next.label || next.node_id);
+        var edgePrompt = document.createElement('span');
+        edgePrompt.className = 'studio-handoff-edge-prompt';
+        edgePrompt.textContent = state.graphDraft.mode === 'handoff'
+          ? (node.handoff_prompt || '不加额外提示词，直接传递产物')
+          : '兼容旧图：直接传递上游产物';
+        edge.append(edgeTitle, edgePrompt);
+        edge.addEventListener('click', function (event) {
+          event.stopPropagation();
+          state.selectedNodeIndex = index;
+          renderTopology();
+          fillNodeSettings(node);
+          $('studio-node-handoff').focus();
+        });
+        target.appendChild(edge);
+      }
     });
     refreshOutputOptions();
   }
@@ -727,7 +910,11 @@
 
   function removeGraphNode() {
     if (!state.graphDraft || state.selectedNodeIndex < 0) return;
-    state.graphDraft.nodes.splice(state.selectedNodeIndex, 1);
+    var removed = state.graphDraft.nodes.splice(state.selectedNodeIndex, 1)[0];
+    state.graphDraft.loops = state.graphDraft.loops.filter(function (loop) {
+      return loop.start_node_id !== removed.node_id && loop.end_node_id !== removed.node_id;
+    });
+    if (currentLoop() === null) state.selectedLoopId = null;
     state.graphDraft.nodes.forEach(function (node, index) { node.order = index; });
     state.selectedNodeIndex = Math.min(state.selectedNodeIndex, state.graphDraft.nodes.length - 1);
     ensureValidOutput();
@@ -754,7 +941,9 @@
     return {
       id: state.selectedGraphId ? state.selectedGraphId : ($('studio-graph-id').value.trim() || undefined),
       name: state.graphDraft.name.trim(),
+      mode: state.graphDraft.mode,
       nodes: state.graphDraft.nodes,
+      loops: state.graphDraft.mode === 'handoff' ? state.graphDraft.loops : [],
       output_node_id: state.graphDraft.output_node_id
     };
   }
@@ -859,7 +1048,15 @@
     $('studio-node-id').addEventListener('input', syncNodeFields);
     $('studio-node-label').addEventListener('input', syncNodeFields);
     $('studio-node-agent').addEventListener('change', syncNodeFields);
+    $('studio-node-handoff').addEventListener('input', function () { syncNodeFields(); renderTopology(); });
     $('studio-node-enabled').addEventListener('change', function () { syncNodeFields(); renderTopology(); fillNodeSettings(currentNode()); });
+    $('studio-graph-mode').addEventListener('change', function (event) {
+      if (!state.graphDraft) return;
+      state.graphDraft.mode = event.target.value === 'handoff' ? 'handoff' : 'sequential';
+      renderTopology();
+    });
+    $('studio-loop-save').addEventListener('click', saveLoop);
+    $('studio-loop-remove').addEventListener('click', removeLoop);
     $('studio-graph-output').addEventListener('change', function (event) { if (state.graphDraft) state.graphDraft.output_node_id = event.target.value; renderTopology(); });
     document.addEventListener('keydown', function (event) { if (event.key === 'Escape' && !host.hidden) closeDrawer(); });
   }

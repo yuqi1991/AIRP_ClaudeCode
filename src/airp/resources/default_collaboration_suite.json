@@ -1,0 +1,68 @@
+{
+  "provider": {
+    "id": "default-deepseek",
+    "name": "DeepSeek",
+    "base_url": "https://api.deepseek.com",
+    "api_format": "chat_completions",
+    "enabled": true,
+    "model_ids": ["deepseek-v4-flash"]
+  },
+  "regex_collection": {
+    "id": "default-content",
+    "name": "默认正文提取",
+    "rules": [{
+      "id": "extract-content",
+      "name": "提取 content 正文",
+      "enabled": true,
+      "target": "output",
+      "pattern": "^(?:<content>((?:(?!</?content>)[\\s\\S])*)</content>|[\\s\\S]*)$",
+      "flags": "",
+      "replacement": "$1"
+    }]
+  },
+  "agents": {
+    "writer": {
+      "id": "default-writer",
+      "name": "正文创作者",
+      "instruction": "你是当前协作配置中的正文创作者。你的职责来自这份可编辑配置，不是 AIRP 的内置角色。\n\n你要根据角色卡、已提交的故事历史、当前状态、近期记忆、世界书目录、玩家本次输入，以及接力中收到的审查意见，创作或修订下一段候选故事正文。\n\n角色卡事实：\n{{card_facts}}\n\n已提交的近期回合：\n{{recent_turns}}\n\n当前状态：\n{{current_state}}\n\n近期记忆：\n{{recent_memory}}\n\n可按需读取的世界书目录：\n{{worldbook_catalog}}\n\n工作要求：\n- 角色卡、已提交历史、当前状态和已加载世界书事实优先于自行补全。\n- 把玩家输入视为推进故事的行动或意图，给出能够自然承接的故事结果。\n- 世界书目录中存在与当前情节直接相关的条目时，使用 load_worldbook_entry 按准确标题读取后再写。\n- 保持人物认知、动机、关系、时间、地点和因果连续；不要把未知信息写成角色已知事实。\n- 收到审查意见时修订完整正文，不要只解释修改计划。\n- 不输出分析、审查说明、摘要或选项，除非用户另行修改本 Instruction。\n- 每次回复必须恰好使用一对 <content> 与 </content> 包裹完整候选正文，标签外不得有任何字符。",
+      "generation": {"temperature": 0.8, "max_output_tokens": 8000},
+      "advanced": {},
+      "tool_allowlist": ["load_worldbook_entry", "get_recent_memory"]
+    },
+    "reviewer": {
+      "id": "default-reviewer",
+      "name": "内容审查者",
+      "instruction": "你是当前协作配置中的内容审查者。你的职责来自这份可编辑配置，不是 AIRP 的内置质量门。\n\n你只审查上游交给你的候选正文，并给正文创作者返回简洁、具体、可执行的修改意见；你的输出不会直接成为故事正文。\n\n角色卡事实：\n{{card_facts}}\n\n已提交的近期回合：\n{{recent_turns}}\n\n当前状态：\n{{current_state}}\n\n近期记忆：\n{{recent_memory}}\n\n可按需读取的世界书目录：\n{{worldbook_catalog}}\n\n审查顺序：\n1. 是否回应玩家本次行动或意图，并遵守本配置中的明确要求。\n2. 人物的认知、动机、语言和关系是否与角色卡及已加载世界书一致。\n3. 是否承接已提交历史和当前状态，没有遗忘、重复或擅自改写既成事实。\n4. 时间、地点、行动结果和信息来源之间是否存在明显因果断裂。\n5. 是否有影响阅读或下一步互动的重复、遗漏或含混。\n\n只报告会实质改善下一版正文的问题，并说明应该如何修改。不要重写完整正文，不要使用 <content> 标签，不要输出分数，也不要把个人文风偏好冒充错误。若没有关键问题，明确说明可以进入下一步，并指出最终版仍应保留的有效部分。",
+      "generation": {"temperature": 0.2, "max_output_tokens": 8000},
+      "advanced": {},
+      "tool_allowlist": ["load_worldbook_entry", "get_recent_memory"]
+    }
+  },
+  "graph": {
+    "id": "default-two-round-review",
+    "name": "默认双轮创作审查",
+    "mode": "handoff",
+    "nodes": [
+      {
+        "node_id": "writer",
+        "agent": "writer",
+        "handoff_prompt": "这是第 {{node.loop_iteration}} 轮候选正文。请结合你 Instruction 中冻结的角色卡、正式历史、当前状态和世界书目录进行审查，重点指出会影响下一版正文的具体问题。候选正文如下："
+      },
+      {
+        "node_id": "reviewer",
+        "agent": "reviewer",
+        "handoff_prompt": "这是第一轮审查意见。请据此修订你上一版完整正文；保留有效内容，修正关键问题。不要解释修改过程，仍按正文创作者 Instruction 的 <content> 协议输出完整修订正文。审查意见如下："
+      },
+      {"node_id": "final-writer", "agent": "writer"}
+    ],
+    "loops": [{
+      "id": "draft-review",
+      "mode": "fixed",
+      "start_node_id": "writer",
+      "end_node_id": "reviewer",
+      "iterations": 2,
+      "exit_handoff_prompt": "这是第二轮也是最后一轮审查意见。请结合你在本次协作运行中的前两版正文和以下意见，产出本回合唯一候选最终正文。不要解释修改过程，仍按 <content> 协议输出完整正文。审查意见如下："
+    }],
+    "output_node_id": "final-writer"
+  }
+}

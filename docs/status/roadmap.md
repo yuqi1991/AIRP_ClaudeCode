@@ -28,18 +28,18 @@ commit、projection 和 durable events 的回合生命周期。真实 Provider�
 无密钥 fixture，真实发布 route 需要 opt-in qualification，包括 20 回合 bounded soak、
 两次 SSE 重连和一次 Runtime 重启。未通过的 Provider 保持 Experimental。
 
-**历史研究**：[`Pi Agent Execution Layer 可行性研究`](../research/pi-runtime-evaluation.md)。该候选已由 ADR-0019 否决，当前执行层是 AIRP 自有 Graph Runtime + OpenAI-compatible Provider Adapter。
+**当前执行边界**：[`ADR-0027`](../adr/0027-ephemeral-multi-agent-collaboration.md) 采用 AIRP 自有的 GraphRuntime 作为任务与交接编排者，并以 Pi Agent Core 作为每个临时 Agent 会话的工具循环。Pi 不是持久 runtime、不会读取或写入 session 文件。
 
-**已完成决策**：Graph/Provider/Tool/Worldbook 边界已在 AIRP 内部验证；真实 DeepSeek 路径通过 OpenAI-compatible adapter 接入，Pi sidecar、Pi package 和第二套 agent loop 已删除。
+**已完成决策**：Graph/Provider/Tool/Worldbook 边界已在 AIRP 内部验证；Pi Core sidecar、Pi package 和本地 JSONL bridge 只承担单 Agent 运行，不改变唯一 commit 和配置冻结所有权。
 
 **依赖**：原型前先定义实验范围与 agent 通信协议 ADR；原型通过后再作正式 runtime 选型决策。
 
-## Phase 2 — 多 agent 世界与叙事
+## Phase 2 — 用户定义的多 Agent 创作
 
-- 叙事导演、世界模拟、角色演化/文风润色形成明确消息协议；
-- 世界模拟以状态提案而非隐式 prompt 推进；
-- 建长期角色、NPC 和伏笔回归场景；
-- 支持外部资料自主检索、来源记录和玩家采纳。
+- 支持由用户 Prompt 和 Handoff Prompt 定义的接力规范；
+- 扩展静态固定循环为受限的最大次数策略，而不解析角色职责；
+- 建立多 Agent、工具调用和 Regex 交接的回归场景；
+- 将 MCP 与外部检索作为显式项目 capability，记录来源和玩家采纳。
 
 ## Phase 3 — 玩家实时编辑与卡片诊断
 

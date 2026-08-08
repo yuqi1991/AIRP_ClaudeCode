@@ -21,7 +21,7 @@
 ### 架构
 
 - [总体架构与回合数据流](architecture/overview.md)
-- [当前 runtime 与目标 runtime](architecture/future-runtime.md)
+- [当前 runtime 与演进边界](architecture/future-runtime.md)
 - [角色卡、世界书与记忆](architecture/card-worldbook-memory.md)
 
 ### 状态与规划
@@ -32,11 +32,12 @@
 
 ### 规格
 
-- [Pi Agent Core 独立回合 Runtime 规格](specs/pi-agent-core-runtime.md) — 历史候选规格，已由 ADR-0019 否决，不是当前实现
+- [Pi Agent Core 独立回合 Runtime 规格](specs/pi-agent-core-runtime.md) — 早期边界规格；当前静态接力实现以 ADR-0027 为准
 
 ### 研究
 
-- [Pi Agent Execution Layer 可行性研究](research/pi-runtime-evaluation.md) — 历史技术选型研究，结论已由 ADR-0019 更新
+- [Pi Agent Core 当前能力核验](research/pi-agent-core-current-evaluation.md) — 已采纳版本、运行边界与验证证据
+- [Pi Agent Execution Layer 可行性研究](research/pi-runtime-evaluation.md) — 历史技术选型研究
 
 ### 开发
 

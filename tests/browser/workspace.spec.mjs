@@ -49,6 +49,19 @@ async function onlyExpanded(page, selector) {
   await page.waitForTimeout(280);
 }
 
+async function studioPost(page, path, body) {
+  return page.evaluate(async ({ endpoint, payload }) => {
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.message || data.error || endpoint);
+    return data;
+  }, { endpoint: path, payload: body });
+}
+
 test.describe('desktop 1440x900 release baseline', () => {
   test.use({ viewport: { width: 1440, height: 900 } });
 
@@ -134,6 +147,75 @@ test.describe('desktop 1440x900 release baseline', () => {
     });
     expect(emptyOutput).toEqual({ text: '本回合提交了空正文', marked: 'true' });
   });
+});
+
+test('handoff editor saves a fixed loop and text-only debug hides telemetry', async ({ page }) => {
+  await openWorkspace(page);
+  const suffix = String(Date.now());
+  const providerId = 'handoff-browser-provider-' + suffix;
+  const plannerId = 'handoff-browser-planner-' + suffix;
+  const writerId = 'handoff-browser-writer-' + suffix;
+  const reviewerId = 'handoff-browser-reviewer-' + suffix;
+  const graphId = 'handoff-browser-graph-' + suffix;
+  const graphName = '浏览器接力链-' + suffix;
+  await studioPost(page, '/v1/studio/providers', {
+    id: providerId, name: 'Handoff Browser Provider',
+    base_url: 'http://127.0.0.1:9', api_format: 'chat_completions', api_key: 'browser-key',
+  });
+  for (const [id, name] of [[plannerId, '规划 Agent'], [writerId, '写作 Agent'], [reviewerId, '审阅 Agent']]) {
+    await studioPost(page, '/v1/studio/agents', {
+      agent_id: id, name, instruction: name,
+      provider_profile_id: providerId, model_id: 'browser-model',
+    });
+  }
+  await studioPost(page, '/v1/studio/graphs', {
+    id: graphId, name: graphName, mode: 'handoff',
+    nodes: [
+      { node_id: 'plan', agent_id: plannerId, handoff_prompt: '规划下一步。' },
+      { node_id: 'write', agent_id: writerId, handoff_prompt: '检查正文。' },
+      { node_id: 'review', agent_id: reviewerId, handoff_prompt: '修订正文。' },
+      { node_id: 'final', agent_id: writerId },
+    ],
+    loops: [{ id: 'revision', mode: 'fixed', start_node_id: 'write', end_node_id: 'review', iterations: 2 }],
+    output_node_id: 'final',
+  });
+
+  await page.locator('#studio-agents-toggle').click();
+  await page.locator('#studio-drawer-mode-toggle').click();
+  await expect(page.locator('#studio-orchestration-view')).toBeVisible();
+  await page.getByRole('button', { name: new RegExp(graphName) }).click();
+  await expect(page.locator('#studio-graph-id')).toHaveValue(graphId);
+  await expect(page.locator('#studio-graph-mode')).toHaveValue('handoff');
+  await expect(page.locator('#studio-graph-topology .studio-handoff-edge')).toHaveCount(3);
+  await expect(page.locator('#studio-loop-list .studio-loop-item')).toContainText('write → review · 2 次');
+
+  await page.locator('#studio-node-handoff').fill('按冻结的角色卡继续规划。');
+  await page.locator('#studio-graph-form').getByRole('button', { name: '保存编排图' }).click();
+  await expect(page.locator('#studio-drawer-status')).toHaveText('编排图已保存');
+  const saved = await page.evaluate(async (id) => (await fetch('/v1/studio/graphs/' + encodeURIComponent(id))).json(), graphId);
+  expect(saved.graph.nodes[0].handoff_prompt).toBe('按冻结的角色卡继续规划。');
+  expect(saved.graph.loops[0]).not.toHaveProperty('exit_handoff_prompt');
+
+  await page.evaluate(() => {
+    const modal = document.getElementById('node-detail-modal');
+    modal.hidden = false;
+    nodeDetailState = {
+      nodeRunId: 'debug-node',
+      debugReplay: null,
+      data: {
+        node_run_id: 'debug-node', node_id: 'plan', label: '规划', state: 'succeeded',
+        input_artifact: { content: '玩家输入' },
+        model_calls: [{ request: { messages: [{ role: 'user', content: '模型输入' }] }, final_output: '模型文本' }],
+        effective_config: { regex_output_transform: { transformed: '正则结果' } },
+        final_output: '节点产物', handoff_artifact: { content: '交接文本' },
+      },
+    };
+    renderNodeDetail(nodeDetailState.data);
+  });
+  await page.locator('#node-debug-text-only').check();
+  await expect(page.locator('.node-debug-panel')).toHaveClass(/is-text-only/);
+  await expect(page.locator('#node-detail-body')).toContainText('交接文本');
+  await expect(page.locator('#node-detail-body')).not.toContainText('node_run_id');
 });
 
 test.describe('mobile 390x844 release baseline', () => {

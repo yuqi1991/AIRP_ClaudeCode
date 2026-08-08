@@ -93,6 +93,10 @@ class ProjectLibrary:
                 )
             return self._read_project(path)
 
+    def project_instance_id(self, project_id: str) -> str:
+        """Return the stable identity of one persisted Project lifecycle."""
+        return self.get_project(project_id)["instance_id"]
+
     def create_project(self, payload: Any) -> dict[str, Any]:
         self._require_object(payload, "Project")
         with self._lock:
@@ -107,7 +111,8 @@ class ProjectLibrary:
                     f"Project {project_id!r} already exists",
                     status=409,
                 )
-            project = self._normalize(payload, project_id=project_id)
+            create_payload = {**copy.deepcopy(payload), "instance_id": uuid.uuid4().hex}
+            project = self._normalize(create_payload, project_id=project_id)
             now = int(time.time())
             project["created_at"] = now
             project["updated_at"] = now
@@ -143,6 +148,7 @@ class ProjectLibrary:
                 )
             merged = {**current, **copy.deepcopy(payload), "id": project_id}
             merged["project_id"] = project_id
+            merged["instance_id"] = current["instance_id"]
             project = self._normalize(merged, project_id=project_id)
             project["created_at"] = current.get("created_at", 0)
             project["updated_at"] = int(time.time())
@@ -183,6 +189,7 @@ class ProjectLibrary:
             copied = {**original, **overrides, "id": new_id}
             copied["name"] = self._copy_name(original["name"])
             copied.pop("project_id", None)
+            copied["instance_id"] = uuid.uuid4().hex
             copied = self._normalize(copied, project_id=new_id)
             now = int(time.time())
             copied["created_at"] = now
@@ -334,6 +341,12 @@ class ProjectLibrary:
 
     def _normalize(self, payload: dict[str, Any], *, project_id: str) -> dict[str, Any]:
         self._validate_id(project_id)
+        instance_id = payload.get("instance_id")
+        if instance_id is None:
+            created_at = self._timestamp(payload.get("created_at"))
+            instance_id = f"legacy-{project_id}-{created_at}"
+        if not isinstance(instance_id, str) or not instance_id.strip():
+            raise ProjectLibraryError("invalid_project", "instance_id must be a non-empty string")
         card_data = payload.get("card_data")
         if card_data is None:
             card_data = payload.get("source_card")
@@ -369,6 +382,7 @@ class ProjectLibrary:
         self._validate_worldbooks(worldbook_ids)
         normalized = {
             "id": project_id,
+            "instance_id": instance_id,
             "name": name.strip(),
             **strings,
             "card_prompt": prompt,

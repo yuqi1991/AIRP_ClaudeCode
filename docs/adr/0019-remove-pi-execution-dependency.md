@@ -1,10 +1,10 @@
 # 移除 Pi Execution Dependency
 
-- **状态**：Accepted
+- **状态**：Superseded by ADR-0027
 - **日期**：2026-08-01
 - **关联**：ADR-0004、ADR-0010、ADR-0014、ADR-0018
 
-AIRP 不再把 Pi Agent Core、Pi AI 或 Node sidecar 作为运行时依赖。当前执行边界由 AIRP 自己拥有：`GraphRuntime` 调度冻结的 `ExecutionPlan`，`ProviderNodeRunner` 处理单节点的提示词、流式 provider 调用、工具回合和 Regex Collection，`OpenAICompatibleProviderAdapter` 只负责 `/v1/chat/completions` 与 `/v1/responses` 协议适配。
+本 ADR 记录当时移除 Pi 依赖的决定。随后确认的临时多 Agent 接力需要一个真正的、可保留工具循环上下文的单 Agent 执行器；ADR-0027 已以受限的 `PiCoreNodeRunner` + 本地 Node sidecar 取代本决定。AIRP 仍拥有冻结计划、Graph 调度、工具权限、Regex、Trace 与唯一提交；Pi 不拥有持久任务或存档事实。
 
 Pi 之前验证过 Agent loop、工具和 provider 的形态，但没有提供 AIRP 所需的持久 task、revision、Graph Trace、Project/Session 或世界书所有权。继续保留它会产生两个执行事实源、额外的 Node 进程和不可见的上下文边界，因此已删除 package 依赖、sidecar 资源和旧真实 provider bridge。
 
@@ -17,4 +17,4 @@ Pi 之前验证过 Agent loop、工具和 provider 的形态，但没有提供 A
 - 世界书不是隐式 prompt 解析器：Context Manifest 只提供 catalog，Agent 需要显式调用按标题加载工具；整本世界书不会自动塞进上下文。
 - 所谓 skill-mode 是世界书的 catalog/on-demand 约定，不是扫描 `skills/` 目录的隐藏执行机制。未来其他 skill/capability 必须通过显式 Host registry 注入，不得进入 Graph Runtime。
 
-旧 `engine.director` / `SequentialAgentGraph` 已删除。生产 server 始终配置 `ExecutionPlanCompiler + GraphRuntime + ProviderNodeRunner`；唯一保留的旧格式兼容代码是一次性卡片回合导入。
+旧 `engine.director` / `SequentialAgentGraph` 已删除。当前生产默认配置 `ExecutionPlanCompiler + GraphRuntime + PiCoreNodeRunner`；`ProviderNodeRunner` 保留为确定性测试和显式 `AIRP_AGENT_EXECUTOR=provider` 回退适配器。唯一保留的旧格式兼容代码是一次性卡片回合导入。

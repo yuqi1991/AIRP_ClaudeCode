@@ -150,7 +150,10 @@ def test_regex_collection_http_crud_and_javascript_test_seam(tmp_path: Path):
 
         status, listed = _json_request("GET", endpoint)
         assert status == 200
-        assert [item["id"] for item in listed["collections"]] == ["extract-final-prose"]
+        assert {item["id"] for item in listed["collections"]} == {
+            "default-content",
+            "extract-final-prose",
+        }
 
         status, fetched = _json_request("GET", f"{endpoint}/extract-final-prose")
         assert status == 200

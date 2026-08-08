@@ -496,10 +496,47 @@ class GraphRunObserver:
                 {"task_id": self.task_id, "node_id": node.node_id, "role": node.agent.name, "node_run_id": node_run_id, "state": state},
             )
 
+    def handoff_prepared(self, source, target, source_artifact, handoff_artifact) -> None:
+        """Record the exact Regex-processed Artifact delivered to the next node."""
+        self._ensure_started()
+        node_run_id = self.node_run_ids.get(source.node_id)
+        if node_run_id is None:
+            return
+        handoff = handoff_artifact.to_dict() if hasattr(handoff_artifact, "to_dict") else handoff_artifact
+        source_value = source_artifact.to_dict() if hasattr(source_artifact, "to_dict") else source_artifact
+        with self.runtime._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            if not self._can_persist(connection):
+                return
+            connection.execute(
+                "UPDATE node_runs SET handoff_artifact_json = ? WHERE id = ? AND session_id = ?",
+                (_trace_json(handoff), node_run_id, self.runtime.session_id),
+            )
+            payload = self._node_payload(source, node_run_id, state="succeeded")
+            payload.update(
+                {
+                    "target_node_id": target.node_id,
+                    "target_node_run_id": self.node_run_ids.get(target.node_id),
+                    "source_artifact": _redact_trace(source_value),
+                    "handoff_artifact": _redact_trace(handoff),
+                    "loop_id": source.loop_id,
+                    "loop_iteration": source.loop_iteration,
+                }
+            )
+            self.runtime._event(connection, "graph.node.handoff", payload)
+
     def graph_finished(self, result) -> None:
         self._ensure_started()
-        state = "succeeded" if result.ok else "failed"
         graph_error = _redact_trace(getattr(result, "error", None))
+        cancelled = bool(
+            isinstance(graph_error, dict) and graph_error.get("code") in {"aborted", "cancelled"}
+        )
+        if result.ok:
+            state = "succeeded"
+        elif cancelled:
+            state = "cancelled"
+        else:
+            state = "failed"
         retryable = bool(isinstance(graph_error, dict) and graph_error.get("retryable"))
         now = int(time.time())
         with self.runtime._connect() as connection:

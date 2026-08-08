@@ -17,7 +17,10 @@ Browser ── HTTP commands / SSE ──► airp.server
                    ▼                  ▼                  ▼
              Context Manifest   GraphRuntime       SQLite lineage
                                       │
-                           ProviderNodeRunner
+                        AgentExecutor (Pi Core)
+                                      │
+                                      ▼
+                        local Node sidecar / Pi Agent
                                       │
                                       ▼
                            card/state/content projection
@@ -34,7 +37,8 @@ qualification 才能列入已支持清单，未通过的配置必须显式标为
 | Module | 职责 |
 |---|---|
 | `airp.engine.graph_runtime` | 按 Graph Definition 调度节点，生成生命周期结果 |
-| `airp.engine.node_runner` | 展开 Agent instruction、调用 Provider、执行工具/Regex |
+| `airp.engine.pi_node_runner` | 生产 AgentExecutor：本地 Pi Agent Core 的单 Agent 工具循环、流式事件与临时记忆 |
+| `airp.engine.node_runner` | 兼容/测试 AgentExecutor：展开 Agent instruction、直接调用 Provider、执行工具/Regex |
 | `airp.engine.provider` | OpenAI-compatible `/v1/chat/completions` 与 `/v1/responses` 流式适配 |
 | `airp.engine.context_compiler` | 将 revision snapshot 编译成可重放 Context Manifest |
 | `airp.engine.regex_collections` | 按 Agent 绑定的顺序规则处理 input/output/both |
@@ -59,7 +63,7 @@ Engine 不解析用户正文标签，也不内置文风、人称、NSFW、字数
 
 1. submit 创建带幂等键的持久 Task；重复 key 只观察同一个 Task。
 2. Runtime 冻结 card、Project、Graph 和绑定世界书，编译带来源和预算的 Context Manifest。
-3. GraphRuntime 顺序执行 Agent 节点；ProviderNodeRunner 发布 model/tool/node lifecycle events，并流式发布 `narrative.preview.delta`。
+3. GraphRuntime 严格串行执行接力节点；PiCoreNodeRunner 让单个 Agent 完成模型/工具多轮，并将 Pi 生命周期映射为 model/tool/node events 与 `narrative.preview.delta`。一个 Graph Run 结束、失败或取消时会销毁其 sidecar 与全部私有 transcript。
 4. 任一节点失败即整图失败，错误节点写入 Trace；用户点击整图重跑时创建新 attempt，不能静默切回旧 file-loop。
 5. Harness 解析并校验 Turn Draft，在 optimistic revision 下最多写入一个 commit；模型和 Provider 不拥有提交权。
 6. 成功结果先完成 commit，再幂等重建 `chat_log.json`、`state.js`、`content.js` 投影；preview 在此之前不是已提交回合。

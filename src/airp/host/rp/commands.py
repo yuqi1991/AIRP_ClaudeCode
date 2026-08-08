@@ -256,13 +256,6 @@ class SessionCommandService:
                 retryable=False,
                 message="revision required",
             )
-        if self.runtime.generation_active():
-            return CommandResult(
-                ok=False,
-                error=ERROR_GENERATION_BUSY,
-                retryable=True,
-                message="a generation lease is active",
-            )
         try:
             result = self.runtime.reroll(revision, idempotency_key)
         except ValueError as exc:
@@ -328,13 +321,6 @@ class SessionCommandService:
                 error=ERROR_INVALID_COMMAND,
                 retryable=False,
                 message="missing idempotency_key",
-            )
-        if self.runtime.generation_active():
-            return CommandResult(
-                ok=False,
-                error=ERROR_GENERATION_BUSY,
-                retryable=True,
-                message="a generation lease is active",
             )
         try:
             result = self.runtime.retry_graph_run(graph_run_id, idempotency_key)

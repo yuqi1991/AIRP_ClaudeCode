@@ -82,6 +82,27 @@ class ProviderProfileService:
             raise ValueError(f"Provider Profile {profile_id!r} is disabled")
         return self._adapter(profile, model=model, timeout=self._request_timeout)
 
+    def sidecar_execution_config(self, profile_id: str, model: str) -> dict[str, str]:
+        """Return transient local-process configuration for an Agent executor.
+
+        This intentionally is not part of the Studio HTTP representation or an
+        Execution Plan. The caller may pass it only to a short-lived local
+        subprocess for the active model request; trace/provenance payloads
+        continue to use the secret-free profile snapshot.
+        """
+        profile = self._profiles.get_profile(profile_id)
+        if not profile.get("enabled", True):
+            raise ValueError(f"Provider Profile {profile_id!r} is disabled")
+        api_key = self._secrets.get(profile_id)
+        if not api_key:
+            raise ProviderError("API key is not configured", "provider_rejected", False)
+        return {
+            "base_url": str(profile["base_url"]),
+            "api_key": api_key,
+            "api_format": str(profile["api_format"]),
+            "model_id": model or str((profile.get("model_ids") or [""])[0]),
+        }
+
     def _save(self, payload: dict, persist: Callable[[dict], dict]) -> dict[str, Any]:
         clean, api_key = self._split_secret(payload)
         profile = persist(clean)

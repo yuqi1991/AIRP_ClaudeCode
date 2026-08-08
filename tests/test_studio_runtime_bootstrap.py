@@ -92,12 +92,15 @@ def test_server_bootstraps_legacy_runtime_into_studio_and_binds_project(tmp_path
 
     with SessionRuntimeServer(runtime, static_root=styles, workspace=tmp_path / "workspace") as server:
         assert [item["id"] for item in server.provider_profiles.list_profiles()] == ["legacy-deepseek"]
-        agents = server.agent_definitions.list_agents()
-        assert [item["agent_id"] for item in agents] == ["legacy-default-director"]
-        assert "北棱特调" in agents[0]["instruction"]
-        assert "第二人称" in agents[0]["instruction"]
-        assert "不代替玩家发言" in agents[0]["instruction"]
-        assert [item["id"] for item in server.graph_definitions.list_graphs()] == ["default"]
+        agents = {item["agent_id"]: item for item in server.agent_definitions.list_agents()}
+        assert set(agents) == {"legacy-default-director", "default-writer", "default-reviewer"}
+        assert "北棱特调" in agents["legacy-default-director"]["instruction"]
+        assert "第二人称" in agents["legacy-default-director"]["instruction"]
+        assert "不代替玩家发言" in agents["legacy-default-director"]["instruction"]
+        assert {item["id"] for item in server.graph_definitions.list_graphs()} == {
+            "default",
+            "default-two-round-review",
+        }
         status, active = _json_request(
             "GET",
             f"{server.base_url}/v1/session/runtime/graph",

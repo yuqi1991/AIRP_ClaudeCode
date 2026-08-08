@@ -4,7 +4,7 @@ AIRP 是一个内容中立的 multi-agent graph runtime，并在其上提供可�
 
 ## 当前能力
 
-- `airp.engine`：GraphRuntime、ProviderNodeRunner、OpenAI-compatible `chat_completions`/`responses`、Agent instruction 宏、Regex Collection、显式 capability registry。
+- `airp.engine`：GraphRuntime、PiCoreNodeRunner（Pi Agent Core sidecar）、OpenAI-compatible `chat_completions`/`responses`、Agent instruction 宏、Regex Collection、显式 capability registry。
 - `airp.host.rp`：卡片投影、Session/Revision、世界书按需读取、存档管理和 RP 工具。
 - 集成式 AIRP 工作区：游戏、Worldbook、Agents 与编排、Regex Collections、模型都在游戏页顶部互斥抽屉中编辑；右侧 Monitor 持续显示存档和 Graph/Agent Trace。
 - 浏览器前端：`narrative.preview.delta` SSE 流式预览、节点输入输出详情、失败节点定位和整图重跑。

@@ -216,6 +216,27 @@
   overflow: auto;
 }
 
+.node-debug-text-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--airp-color-muted);
+  font-size: .68rem;
+  white-space: nowrap;
+}
+
+.node-debug-text-toggle input { width: auto; accent-color: var(--airp-color-accent); }
+
+.node-debug-panel.is-text-only .node-debug-summary,
+.node-debug-panel.is-text-only #node-debug-model-calls,
+.node-debug-panel.is-text-only #node-debug-tool-calls,
+.node-debug-panel.is-text-only details.node-debug-section { display: none; }
+
+.node-debug-panel.is-text-only .node-debug-section[aria-labelledby="node-debug-model-title"],
+.node-debug-panel.is-text-only .node-debug-section[aria-labelledby="node-debug-tool-title"] { display: none; }
+
+.node-debug-panel.is-text-only #node-detail-body { max-height: none; min-height: 320px; color: var(--airp-color-text); font-family: var(--airp-font-ui); font-size: .78rem; line-height: 1.65; }
+
 .node-debug-summary {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -471,8 +492,7 @@
 .studio-topology { display: grid; justify-items: center; gap: 0; padding: 4px 8px 15px; }
 .studio-topology-empty { width: 100%; }
 .studio-topology-node { position: relative; width: min(100%, 310px); padding: 9px 10px; border: 1px solid var(--airp-color-border); border-radius: 5px; background: var(--airp-color-input); color: var(--airp-color-text); text-align: left; cursor: pointer; }
-.studio-topology-node::after { content: ""; position: absolute; top: 100%; left: 50%; width: 1px; height: 15px; background: var(--airp-color-border); }
-.studio-topology-node:last-child::after { display: none; }
+.studio-topology-node::after { display: none; }
 .studio-topology-node:hover, .studio-topology-node.is-active { border-color: var(--airp-color-accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--airp-color-accent) 12%, transparent); }
 .studio-topology-node.is-disabled { opacity: .52; }
 .studio-topology-node.is-output { border-bottom: 3px solid var(--airp-color-accent); }
@@ -485,6 +505,16 @@
 .studio-order-button:hover:not(:disabled) { border-color: var(--airp-color-accent); color: var(--airp-color-accent); }
 .studio-order-button:disabled { opacity: .4; cursor: not-allowed; }
 .studio-output-label { color: var(--airp-color-accent); font-size: .62rem; font-weight: 700; }
+.studio-handoff-edge { display: grid; gap: 2px; width: min(100%, 310px); min-height: 48px; margin: 0; padding: 8px 16px 8px 29px; border: 0; border-left: 1px solid var(--airp-color-border); background: transparent; color: var(--airp-color-muted); cursor: pointer; text-align: left; }
+.studio-handoff-edge:hover, .studio-handoff-edge:focus-visible { border-left-color: var(--airp-color-accent); color: var(--airp-color-text); outline: none; }
+.studio-handoff-edge-title { color: var(--airp-color-accent-muted); font-size: .65rem; font-weight: 700; }
+.studio-handoff-edge-prompt { display: block; overflow: hidden; color: var(--airp-color-muted); font-size: .63rem; line-height: 1.35; text-overflow: ellipsis; white-space: nowrap; }
+.studio-loop-marker { width: min(100%, 310px); margin: 4px 0 7px; padding: 6px 8px; border: 1px dashed var(--airp-color-accent-muted); border-radius: 4px; background: color-mix(in srgb, var(--airp-color-input) 75%, transparent); color: var(--airp-color-accent-muted); font-size: .64rem; cursor: pointer; text-align: left; }
+.studio-loop-marker:hover, .studio-loop-marker.is-active, .studio-loop-marker:focus-visible { border-style: solid; border-color: var(--airp-color-accent); color: var(--airp-color-accent); outline: none; }
+.studio-loop-list { display: grid; gap: 5px; }
+.studio-loop-empty { margin: 0; color: var(--airp-color-muted); font-size: .66rem; }
+.studio-loop-item { width: 100%; padding: 6px 7px; border: 1px solid var(--airp-color-border); border-radius: 4px; background: var(--airp-color-input); color: var(--airp-color-muted); font-size: .66rem; cursor: pointer; text-align: left; }
+.studio-loop-item:hover, .studio-loop-item.is-active, .studio-loop-item:focus-visible { border-color: var(--airp-color-accent); color: var(--airp-color-text); outline: none; }
 .studio-visually-hidden { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 @media (max-width: 980px) and (min-width: 761px) {
   [data-airp-region="studio-drawer"] { right: 260px; width: auto; }

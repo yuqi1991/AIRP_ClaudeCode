@@ -158,7 +158,8 @@ class SessionTurnRuntime:
                 opening_task,
                 self.manifest_policy,
                 snapshot=self._graph_tool_snapshot(plan, opening_task),
-            )
+            ),
+            macro_context=snapshot,
         )
         result = self.graph_runtime.run(
             plan,
@@ -603,9 +604,6 @@ class SessionTurnRuntime:
             raise ValueError("missing graph_run_id")
         if not isinstance(idempotency_key, str) or not idempotency_key.strip():
             raise ValueError("missing idempotency_key")
-        if self.generation_active():
-            return RuntimeResult("", None, self.active_revision(), "generation_busy")
-
         previous = self.graph_run_detail(graph_run_id)
         if previous is None:
             return RuntimeResult("", None, self.active_revision(), "unknown_graph_run")
@@ -816,7 +814,7 @@ class SessionTurnRuntime:
                 (self.session_id,),
             ).fetchone()
             recent = connection.execute(
-                "SELECT id FROM graph_runs WHERE session_id = ? AND status IN ('succeeded', 'failed', 'interrupted') ORDER BY finished_at DESC, created_at DESC, rowid DESC LIMIT 1",
+                "SELECT id FROM graph_runs WHERE session_id = ? AND status IN ('succeeded', 'failed', 'cancelled', 'interrupted') ORDER BY finished_at DESC, created_at DESC, rowid DESC LIMIT 1",
                 (self.session_id,),
             ).fetchone()
         return {
@@ -1165,6 +1163,7 @@ class SessionTurnRuntime:
                 "streamed_output": row["streamed_output"] or "",
                 "final_output": row["final_output"],
                 "artifact": artifact,
+                "handoff_artifact": _load_trace_json(row["handoff_artifact_json"], None),
                 "error": _load_trace_json(row["error_json"], None),
                 "diagnostics_ref": row["diagnostics_ref"],
                 "started_at": row["started_at"],
@@ -1181,7 +1180,7 @@ class SessionTurnRuntime:
                 (self.session_id,),
             ).fetchall()
             terminal = connection.execute(
-                "SELECT id FROM graph_runs WHERE session_id = ? AND status IN ('succeeded', 'failed', 'interrupted') ORDER BY finished_at DESC, created_at DESC, rowid DESC LIMIT 1",
+                "SELECT id FROM graph_runs WHERE session_id = ? AND status IN ('succeeded', 'failed', 'cancelled', 'interrupted') ORDER BY finished_at DESC, created_at DESC, rowid DESC LIMIT 1",
                 (self.session_id,),
             ).fetchone()
             keep = {row["id"] for row in running if row["id"]}
@@ -1208,7 +1207,7 @@ class SessionTurnRuntime:
                 (self.session_id,),
             ).fetchall()
             terminal = connection.execute(
-                "SELECT id FROM debug_replays WHERE session_id = ? AND state IN ('succeeded', 'failed', 'interrupted') "
+                "SELECT id FROM debug_replays WHERE session_id = ? AND state IN ('succeeded', 'failed', 'cancelled', 'interrupted') "
                 "ORDER BY finished_at DESC, created_at DESC, rowid DESC LIMIT 1",
                 (self.session_id,),
             ).fetchone()
@@ -1435,7 +1434,9 @@ class SessionTurnRuntime:
                 framework,
                 execution_context=NodeExecutionContext(
                     tool_registry=self._graph_tool_registry(task, plan),
+                    macro_context=snapshot,
                     abort_signal=signal,
+                    execution_id=task["id"],
                 ),
             )
         return None
@@ -1499,8 +1500,16 @@ class SessionTurnRuntime:
         """Persist fail-fast Graph semantics without entering draft commit."""
         graph_result = getattr(error, "result", None)
         graph_error = getattr(graph_result, "error", None)
+        cancelled = bool(
+            isinstance(graph_error, dict) and graph_error.get("code") in {"aborted", "cancelled"}
+        )
         retryable = bool(isinstance(graph_error, dict) and graph_error.get("retryable"))
-        task_status = "failed_retryable" if retryable else "failed_terminal"
+        if cancelled:
+            task_status = "cancelled"
+        elif retryable:
+            task_status = "failed_retryable"
+        else:
+            task_status = "failed_terminal"
         payload = {
             "task_id": task["id"],
             "plan_id": getattr(graph_result, "plan_id", None),
@@ -1519,7 +1528,11 @@ class SessionTurnRuntime:
                     "UPDATE tasks SET status = ? WHERE id = ? AND commit_id IS NULL",
                     (task_status, task["id"]),
                 )
-                self._event(connection, "graph.run.failed", payload)
+                self._event(
+                    connection,
+                    "graph.run.cancelled" if cancelled else "graph.run.failed",
+                    payload,
+                )
                 self._event(connection, f"task.{task_status}", payload)
                 return RuntimeResult(task["id"], None, row["revision"] or task["base_revision"], task_status)
             if row:
@@ -2592,7 +2605,7 @@ class SessionTurnRuntime:
                     prompt_provenance_json TEXT NOT NULL, effective_config_json TEXT NOT NULL,
                     model_calls_json TEXT NOT NULL, tool_calls_json TEXT NOT NULL,
                     streamed_output TEXT NOT NULL, tool_snapshot_json TEXT NOT NULL DEFAULT '{}', final_output TEXT,
-                    artifact_json TEXT, error_json TEXT, diagnostics_ref TEXT,
+                    artifact_json TEXT, handoff_artifact_json TEXT, error_json TEXT, diagnostics_ref TEXT,
                     started_at INTEGER, finished_at INTEGER,
                     UNIQUE(graph_run_id, node_id)
                 );
@@ -2645,6 +2658,8 @@ class SessionTurnRuntime:
                 connection.execute(
                     "ALTER TABLE node_runs ADD COLUMN tool_snapshot_json TEXT NOT NULL DEFAULT '{}'"
                 )
+            if "handoff_artifact_json" not in node_run_columns:
+                connection.execute("ALTER TABLE node_runs ADD COLUMN handoff_artifact_json TEXT")
             connection.execute(
                 "UPDATE tasks SET queue_sequence = rowid WHERE queue_sequence IS NULL"
             )

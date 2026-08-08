@@ -198,8 +198,8 @@ class GraphDefinitionStore:
         if not isinstance(name, str) or not name.strip():
             raise GraphDefinitionError("invalid_graph", "name must be a non-empty string")
         mode = payload.get("mode", "sequential")
-        if mode != "sequential":
-            raise GraphDefinitionError("invalid_graph", "only sequential graph mode is supported")
+        if mode not in {"sequential", "handoff"}:
+            raise GraphDefinitionError("invalid_graph", "mode must be sequential or handoff")
         raw_nodes = payload.get("nodes")
         if not isinstance(raw_nodes, list) or not raw_nodes:
             raise GraphDefinitionError("invalid_graph", "nodes must be a non-empty array")
@@ -231,13 +231,16 @@ class GraphDefinitionStore:
         if enabled[-1]["node_id"] != output_node_id:
             raise GraphDefinitionError("invalid_graph", "output node must be the final enabled node")
 
+        loops = self._normalize_loops(payload.get("loops", []), nodes) if mode == "handoff" else []
+
         return {
             "id": graph_id,
             "graph_id": graph_id,
             "name": name.strip(),
             "version": str(payload.get("version") or "1"),
-            "mode": "sequential",
+            "mode": mode,
             "nodes": nodes,
+            "loops": loops,
             "output_node_id": output_node_id,
             "created_at": self._timestamp(payload.get("created_at")),
             "updated_at": self._timestamp(payload.get("updated_at")),
@@ -299,6 +302,60 @@ class GraphDefinitionStore:
                 if not isinstance(value, dict):
                     raise GraphDefinitionError("invalid_graph", f"{canonical} must be an object")
                 normalized[canonical] = copy.deepcopy(value)
+        handoff_prompt = raw.get("handoff_prompt", raw.get("handoff"))
+        if handoff_prompt is not None:
+            if not isinstance(handoff_prompt, str):
+                raise GraphDefinitionError("invalid_graph", "handoff_prompt must be text")
+            normalized["handoff_prompt"] = handoff_prompt
+        return normalized
+
+    def _normalize_loops(self, raw_loops: Any, nodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        if not isinstance(raw_loops, list):
+            raise GraphDefinitionError("invalid_graph", "loops must be an array")
+        enabled_nodes = [node for node in nodes if node["enabled"]]
+        node_index = {node["node_id"]: index for index, node in enumerate(enabled_nodes)}
+        normalized: list[dict[str, Any]] = []
+        covered: set[int] = set()
+        for ordinal, raw_loop in enumerate(raw_loops, start=1):
+            if not isinstance(raw_loop, dict):
+                raise GraphDefinitionError("invalid_graph", "loop must be an object")
+            loop_id = raw_loop.get("id", raw_loop.get("loop_id", f"loop-{ordinal}"))
+            self._validate_node_id(loop_id)
+            if any(loop["id"] == loop_id for loop in normalized):
+                raise GraphDefinitionError("invalid_graph", "duplicate loop id")
+            if raw_loop.get("mode", "fixed") != "fixed":
+                raise GraphDefinitionError("invalid_graph", "only fixed loop mode is supported")
+            iterations = raw_loop.get("iterations", raw_loop.get("count"))
+            if not isinstance(iterations, int) or isinstance(iterations, bool) or not 1 <= iterations <= 100:
+                raise GraphDefinitionError("invalid_graph", "loop iterations must be between 1 and 100")
+            start = raw_loop.get("start_node_id", raw_loop.get("start"))
+            end = raw_loop.get("end_node_id", raw_loop.get("end"))
+            if start not in node_index or end not in node_index:
+                raise GraphDefinitionError("invalid_graph", "loop must reference enabled nodes")
+            start_index = node_index[start]
+            end_index = node_index[end]
+            if start_index > end_index or end_index >= len(enabled_nodes) - 1:
+                raise GraphDefinitionError("invalid_graph", "loop must be contiguous and have an exit node")
+            if any(index in covered for index in range(start_index, end_index + 1)):
+                raise GraphDefinitionError("invalid_graph", "loops cannot overlap")
+            covered.update(range(start_index, end_index + 1))
+            exit_prompt = raw_loop.get("exit_handoff_prompt")
+            if not isinstance(exit_prompt, str):
+                if exit_prompt is not None:
+                    raise GraphDefinitionError("invalid_graph", "exit_handoff_prompt must be text")
+            definition = {
+                "id": loop_id,
+                "mode": "fixed",
+                "start_node_id": start,
+                "end_node_id": end,
+                "iterations": iterations,
+            }
+            # An omitted exit prompt means the final loop edge keeps the
+            # source node's ordinary handoff prompt.  It is distinct from an
+            # intentionally blank prompt, which disables that wrapper.
+            if exit_prompt is not None:
+                definition["exit_handoff_prompt"] = exit_prompt
+            normalized.append(definition)
         return normalized
 
     def _validate_agent(self, agent_id: str) -> None:

@@ -7,7 +7,8 @@
 ## Context
 
 AIRP 已经有一条由 `airp.server`、`SessionCommandService`、`SessionTurnRuntime`、
-`GraphRuntime` 和 `ProviderNodeRunner` 组成的 canonical 执行路径。任务、Session
+`GraphRuntime` 和 `AgentExecutor` 组成的 canonical 执行路径。当前生产执行器为
+`PiCoreNodeRunner`，而 `ProviderNodeRunner` 保留为测试适配器。任务、Session
 revision、事件、Trace 和兼容投影进入卡片本地 SQLite/Projection；浏览器通过
 Command API 和 SSE 观察这条路径。
 

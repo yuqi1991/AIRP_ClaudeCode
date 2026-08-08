@@ -329,6 +329,16 @@ def test_provider_profile_execution_resolves_protocol_and_secret(tmp_path):
     assert adapter._api_format == "chat_completions"
     assert adapter._api_key == "runtime-secret"
 
+    sidecar = ProviderProfileService(profiles, secrets).sidecar_execution_config(
+        profile["id"], "deepseek-chat"
+    )
+    assert sidecar == {
+        "base_url": "https://api.deepseek.com",
+        "api_key": "runtime-secret",
+        "api_format": "chat_completions",
+        "model_id": "deepseek-chat",
+    }
+
 
 def test_provider_profile_execution_uses_request_timeout_not_discovery_timeout(tmp_path):
     styles = tmp_path / "styles"

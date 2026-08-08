@@ -81,6 +81,7 @@ from airp.host.rp.commands import SessionCommandService
 from airp.engine.graph_definitions import GraphDefinitionError
 from airp.engine.graph_runtime import ExecutionPlanCompiler, GraphRuntime
 from airp.engine.node_runner import ProviderNodeRunner
+from airp.engine.pi_node_runner import PiCoreNodeRunner
 from airp.engine.provider_profiles import ProviderConnectionError
 from airp.engine.project_library import ProjectLibraryError
 from airp.engine.regex_collections import RegexCollectionError
@@ -199,7 +200,10 @@ class SessionRuntimeServer:
         self.regex_collections = self.application.regex_collections
         self.projects = self.application.projects
         self.active_graphs = self.application.active_graphs
+        self.default_collaboration_suite = self.application.default_collaboration_suite
         self._bootstrap_legacy_studio_library()
+        if self.default_collaboration_suite is not None:
+            self.default_collaboration_suite.install_once()
         self.project_runtimes = None
         if self.projects is not None:
             self.project_runtimes = ProjectRuntimeStore(
@@ -1053,7 +1057,13 @@ class SessionRuntimeServer:
             regex_collection_store=self.regex_collections,
             provider_profile_store=self.provider_profiles,
         )
-        runner = ProviderNodeRunner(self._provider_for_studio_graph_node)
+        executor_kind = os.environ.get("AIRP_AGENT_EXECUTOR", "pi").strip().casefold()
+        if executor_kind == "provider":
+            runner = ProviderNodeRunner(self._provider_for_studio_graph_node)
+        elif executor_kind == "pi":
+            runner = PiCoreNodeRunner(self._pi_execution_config_for_studio_graph_node)
+        else:
+            raise ValueError("AIRP_AGENT_EXECUTOR must be pi or provider")
         self.runtime.configure_execution_graph(
             compiler,
             GraphRuntime(runner),
@@ -1070,6 +1080,15 @@ class SessionRuntimeServer:
             raise ValueError("Agent Definition requires a Provider Profile")
         model_id = node.model_id or node.agent.model_id
         return self.provider_profiles.execution_adapter(profile_id, model_id or "")
+
+    def _pi_execution_config_for_studio_graph_node(self, node):
+        if self.provider_profiles is None:
+            raise ValueError("Studio Provider Profiles are unavailable")
+        profile_id = node.agent.provider_profile_id
+        if not profile_id:
+            raise ValueError("Agent Definition requires a Provider Profile")
+        model_id = node.model_id or node.agent.model_id
+        return self.provider_profiles.sidecar_execution_config(profile_id, model_id or "")
 
     @staticmethod
     def _studio_worldbook_error(exc: WorldbookLibraryError) -> tuple[dict[str, Any], int]:
@@ -1143,11 +1162,13 @@ class SessionRuntimeServer:
     def _studio_project_error(exc: ProjectLibraryError) -> tuple[dict[str, Any], int]:
         return exc.to_dict(), exc.status
 
-    def _studio_project_action(self, action, *, status=200, key="project"):
+    def _studio_project_action(self, action, *, status=200, key="project", initialize=False):
         if self.projects is None:
             return {"ok": False, "error": "studio_library_unavailable"}, 501
         try:
             project = action()
+            if initialize and isinstance(project, dict) and self.default_collaboration_suite is not None:
+                self.default_collaboration_suite.initialize_project(project["id"])
             if key == "project" and isinstance(project, dict) and self.project_runtimes is not None:
                 self.project_runtimes.refresh(project)
             self._configure_runtime_studio_graph()
@@ -1162,6 +1183,8 @@ class SessionRuntimeServer:
             return {"ok": False, "error": "studio_library_unavailable"}, 501
         try:
             project, diagnostics = self.projects.import_card_report(body)
+            if self.default_collaboration_suite is not None:
+                self.default_collaboration_suite.initialize_project(project["id"])
             if self.project_runtimes is not None:
                 self.project_runtimes.refresh(project)
             self._bind_project_runtime_if_active(project)
@@ -1693,7 +1716,7 @@ class SessionRuntimeServer:
                     return
                 if path in STUDIO_PROJECT_PATHS:
                     payload, status = server_ref._studio_project_action(
-                        lambda: server_ref.projects.create_project(body), status=201
+                        lambda: server_ref.projects.create_project(body), status=201, initialize=True
                     )
                     self._send_json(status, payload)
                     return
@@ -1718,7 +1741,7 @@ class SessionRuntimeServer:
                         parts = path[len(prefix) + 1:].split("/")
                         if len(parts) == 2 and parts[1] in {"copy", "duplicate"}:
                             payload, status = server_ref._studio_project_action(
-                                lambda: server_ref.projects.copy_project(parts[0], body), status=201
+                                lambda: server_ref.projects.copy_project(parts[0], body), status=201, initialize=True
                             )
                             self._send_json(status, payload)
                             return

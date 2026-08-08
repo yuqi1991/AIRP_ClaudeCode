@@ -44,3 +44,5 @@ src/airp/web/studio/
 !docs/**/*.md
 !package.json
 !package-lock.json
+!scripts/
+!scripts/build_pi_sidecar.mjs

@@ -23,6 +23,7 @@ class Application:
     regex_collections: Any = None
     projects: Any = None
     active_graphs: Any = None
+    default_collaboration_suite: Any = None
 
     @classmethod
     def assemble(
@@ -53,6 +54,7 @@ class Application:
         from airp.engine.worldbook_library import WorldbookLibrary
         from airp.engine.project_library import ProjectLibrary
         from airp.host.rp.tools import TOOL_SCHEMAS
+        from airp.default_collaboration_suite import DefaultCollaborationSuite
 
         root = Path(static_root).resolve()
         data_workspace = None
@@ -101,6 +103,20 @@ class Application:
         )
         projects = ProjectLibrary(root, worldbooks=worldbooks, workspace=data_workspace)
         active_graphs = ActiveGraphSelectionStore(data_workspace)
+        default_collaboration_suite = (
+            DefaultCollaborationSuite(
+                workspace=data_workspace,
+                provider_store=provider_store,
+                secret_store=secret_store,
+                regex_collections=regex_collections,
+                agent_store=agent_store,
+                graph_store=graph_store,
+                projects=projects,
+                active_graphs=active_graphs,
+            )
+            if data_workspace is not None
+            else None
+        )
         return cls(
             workspace=data_workspace,
             provider_profile_store=provider_store,
@@ -114,4 +130,5 @@ class Application:
             regex_collections=regex_collections,
             projects=projects,
             active_graphs=active_graphs,
+            default_collaboration_suite=default_collaboration_suite,
         )

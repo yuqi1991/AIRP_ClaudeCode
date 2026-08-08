@@ -7,12 +7,12 @@ boundary consumed by Graph Runtime.
 
 from __future__ import annotations
 
-import json
 from collections.abc import Iterable, Mapping
 from typing import Any, Callable
 
 from airp.engine.graph_runtime import AgentArtifact, GraphNodePlan, NodeExecutionContext, NodeResult
 from airp.engine.macros import build_context, expand_template
+from airp.engine.runner_support import notify, parameters_for, serialize_content, tools_for
 from airp.engine.provider import (
     AbortSignal,
     ProviderAborted,
@@ -82,6 +82,7 @@ class ProviderNodeRunner:
                     metadata=input_artifact.metadata,
                 )
             runtime_context = build_context(
+                execution_context.macro_context if execution_context is not None else None,
                 {
                     "handoff": input_content,
                     "node_input": input_content,
@@ -209,7 +210,7 @@ class ProviderNodeRunner:
             if isinstance(item, ProviderDelta):
                 if item.text:
                     text_parts.append(item.text)
-                    ProviderNodeRunner._notify(observer, "node_delta", node, item.text)
+                    notify(observer, "node_delta", node, item.text)
                 if item.tool_call:
                     tool_calls.append(
                         {
@@ -224,12 +225,7 @@ class ProviderNodeRunner:
 
     @staticmethod
     def _notify(observer, method, *args):
-        callback = getattr(observer, method, None) if observer is not None else None
-        if callable(callback):
-            try:
-                callback(*args)
-            except Exception:
-                return
+        notify(observer, method, *args)
 
     @classmethod
     def _notify_model_call_failed(cls, observer, node, call_ordinal, request, error):
@@ -248,13 +244,7 @@ class ProviderNodeRunner:
         node: GraphNodePlan,
         execution_context: NodeExecutionContext | None = None,
     ) -> list[dict[str, Any]]:
-        registry = execution_context.tool_registry if execution_context is not None else None
-        if registry is not None and callable(getattr(registry, "schemas", None)):
-            return [dict(tool) for tool in registry.schemas(node.tool_allowlist)]
-        tools = node.agent.effective_config.get("tools") if isinstance(node.agent.effective_config, dict) else None
-        if isinstance(tools, list):
-            return [dict(tool) for tool in tools if isinstance(tool, dict)]
-        return [{"name": name} for name in node.agent.tool_allowlist]
+        return tools_for(node, execution_context)
 
     @staticmethod
     def _parameters(node: GraphNodePlan) -> dict[str, Any]:
@@ -265,11 +255,7 @@ class ProviderNodeRunner:
         merge here makes the provider request inspectable without coupling the
         provider module to Agent Definition storage.
         """
-        parameters: dict[str, Any] = {}
-        for source in (node.agent.generation, node.agent.advanced):
-            if isinstance(source, Mapping):
-                parameters.update(source)
-        return parameters
+        return parameters_for(node)
 
     def _resolve_regex_transformer(self, node: GraphNodePlan) -> RegexTransformer | None:
         """Resolve an optional frozen Agent collection without owning persistence.
@@ -321,12 +307,11 @@ class ProviderNodeRunner:
                 args,
                 allowed=current_node.tool_allowlist,
             )
-        if self.tool_handler is None:
+        tool_handler = self.tool_handler
+        if tool_handler is None:
             return None
-        return lambda _node, name, args: self.tool_handler(name, args)
+        return lambda _node, name, args: tool_handler(name, args)
 
     @staticmethod
     def _content(value: Any) -> str:
-        if isinstance(value, str):
-            return value
-        return json.dumps(value, ensure_ascii=False, sort_keys=True)
+        return serialize_content(value)

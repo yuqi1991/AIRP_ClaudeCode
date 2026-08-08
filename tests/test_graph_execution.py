@@ -32,6 +32,7 @@ from airp.engine.provider import (  # noqa: E402
     ProviderDelta,
     ProviderResult,
 )
+from airp.host.rp.commands import SessionCommandService  # noqa: E402
 from airp.host.rp.session_runtime import SessionTurnRuntime  # noqa: E402
 from airp.server import SessionRuntimeServer  # noqa: E402
 
@@ -106,6 +107,47 @@ def test_graph_store_rejects_output_that_is_not_final_enabled_node(tmp_path):
         )
 
 
+def test_graph_store_persists_handoff_prompts_and_fixed_loop(tmp_path):
+    store = GraphDefinitionStore(tmp_path)
+    graph = store.create_graph(
+        {
+            "id": "handoff-writing",
+            "name": "Handoff writing",
+            "mode": "handoff",
+            "nodes": [
+                {"node_id": "entry", "agent_id": "writer", "handoff_prompt": "Draft the scene."},
+                {"node_id": "review", "agent_id": "writer", "handoff_prompt": "Revise the draft."},
+                {"node_id": "rewrite", "agent_id": "writer", "handoff_prompt": "Review the revision."},
+                {"node_id": "final", "agent_id": "writer"},
+            ],
+            "loops": [
+                {
+                    "id": "review-loop",
+                    "mode": "fixed",
+                    "start_node_id": "review",
+                    "end_node_id": "rewrite",
+                    "iterations": 2,
+                    "exit_handoff_prompt": "Prepare the final text.",
+                }
+            ],
+            "output_node_id": "final",
+        }
+    )
+
+    assert graph["mode"] == "handoff"
+    assert graph["nodes"][0]["handoff_prompt"] == "Draft the scene."
+    assert graph["loops"] == [
+        {
+            "id": "review-loop",
+            "mode": "fixed",
+            "start_node_id": "review",
+            "end_node_id": "rewrite",
+            "iterations": 2,
+            "exit_handoff_prompt": "Prepare the final text.",
+        }
+    ]
+
+
 class _Runner:
     def __init__(self, outputs):
         self.outputs = list(outputs)
@@ -173,6 +215,185 @@ def test_graph_runtime_hands_artifacts_in_order_and_returns_output_artifact():
     assert result.status == "succeeded"
     assert result.output_artifact.content == "final"
     assert runner.calls == [("first", "hello"), ("second", "draft")]
+
+
+def test_handoff_graph_expands_fixed_loop_and_renders_handoff_macros():
+    graph = {
+        "id": "handoff-writing",
+        "mode": "handoff",
+        "nodes": [
+            {"node_id": "entry", "agent_id": "entry", "handoff_prompt": "Draft for {{card_facts.name}}."},
+            {"node_id": "review", "agent_id": "review", "handoff_prompt": "Revise the draft."},
+            {"node_id": "rewrite", "agent_id": "writer", "handoff_prompt": "Review the revision."},
+            {"node_id": "final", "agent_id": "entry"},
+        ],
+        "loops": [
+            {
+                "id": "review-loop",
+                "mode": "fixed",
+                "start_node_id": "review",
+                "end_node_id": "rewrite",
+                "iterations": 2,
+                "exit_handoff_prompt": "Finalize for {{card_facts.name}}.",
+            }
+        ],
+        "output_node_id": "final",
+    }
+    plan = ExecutionPlanCompiler().compile(
+        project={"id": "project"},
+        graph=graph,
+        agents={agent_id: _agent(agent_id) for agent_id in ("entry", "review", "writer")},
+        worldbooks=[],
+        player_input="begin",
+        context={"card_facts": {"name": "Keqing"}},
+    )
+    runner = _Runner(
+        [
+            NodeResult.succeeded(AgentArtifact.text("draft")),
+            NodeResult.succeeded(AgentArtifact.text("review one")),
+            NodeResult.succeeded(AgentArtifact.text("rewrite one")),
+            NodeResult.succeeded(AgentArtifact.text("review two")),
+            NodeResult.succeeded(AgentArtifact.text("rewrite two")),
+            NodeResult.succeeded(AgentArtifact.text("final prose")),
+        ]
+    )
+
+    result = GraphRuntime(runner).run(
+        plan,
+        execution_context=NodeExecutionContext(macro_context={"card_facts": {"name": "Keqing"}}),
+    )
+
+    assert [node.node_id for node in plan.graph.nodes] == [
+        "entry",
+        "review.loop1",
+        "rewrite.loop1",
+        "review.loop2",
+        "rewrite.loop2",
+        "final",
+    ]
+    assert runner.calls == [
+        ("entry", "begin"),
+        ("review.loop1", "Draft for Keqing.\n\ndraft"),
+        ("rewrite.loop1", "Revise the draft.\n\nreview one"),
+        ("review.loop2", "Review the revision.\n\nrewrite one"),
+        ("rewrite.loop2", "Revise the draft.\n\nreview two"),
+        ("final", "Finalize for Keqing.\n\nrewrite two"),
+    ]
+    assert result.output_artifact.content == "final prose"
+
+
+def test_handoff_loop_rejects_generated_run_node_id_that_conflicts_with_source_node():
+    graph = {
+        "id": "conflicting-loop-identity",
+        "mode": "handoff",
+        "nodes": [
+            {"node_id": "draft", "agent_id": "writer"},
+            {"node_id": "review", "agent_id": "writer"},
+            {"node_id": "review.loop1", "agent_id": "writer"},
+            {"node_id": "final", "agent_id": "writer"},
+        ],
+        "loops": [
+            {
+                "id": "revision-loop",
+                "start_node_id": "draft",
+                "end_node_id": "review",
+                "iterations": 2,
+            }
+        ],
+        "output_node_id": "final",
+    }
+
+    with pytest.raises(ValueError, match="generated node id.*review\\.loop1.*conflicts"):
+        ExecutionPlanCompiler().compile(
+            project={"id": "project"},
+            graph=graph,
+            agents={"writer": _agent("writer")},
+            player_input="begin",
+        )
+
+
+def test_handoff_loop_without_an_exit_override_keeps_the_node_prompt():
+    plan = ExecutionPlanCompiler().compile(
+        project={"id": "project"},
+        graph={
+            "id": "handoff-writing",
+            "mode": "handoff",
+            "nodes": [
+                {"node_id": "draft", "agent_id": "writer", "handoff_prompt": "Review this draft."},
+                {"node_id": "review", "agent_id": "review", "handoff_prompt": "Rewrite this review."},
+                {"node_id": "final", "agent_id": "writer"},
+            ],
+            "loops": [
+                {
+                    "id": "revision-loop",
+                    "start_node_id": "draft",
+                    "end_node_id": "review",
+                    "iterations": 2,
+                }
+            ],
+            "output_node_id": "final",
+        },
+        agents={"writer": _agent("writer"), "review": _agent("review")},
+        worldbooks=[],
+        player_input="begin",
+    )
+    runner = _Runner(
+        [
+            NodeResult.succeeded(AgentArtifact.text("draft one")),
+            NodeResult.succeeded(AgentArtifact.text("review one")),
+            NodeResult.succeeded(AgentArtifact.text("draft two")),
+            NodeResult.succeeded(AgentArtifact.text("review two")),
+            NodeResult.succeeded(AgentArtifact.text("final")),
+        ]
+    )
+
+    GraphRuntime(runner).run(plan)
+
+    assert runner.calls[-1] == ("final", "Rewrite this review.\n\nreview two")
+
+
+def test_handoff_uses_output_after_the_source_agent_regex_transform():
+    source = {
+        **_agent("source"),
+        "regex_collection": {
+            "id": "unwrap",
+            "name": "Unwrap",
+            "rules": [
+                {
+                    "id": "content",
+                    "name": "Content",
+                    "target": "output",
+                    "pattern": "^<content>([\\s\\S]*)</content>$",
+                    "flags": "",
+                    "replacement": "$1",
+                }
+            ],
+        },
+    }
+    plan = ExecutionPlanCompiler().compile(
+        project={"id": "project"},
+        graph={
+            "id": "regex-handoff",
+            "mode": "handoff",
+            "nodes": [
+                {"node_id": "source", "agent_id": "source", "handoff_prompt": "Use this cleaned draft."},
+                {"node_id": "final", "agent_id": "final"},
+            ],
+            "output_node_id": "final",
+        },
+        agents={"source": source, "final": _agent("final")},
+        worldbooks=[],
+        player_input="begin",
+    )
+    source_provider = FakeProvider([{"type": "text", "text": "<content>clean draft</content>"}, {"type": "final"}])
+    final_provider = FakeProvider([{"type": "text", "text": "final prose"}, {"type": "final"}])
+
+    result = GraphRuntime(
+        ProviderNodeRunner(lambda node: source_provider if node.node_id == "source" else final_provider)
+    ).run(plan)
+
+    assert result.ok
+    assert final_provider.requests[0].messages[-1]["content"] == "Use this cleaned draft.\n\nclean draft"
 
 
 def test_graph_runtime_fails_fast_and_does_not_run_following_nodes():
@@ -544,6 +765,15 @@ class _CommitRunner:
         )
 
 
+class _HandoffTraceRunner:
+    def run(self, node, input_artifact):
+        if node.node_id == "draft-node":
+            assert input_artifact.content == "Enter"
+            return NodeResult.succeeded(AgentArtifact.text("draft artifact"))
+        assert input_artifact.content == "Review this draft.\n\ndraft artifact"
+        return NodeResult.succeeded(AgentArtifact.text("<content>final artifact</content>"))
+
+
 class _FailingCommitRunner:
     def __init__(self):
         self.calls = []
@@ -566,6 +796,19 @@ class _RetryRunner:
         return NodeResult.succeeded(
             AgentArtifact.text("<content>retry output</content><summary>retried</summary>")
         )
+
+
+class _RetryWhileClosingRunner(_RetryRunner):
+    def __init__(self):
+        super().__init__()
+        self.failed_run_closing = threading.Event()
+        self.release_failed_run = threading.Event()
+
+    def close_execution(self, execution_id):
+        del execution_id
+        if len(self.calls) == 1:
+            self.failed_run_closing.set()
+            assert self.release_failed_run.wait(timeout=5)
 
 
 class _ReplayRunner:
@@ -597,6 +840,21 @@ class _RetentionRunner:
                 f"<content>retention output {self.count}</content><summary>done</summary>"
             )
         )
+
+
+class _AbortAwareRunner:
+    def __init__(self):
+        self.started = threading.Event()
+
+    def run(self, node, input_artifact, execution_context=None):
+        del node, input_artifact
+        self.started.set()
+        signal = execution_context.abort_signal
+        deadline = time.monotonic() + 5
+        while not signal.cancelled and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert signal.cancelled
+        return NodeResult.failed({"code": "aborted", "message": "aborted", "retryable": False})
 
 
 class _BlockingGraphRunner:
@@ -648,6 +906,56 @@ def test_graph_output_artifact_uses_existing_runtime_draft_commit_path(tmp_path)
     assert result.commit_id
     log = json.loads((card / "chat_log.json").read_text(encoding="utf-8"))
     assert "final artifact" in log[0]["ai"]
+
+
+def test_handoff_trace_persists_the_exact_delivered_artifact(tmp_path):
+    styles = tmp_path / "styles"
+    styles.mkdir()
+    card = tmp_path / "card"
+    (card / "memory").mkdir(parents=True)
+    (card / ".initvar.json").write_text("{}", encoding="utf-8")
+    (card / "chat_log.json").write_text("[]", encoding="utf-8")
+    (card / ".card_data.json").write_text('{"name":"Test"}', encoding="utf-8")
+    compiler = ExecutionPlanCompiler(
+        project_store=_MemoryStore({"project": {"id": "project", "worldbook_ids": []}}),
+        graph_store=_MemoryStore(
+            {
+                "writing": {
+                    "id": "writing",
+                    "mode": "handoff",
+                    "nodes": [
+                        {
+                            "node_id": "draft-node",
+                            "agent_id": "writer",
+                            "handoff_prompt": "Review this draft.",
+                        },
+                        {"node_id": "final-node", "agent_id": "reviewer"},
+                    ],
+                    "output_node_id": "final-node",
+                }
+            }
+        ),
+        agent_store=_MemoryStore({"writer": _agent("writer"), "reviewer": _agent("reviewer")}),
+    )
+    runtime = SessionTurnRuntime(
+        database_path=tmp_path / "runtime.sqlite3",
+        card_folder=card,
+        projection_root=styles,
+        execution_plan_compiler=compiler,
+        graph_runtime=GraphRuntime(_HandoffTraceRunner()),
+        project_id="project",
+        execution_graph_id="writing",
+        bootstrap_legacy_history=False,
+    )
+
+    result = runtime.submit("Enter", "handoff-trace")
+
+    run = runtime.graph_run_detail(runtime.graph_run_id_for_task(result.task_id))
+    handoff = run["nodes"][0]["handoff_artifact"]
+    assert result.status == "succeeded"
+    assert handoff["kind"] == "handoff"
+    assert handoff["content"] == "Review this draft.\n\ndraft artifact"
+    assert any(event.type == "graph.node.handoff" for event in runtime.events_after(0))
 
 
 def test_graph_provider_calls_persist_aggregate_usage_latency_and_cost(tmp_path):
@@ -857,6 +1165,56 @@ def test_graph_retry_recompiles_current_definitions_and_links_failed_run(tmp_pat
     assert runner.calls == [("writer-node", "Enter"), ("writer-node", "Enter")]
 
 
+def test_graph_retry_queues_while_failed_run_still_holds_generation_lease(tmp_path):
+    styles = tmp_path / "styles"
+    styles.mkdir()
+    card = tmp_path / "card"
+    (card / "memory").mkdir(parents=True)
+    (card / ".initvar.json").write_text("{}", encoding="utf-8")
+    (card / "chat_log.json").write_text("[]", encoding="utf-8")
+    (card / ".card_data.json").write_text("{\"name\":\"Test\"}", encoding="utf-8")
+    compiler = ExecutionPlanCompiler(
+        project_store=_MemoryStore({"project": {"id": "project", "worldbook_ids": []}}),
+        graph_store=_MemoryStore(
+            {
+                "writing": {
+                    "id": "writing",
+                    "nodes": [{"node_id": "writer-node", "agent_id": "writer"}],
+                    "output_node_id": "writer-node",
+                }
+            }
+        ),
+        agent_store=_MemoryStore({"writer": _agent("writer")}),
+    )
+    runner = _RetryWhileClosingRunner()
+    runtime = SessionTurnRuntime(
+        database_path=tmp_path / "runtime.sqlite3",
+        card_folder=card,
+        projection_root=styles,
+        execution_plan_compiler=compiler,
+        graph_runtime=GraphRuntime(runner),
+        project_id="project",
+        execution_graph_id="writing",
+        bootstrap_legacy_history=False,
+    )
+    worker = threading.Thread(target=runtime.submit, args=("Enter", "graph-failure"))
+    worker.start()
+    assert runner.failed_run_closing.wait(timeout=3)
+    failed_run = runtime.graph_runs_snapshot()["most_recent"]
+
+    retried = SessionCommandService(runtime).retry_graph_run(
+        failed_run["graph_run_id"], "graph-retry-while-closing"
+    )
+
+    assert retried.ok
+    assert retried.task_id
+    assert retried.status == "queued"
+    runner.release_failed_run.set()
+    worker.join(timeout=5)
+    assert not worker.is_alive()
+    assert runtime.task(retried.task_id).status == "succeeded"
+
+
 def test_debug_replay_runs_one_node_with_current_agent_and_frozen_input(tmp_path):
     styles = tmp_path / "styles"
     styles.mkdir()
@@ -996,6 +1354,57 @@ def test_graph_trace_survives_restart_and_prunes_older_terminal_runs(tmp_path):
     assert restarted.graph_run_detail(third_id)["status"] == "succeeded"
     assert restarted.graph_run_detail(second_id) is None
     assert restarted.graph_run_detail(first_id) is None
+
+
+def test_stop_active_graph_with_aborted_node_finishes_task_as_cancelled(tmp_path):
+    styles = tmp_path / "styles"
+    styles.mkdir()
+    card = tmp_path / "card"
+    (card / "memory").mkdir(parents=True)
+    (card / ".initvar.json").write_text("{}", encoding="utf-8")
+    (card / "chat_log.json").write_text("[]", encoding="utf-8")
+    (card / ".card_data.json").write_text("{\"name\":\"Test\"}", encoding="utf-8")
+    compiler = ExecutionPlanCompiler(
+        project_store=_MemoryStore({"project": {"id": "project", "worldbook_ids": []}}),
+        graph_store=_MemoryStore(
+            {
+                "writing": {
+                    "id": "writing",
+                    "nodes": [{"node_id": "writer-node", "agent_id": "writer"}],
+                    "output_node_id": "writer-node",
+                }
+            }
+        ),
+        agent_store=_MemoryStore({"writer": _agent("writer")}),
+    )
+    runner = _AbortAwareRunner()
+    runtime = SessionTurnRuntime(
+        database_path=tmp_path / "runtime.sqlite3",
+        card_folder=card,
+        projection_root=styles,
+        execution_plan_compiler=compiler,
+        graph_runtime=GraphRuntime(runner),
+        project_id="project",
+        execution_graph_id="writing",
+        bootstrap_legacy_history=False,
+    )
+    worker = threading.Thread(target=runtime.submit, args=("Enter", "cancel-active"))
+    worker.start()
+    assert runner.started.wait(timeout=3)
+    task_id = runtime.task_id_for_key("cancel-active")
+
+    assert runtime.stop(task_id) is True
+
+    worker.join(timeout=5)
+    assert not worker.is_alive()
+    assert runtime.task(task_id).status == "cancelled"
+    cancelled_run = runtime.graph_runs_snapshot()["most_recent"]
+    assert cancelled_run["status"] == "cancelled"
+    assert cancelled_run["failed_node_id"] == "writer-node"
+    event_types = [event.type for event in runtime.events_after(0)]
+    assert "graph.run.cancelled" in event_types
+    assert "task.cancelled" in event_types
+    assert runtime.active_revision() == 0
 
 
 def test_restart_marks_in_flight_graph_run_interrupted(tmp_path):
@@ -1244,6 +1653,7 @@ def test_studio_http_exposes_graph_retry_and_isolated_node_replay(tmp_path):
             {"idempotency_key": "http-graph-retry"},
         )
         assert status in {200, 202}
+        assert retry["task_id"]
         latest = _wait_for_http_json(
             f"{server.base_url}/v1/studio/graph-runs",
             lambda payload: (payload.get("most_recent") or {}).get("status") == "succeeded",
