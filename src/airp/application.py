@@ -24,6 +24,28 @@ class Application:
     projects: Any = None
     active_graphs: Any = None
     default_collaboration_suite: Any = None
+    startup: Any = None
+
+    def initialize(self) -> dict[str, Any]:
+        """Run application-owned startup work and return a public safe report."""
+        result = (
+            self.default_collaboration_suite.install_once()
+            if self.default_collaboration_suite is not None
+            else {}
+        )
+        allowed = {"code", "boundary", "message", "action", "project_id"}
+        diagnostics = [
+            {key: value for key, value in diagnostic.items() if key in allowed}
+            for diagnostic in result.get("diagnostics", [])
+            if isinstance(diagnostic, dict)
+        ]
+        self.startup = {
+            "ok": True,
+            "status": "degraded" if result.get("status") == "degraded" else "success",
+            "diagnostics": diagnostics,
+        }
+        return self.startup
+
 
     @classmethod
     def assemble(

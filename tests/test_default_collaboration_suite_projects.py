@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
+
+import pytest
 
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from airp.application import Application  # noqa: E402
+from airp.default_collaboration_suite import DefaultCollaborationSuiteError  # noqa: E402
 from airp.workspace import Workspace  # noqa: E402
 
 
@@ -45,3 +49,25 @@ def test_initialize_project_preserves_an_existing_choice_and_never_reactivates(t
     application.active_graphs.clear("configured")
     assert application.default_collaboration_suite.initialize_project("configured") is False
     assert application.active_graphs.graph_id_for("configured") is None
+
+
+def test_initialize_project_reverts_selection_when_initialization_ledger_write_fails(
+    tmp_path, monkeypatch
+):
+    application, _ = _installed_application(tmp_path)
+    application.projects.create_project({"id": "ledger-failure", "name": "Ledger failure"})
+    real_replace = os.replace
+
+    def fail_ledger_replace(source, destination):
+        if Path(destination).name == "initialized_projects.json":
+            raise OSError("Authorization: secret-value")
+        return real_replace(source, destination)
+
+    monkeypatch.setattr(os, "replace", fail_ledger_replace)
+
+    with pytest.raises(DefaultCollaborationSuiteError) as error:
+        application.default_collaboration_suite.initialize_project("ledger-failure")
+
+    assert error.value.code == "default_collaboration_suite_project_activation_failed"
+    assert "secret-value" not in str(error.value)
+    assert application.active_graphs.graph_id_for("ledger-failure") is None

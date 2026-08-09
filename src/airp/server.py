@@ -202,8 +202,7 @@ class SessionRuntimeServer:
         self.active_graphs = self.application.active_graphs
         self.default_collaboration_suite = self.application.default_collaboration_suite
         self._bootstrap_legacy_studio_library()
-        if self.default_collaboration_suite is not None:
-            self.default_collaboration_suite.install_once()
+        self.startup = self.application.initialize()
         self.project_runtimes = None
         if self.projects is not None:
             self.project_runtimes = ProjectRuntimeStore(
@@ -1314,6 +1313,10 @@ class SessionRuntimeServer:
                 if not server_ref._guard_request(self, path):
                     return
                 query = parse_qs(parsed.query)
+
+                if path == "/v1/studio/startup":
+                    self._send_json(200, server_ref.startup)
+                    return
 
                 for prefix in STUDIO_DEBUG_REPLAY_PATHS:
                     if path.startswith(prefix + "/"):

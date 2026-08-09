@@ -316,3 +316,14 @@ AIRP 继续使用 skill-mode 世界书：catalog 展示条目的 `title + usage`
 - 系统 keyring 集成。
 
 这些约束让第一阶段先交付一个功能完整、边界清晰且真正可调试的 Agent 创作环境，同时保留未来扩展 DAG、凭证存储和运行历史的接口空间。
+
+
+## 默认协作套件安装边界
+
+`DefaultCollaborationSuite.install_once()` 是 Workspace 级的一次性本地事务。它在跨进程安装锁内冻结 package recipe、Provider 复用决定、所有实际 Library ID、Graph 引用和既有 Project activation 状态，并在创建任何 Library 对象前原子写入 pending journal。新建对象按 Provider、Regex Collection、Writer、Reviewer、Graph 的依赖顺序创建；普通失败按逆序验证并补偿。本次复用的 Provider 与既有 Secret 不属于补偿目标。
+
+pending journal 与 versioned receipt 通过 transaction ID、冻结计划 digest 和实际对象 ID 绑定。进程在对象原子落盘后中断时，重启只会补偿 revision 仍为 1 且与冻结 payload 匹配的 reserved ID；未知对象变化、损坏 metadata 或补偿失败会阻止启动。receipt 在既有 Project activation 尝试完成后写入；receipt 已写但 journal 尚未清理时，仅匹配的事务可 roll forward。#27 已产生的五 ID legacy receipt 继续作为明确的兼容 schema 读取。
+
+complete receipt 消费首次赠送意图。之后安装不比较、修复、覆盖或复活 Provider、Regex、Agent、Graph，也不重新激活 Project；用户编辑、改名、重绑或删除均保持权威。
+
+`Application.initialize()` 把可补偿的普通安装失败归一为 `success` 或 `degraded` startup report，Server 通过只读 `GET /v1/studio/startup` 暴露固定白名单诊断。诊断不包含底层异常文本、Authorization、API key 或 Secret。损坏 metadata、未知恢复冲突、Active Graph 不安全状态与补偿失败继续抛出 typed fatal error，并在 Server bind 前阻止启动。

@@ -48,6 +48,9 @@ def test_server_exposes_the_complete_keyless_suite_through_ordinary_studio_crud(
         static_root=styles,
         workspace=tmp_path / "workspace",
     ) as server:
+        status, startup = _json_request("GET", f"{server.base_url}/v1/studio/startup")
+        assert status == 200
+        assert startup == {"ok": True, "status": "success", "diagnostics": []}
         endpoints = {
             "providers": ("profiles", "default-deepseek", "profile"),
             "agents": ("agents", "default-writer", "agent"),

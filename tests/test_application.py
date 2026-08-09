@@ -42,3 +42,18 @@ def test_application_assembly_preserves_workspace_without_static_root(tmp_path):
 
     assert application.workspace == workspace
     assert workspace.runtime_root.is_dir()
+
+
+def test_application_initialize_returns_only_the_public_startup_report(tmp_path):
+    static_root = tmp_path / "web"
+    static_root.mkdir()
+    application = Application.assemble(
+        static_root=static_root,
+        workspace=Workspace.from_root(tmp_path / "workspace"),
+    )
+
+    report = application.initialize()
+
+    assert report == {"ok": True, "status": "success", "diagnostics": []}
+    assert application.startup == report
+    assert "provider_profile_id" not in report
