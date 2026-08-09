@@ -785,6 +785,18 @@ class SessionTurnRuntime:
                 "SELECT * FROM node_runs WHERE graph_run_id = ? AND session_id = ? ORDER BY order_index",
                 (graph_run_id, self.session_id),
             ).fetchall()
+        plan = _load_trace_json(graph["plan_json"], {})
+        plan_nodes = {
+            item.get("node_id"): item
+            for item in (plan.get("graph", {}).get("nodes", []) if isinstance(plan, dict) else [])
+            if isinstance(item, dict) and isinstance(item.get("node_id"), str)
+        }
+        node_payloads = [self._node_run_payload(row) for row in nodes]
+        for node in node_payloads:
+            planned = plan_nodes.get(node["node_id"], {})
+            node["source_node_id"] = planned.get("source_node_id", node["node_id"])
+            node["loop_id"] = planned.get("loop_id")
+            node["loop_iteration"] = planned.get("loop_iteration")
         payload = {
             "graph_run_id": graph["id"],
             "run_id": graph["id"],
@@ -796,13 +808,13 @@ class SessionTurnRuntime:
             "status": graph["status"],
             "state": graph["status"],
             "player_input": graph["player_input"],
-            "plan": _load_trace_json(graph["plan_json"], {}),
+            "plan": plan,
             "failed_node_id": graph["failed_node_id"],
             "error": _load_trace_json(graph["error_json"], None),
             "created_at": graph["created_at"],
             "started_at": graph["started_at"],
             "finished_at": graph["finished_at"],
-            "nodes": [self._node_run_payload(row) for row in nodes],
+            "nodes": node_payloads,
         }
         return _redact_trace(payload)
 
