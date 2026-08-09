@@ -15,6 +15,7 @@ import tempfile
 import threading
 import time
 import uuid
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -56,6 +57,22 @@ class ProjectLibraryError(ValueError):
         return payload
 
 
+@dataclass
+class ProjectImportTransaction:
+    _library: "ProjectLibrary"
+    _owner: object
+    project: dict[str, Any]
+    diagnostics: dict[str, Any]
+    _created_worldbook_ids: tuple[str, ...]
+    _finalized: bool = False
+
+    def commit(self) -> None:
+        self._library._commit_card_import(self)
+
+    def rollback(self) -> None:
+        self._library._rollback_card_import(self)
+
+
 class ProjectLibrary:
     """File-backed CRUD for normalized AIRP Project definitions."""
 
@@ -76,6 +93,7 @@ class ProjectLibrary:
         )
         self.worldbooks = worldbooks or WorldbookLibrary(self.static_root, workspace=workspace)
         self._lock = threading.RLock()
+        self._import_owner = object()
 
     def list_projects(self) -> list[dict[str, Any]]:
         with self._lock:
@@ -172,6 +190,21 @@ class ProjectLibrary:
                 )
             path.unlink()
 
+    def restore_project(self, project: dict[str, Any]) -> None:
+        """Restore an exact definition removed by a failed cross-store delete."""
+        self._require_object(project, "Project")
+        project_id = project.get("id")
+        self._validate_id(project_id)
+        path = self._path_for(project_id)
+        with self._lock:
+            if path.exists():
+                raise ProjectLibraryError(
+                    "project_restore_conflict",
+                    f"Project {project_id!r} was replaced during delete compensation",
+                    status=409,
+                )
+            self._write_project(path, copy.deepcopy(project))
+
     def copy_project(self, project_id: str, payload: Any = None) -> dict[str, Any]:
         if payload is not None and not isinstance(payload, dict):
             raise ProjectLibraryError("invalid_project", "copy payload must be an object")
@@ -203,11 +236,18 @@ class ProjectLibrary:
             return copy.deepcopy(copied)
 
     def import_card(self, payload: Any) -> dict[str, Any]:
-        project, _ = self.import_card_report(payload)
-        return project
+        transaction = self.begin_card_import(payload)
+        transaction.commit()
+        return transaction.project
 
     def import_card_report(self, payload: Any) -> tuple[dict[str, Any], dict[str, Any]]:
         """Import a card and return the normalized Project plus diagnostics."""
+        transaction = self.begin_card_import(payload)
+        transaction.commit()
+        return transaction.project, transaction.diagnostics
+
+    def begin_card_import(self, payload: Any) -> ProjectImportTransaction:
+        """Import a card and return ownership of its rollback capability."""
         self._require_object(payload, "Project import")
         document = payload.get("document", payload.get("card_data", payload.get("data")))
         if not isinstance(document, dict):
@@ -290,7 +330,50 @@ class ProjectLibrary:
                 destination_path="project.worldbook_ids",
             )
         diagnostics["project"]["name"] = project.get("name")
-        return project, diagnostics
+        return ProjectImportTransaction(
+            self,
+            self._import_owner,
+            project,
+            diagnostics,
+            ((imported_worldbook["id"],) if imported_worldbook is not None else ()),
+        )
+
+    def _commit_card_import(self, transaction: ProjectImportTransaction) -> None:
+        self._validate_card_import(transaction)
+        transaction._finalized = True
+
+    def _rollback_card_import(self, transaction: ProjectImportTransaction) -> None:
+        self._validate_card_import(transaction)
+        with self._lock:
+            try:
+                current = self.get_project(transaction.project["id"])
+            except ProjectLibraryError as exc:
+                if exc.code != "project_not_found":
+                    raise
+            else:
+                if current.get("instance_id") != transaction.project.get("instance_id"):
+                    raise ProjectLibraryError(
+                        "project_import_rollback_conflict",
+                        "Imported Project was replaced before rollback",
+                        status=409,
+                    )
+                self.delete_project(transaction.project["id"])
+            for worldbook_id in transaction._created_worldbook_ids:
+                try:
+                    self.worldbooks.delete_worldbook(worldbook_id)
+                except WorldbookLibraryError as exc:
+                    if exc.code != "worldbook_not_found":
+                        raise
+            transaction._finalized = True
+
+    def _validate_card_import(self, transaction: ProjectImportTransaction) -> None:
+        if (
+            not isinstance(transaction, ProjectImportTransaction)
+            or transaction._library is not self
+            or transaction._owner is not self._import_owner
+            or transaction._finalized
+        ):
+            raise ValueError("invalid or finalized Project import transaction")
 
     @classmethod
     def _import_diagnostics(cls, document: dict[str, Any]) -> dict[str, Any]:

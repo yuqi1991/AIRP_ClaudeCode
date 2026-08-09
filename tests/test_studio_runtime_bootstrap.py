@@ -6,6 +6,8 @@ from pathlib import Path
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from airp.host.rp.session_runtime import SessionTurnRuntime
@@ -138,7 +140,8 @@ def test_server_bootstraps_legacy_runtime_into_studio_and_binds_project(tmp_path
                 )
 
         server.active_graphs = UnreadableSelections()
-        server._configure_runtime_studio_graph()
+        with pytest.raises(ActiveGraphSelectionError):
+            server._configure_runtime_studio_graph()
         assert runtime.execution_graph_id == "default"
 
         status, damaged = _json_request(
@@ -279,3 +282,81 @@ def test_active_graph_selection_persists_per_project_without_project_content(tmp
     assert restarted.clear_graph("graph-b") == ("story-b", "story-c")
     assert restarted.graph_id_for("story-b") is None
     assert restarted.graph_id_for("story-c") is None
+
+
+def test_restart_does_not_reselect_a_cleared_single_graph(tmp_path: Path):
+    styles = tmp_path / "styles"
+    (styles / "graphs").mkdir(parents=True)
+    card = tmp_path / "card"
+    _write_card(card)
+    workspace = tmp_path / "workspace"
+
+    runtime = SessionTurnRuntime(
+        database_path=tmp_path / "runtime.sqlite3",
+        card_folder=card,
+        projection_root=styles,
+        project_id="clear-project",
+    )
+    with SessionRuntimeServer(runtime, static_root=styles, workspace=workspace) as server:
+        server.projects.create_project({"id": "clear-project", "name": "Clear project"})
+        initialized = server.default_collaboration_suite.initialize_project("clear-project")
+        assert initialized.selected is True
+        server.active_graphs.clear("clear-project")
+
+    (styles / "graphs" / "default-two-round-review.json").write_text(
+        json.dumps(
+            {
+                "id": "default-two-round-review",
+                "nodes": [
+                    {
+                        "id": "writer",
+                        "agent_id": "default-writer",
+                        "provider": "deepseek",
+                        "model": "deepseek-chat",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    restarted_runtime = SessionTurnRuntime(
+        database_path=tmp_path / "restart.sqlite3",
+        card_folder=card,
+        projection_root=styles,
+        project_id="clear-project",
+    )
+    with SessionRuntimeServer(
+        restarted_runtime, static_root=styles, workspace=workspace
+    ) as restarted:
+        assert restarted.active_graphs.graph_id_for("clear-project") is None
+
+
+def test_restart_fails_closed_when_active_graph_selections_are_corrupt(tmp_path: Path):
+    styles = tmp_path / "styles"
+    styles.mkdir()
+    card = tmp_path / "card"
+    _write_card(card)
+    workspace = tmp_path / "workspace"
+    runtime = SessionTurnRuntime(
+        database_path=tmp_path / "runtime.sqlite3",
+        card_folder=card,
+        projection_root=styles,
+        project_id="corrupt-project",
+    )
+    with SessionRuntimeServer(runtime, static_root=styles, workspace=workspace) as server:
+        server.projects.create_project({"id": "corrupt-project", "name": "Corrupt"})
+
+    Workspace.from_root(workspace).active_graph_selections_path.write_text(
+        "{", encoding="utf-8"
+    )
+    restarted_runtime = SessionTurnRuntime(
+        database_path=tmp_path / "restart.sqlite3",
+        card_folder=card,
+        projection_root=styles,
+        project_id="corrupt-project",
+    )
+    with pytest.raises(ActiveGraphSelectionError) as raised:
+        SessionRuntimeServer(
+            restarted_runtime, static_root=styles, workspace=workspace
+        )
+    assert raised.value.code == "active_graph_selection_unreadable"

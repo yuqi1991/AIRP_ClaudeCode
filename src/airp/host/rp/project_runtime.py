@@ -15,9 +15,18 @@ import tempfile
 import threading
 from dataclasses import dataclass
 from pathlib import Path
+from uuid import uuid4
 
 from airp.host.rp.session_manager import SessionManager
 from airp.host.rp.session_runtime import SessionTurnRuntime
+
+
+class ProjectRuntimeError(RuntimeError):
+    """A typed failure before a runtime discard becomes irreversible."""
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
 
 
 @dataclass
@@ -27,6 +36,16 @@ class ProjectRuntimeContext:
     sessions: SessionManager
     card_folder: Path
     database_path: Path
+
+
+@dataclass
+class ProjectRuntimeDiscard:
+    owner: object
+    project_id: str
+    context: ProjectRuntimeContext | None
+    moves: tuple[tuple[Path, Path], ...]
+    previous_state: dict
+    finalized: bool = False
 
 
 class ProjectRuntimeStore:
@@ -60,6 +79,7 @@ class ProjectRuntimeStore:
         self._lock = threading.RLock()
         self._initial_runtime = initial_runtime
         self._initial_sessions = initial_sessions
+        self._discard_owner = object()
 
         # A CLI-launched card may already have a durable runtime. Reuse it for
         # the matching Project so existing saves remain available.
@@ -149,32 +169,140 @@ class ProjectRuntimeStore:
             if context is not None:
                 self._materialize_project(project, context.card_folder)
 
-    def discard(self, project_id: str) -> None:
-        """Remove all runtime artifacts owned by a deleted Project.
-
-        Project definitions live in ``Workspace.projects_root`` while the
-        materialized card and session database live under separate runtime
-        roots.  Deleting only the definition leaves stale saves that can be
-        restored later, so the server calls this method as part of the same
-        delete workflow.  Caller-provided ids have already passed the Project
-        library's stable-id validation; the containment checks below remain a
-        second guard before any recursive removal.
-        """
+    def stage_discard(self, project_id: str) -> ProjectRuntimeDiscard:
+        """Quarantine Project runtime state so deletion can still be rolled back."""
         if not isinstance(project_id, str) or not project_id:
-            return
+            raise ValueError("project_id must be a non-empty string")
         with self._lock:
             context = self._contexts.pop(project_id, None)
             card_folder = context.card_folder if context is not None else self.state_root / project_id
-            database_path = context.database_path if context is not None else self.sessions_root / f"{project_id}.sqlite3"
-            self._remove_owned_path(card_folder, self.state_root)
-            self._remove_owned_path(database_path, self.sessions_root)
-            state = self._read_state()
-            recent = [item for item in state.get("recent_project_ids", []) if item != project_id]
-            active = state.get("active_project_id")
-            self._write_state({
-                "active_project_id": None if active == project_id else active,
-                "recent_project_ids": recent[:32],
-            })
+            database_path = (
+                context.database_path
+                if context is not None
+                else self.sessions_root / f"{project_id}.sqlite3"
+            )
+            previous_state = self._read_state()
+            moves: list[tuple[Path, Path]] = []
+            token = uuid4().hex
+            sources = [
+                (card_folder, self.state_root),
+                (database_path, self.sessions_root),
+                (Path(f"{database_path}-wal"), self.sessions_root),
+                (Path(f"{database_path}-shm"), self.sessions_root),
+            ]
+            try:
+                for source, root in sources:
+                    resolved = self._owned_existing_path(source, root)
+                    if resolved is None:
+                        continue
+                    quarantine = resolved.with_name(f".{resolved.name}.deleting-{token}")
+                    resolved.replace(quarantine)
+                    moves.append((resolved, quarantine))
+                recent = [
+                    item for item in previous_state.get("recent_project_ids", [])
+                    if item != project_id
+                ]
+                active = previous_state.get("active_project_id")
+                self._write_state({
+                    "active_project_id": None if active == project_id else active,
+                    "recent_project_ids": recent[:32],
+                })
+            except Exception:
+                for original, quarantine in reversed(moves):
+                    if quarantine.exists():
+                        quarantine.replace(original)
+                if context is not None:
+                    self._contexts[project_id] = context
+                self._write_state(previous_state)
+                raise
+            return ProjectRuntimeDiscard(
+                owner=self._discard_owner, project_id=project_id, context=context,
+                moves=tuple(moves), previous_state=previous_state,
+            )
+
+    def rollback_discard(self, discard: ProjectRuntimeDiscard) -> None:
+        """Restore a staged Project runtime exactly once."""
+        with self._lock:
+            self._validate_discard(discard)
+            for original, quarantine in reversed(discard.moves):
+                if quarantine.exists():
+                    quarantine.replace(original)
+            if discard.context is not None:
+                self._contexts[discard.project_id] = discard.context
+            self._write_state(discard.previous_state)
+            discard.finalized = True
+
+    def commit_discard(self, discard: ProjectRuntimeDiscard) -> tuple[str, ...]:
+        """Finalize a logical discard and best-effort its quarantined files."""
+        with self._lock:
+            self._validate_discard(discard)
+            committed_moves: list[tuple[Path, Path]] = []
+            try:
+                for _, quarantine in discard.moves:
+                    committed = quarantine.with_name(
+                        quarantine.name.replace(".deleting-", ".deleted-", 1)
+                    )
+                    quarantine.replace(committed)
+                    committed_moves.append((quarantine, committed))
+            except OSError:
+                try:
+                    for quarantine, committed in reversed(committed_moves):
+                        if committed.exists():
+                            committed.replace(quarantine)
+                except OSError:
+                    raise ProjectRuntimeError(
+                        "project_runtime_commit_compensation_failed",
+                        "Project runtime commit compensation failed",
+                    ) from None
+                raise ProjectRuntimeError(
+                    "project_runtime_commit_failed",
+                    "Project runtime commit failed",
+                ) from None
+
+            pending: list[str] = []
+            for _, committed in committed_moves:
+                root = self.state_root if committed.parent == self.state_root else self.sessions_root
+                try:
+                    self._remove_owned_path(committed, root)
+                except OSError:
+                    pending.append(str(committed))
+            discard.finalized = True
+            return tuple(pending)
+
+    def cleanup_quarantine(self) -> tuple[str, ...]:
+        """Retry removal of runtime artifacts left by committed discards."""
+        with self._lock:
+            pending: list[str] = []
+            for root in (self.state_root, self.sessions_root):
+                for quarantine in root.glob(".*.deleted-*"):
+                    try:
+                        self._remove_owned_path(quarantine, root)
+                    except OSError:
+                        pending.append(str(quarantine))
+            return tuple(pending)
+
+    def discard(self, project_id: str) -> None:
+        discard = self.stage_discard(project_id)
+        self.commit_discard(discard)
+
+    def _validate_discard(self, discard: ProjectRuntimeDiscard) -> None:
+        if (
+            not isinstance(discard, ProjectRuntimeDiscard)
+            or discard.owner is not self._discard_owner
+            or discard.finalized
+        ):
+            raise ValueError("invalid or finalized Project runtime discard")
+
+    @staticmethod
+    def _owned_existing_path(path: Path, root: Path) -> Path | None:
+        try:
+            resolved = path.resolve()
+            resolved.relative_to(root.resolve())
+        except (OSError, ValueError):
+            return None
+        if resolved == root.resolve() or not resolved.exists():
+            return None
+        return resolved
 
     def session_payload(self, project_id: str) -> dict:
         with self._lock:

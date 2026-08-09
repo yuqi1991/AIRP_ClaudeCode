@@ -289,3 +289,35 @@ def test_install_blocks_when_a_frozen_project_becomes_unreadable(
 
     assert error.value.code == "default_collaboration_suite_project_lifecycle_invalid"
     assert "project-secret" not in str(error.value)
+
+
+def test_install_keeps_the_suite_when_one_project_selection_cannot_be_written(
+    tmp_path, monkeypatch
+):
+    application = _application(tmp_path)
+    application.projects.create_project({"id": "story", "name": "Story"})
+    real_replace = os.replace
+
+    def fail_active_selection(source, destination):
+        if Path(destination).name == "active_graphs.json":
+            raise OSError("selection write failed")
+        return real_replace(source, destination)
+
+    monkeypatch.setattr(os, "replace", fail_active_selection)
+    result = application.default_collaboration_suite.install_once()
+    monkeypatch.undo()
+
+    assert result["installed"] is True
+    assert result["status"] == "degraded"
+    assert result["diagnostics"] == [
+        {
+            "code": "default_collaboration_suite_project_activation_failed",
+            "boundary": "project_activation",
+            "project_id": "story",
+            "message": "默认协作套件已安装，但未能为一个 Project 自动选择 Graph。",
+            "action": "在 Studio 的编排选择中手动选择 Graph。",
+        }
+    ]
+    assert application.active_graphs.graph_id_for("story") is None
+    assert len(application.graph_store.list_graphs()) == 1
+    assert application.default_collaboration_suite.install_once()["installed"] is False

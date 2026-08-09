@@ -48,7 +48,7 @@ def test_default_regex_extracts_tagged_multiline_and_clears_untagged_or_malforme
 def test_project_update_does_not_create_a_new_initialization_lifecycle(tmp_path):
     application, receipt = _installed_application(tmp_path)
     application.projects.create_project({"id": "updated", "name": "Before"})
-    assert application.default_collaboration_suite.initialize_project("updated") is True
+    assert application.default_collaboration_suite.initialize_project("updated").selected is True
 
     project = application.projects.get_project("updated")
     application.projects.update_project(
@@ -57,7 +57,7 @@ def test_project_update_does_not_create_a_new_initialization_lifecycle(tmp_path)
     )
     application.active_graphs.clear("updated")
 
-    assert application.default_collaboration_suite.initialize_project("updated") is False
+    assert application.default_collaboration_suite.initialize_project("updated").selected is False
     assert application.active_graphs.graph_id_for("updated") is None
     assert receipt["graph_id"] in {graph["id"] for graph in application.graph_store.list_graphs()}
 
@@ -66,14 +66,14 @@ def test_recreated_project_id_has_a_new_initialization_lifecycle(tmp_path):
     application, receipt = _installed_application(tmp_path)
     application.projects.create_project({"id": "reused", "name": "First"})
     first_instance = application.projects.project_instance_id("reused")
-    assert application.default_collaboration_suite.initialize_project("reused") is True
+    assert application.default_collaboration_suite.initialize_project("reused").selected is True
 
     application.projects.delete_project("reused")
     application.active_graphs.clear("reused")
     application.projects.create_project({"id": "reused", "name": "Second"})
 
     assert application.projects.project_instance_id("reused") != first_instance
-    assert application.default_collaboration_suite.initialize_project("reused") is True
+    assert application.default_collaboration_suite.initialize_project("reused").selected is True
     assert application.active_graphs.graph_id_for("reused") == receipt["graph_id"]
 
 
@@ -89,4 +89,4 @@ def test_corrupt_graph_error_propagates_without_marking_project_initialized(tmp_
     assert error.value.code == "invalid_graph_data"
 
     graph_path.write_text(original, encoding="utf-8")
-    assert application.default_collaboration_suite.initialize_project("corrupt") is True
+    assert application.default_collaboration_suite.initialize_project("corrupt").selected is True

@@ -1142,7 +1142,7 @@ def run_import(card_dir, root_dir, *, styles_dir=None):
         index_stats = build_worldbook_index(entries, memory_dir)
         result["worldbook_index"] = index_stats
         # ``run_import`` is the legacy card projection boundary; Project and
-        # Worldbook ownership is finalized by ProjectLibrary.import_card_report.
+        # Worldbook ownership is finalized by ProjectLibrary's import transaction.
         diagnostics["worldbook"]["bound_to_project"] = False
 
         # 检测卡片叙事结构（阶段人设/动态事件库）

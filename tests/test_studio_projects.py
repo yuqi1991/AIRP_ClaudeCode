@@ -220,6 +220,37 @@ def test_project_import_creates_and_binds_embedded_sillytavern_worldbook(tmp_pat
         assert diagnostics["worldbook"]["bound_to_project"] is True
 
 
+def test_project_import_transaction_owns_rollback_of_its_embedded_worldbook(tmp_path: Path):
+    with _server(tmp_path) as server:
+        shared = _worldbook(server)
+        transaction = server.projects.begin_card_import({
+            "id": "rollback-import",
+            "worldbook_ids": [shared["id"]],
+            "document": {
+                "spec": "chara_card_v2",
+                "data": {
+                    "name": "Rollback import",
+                    "character_book": {
+                        "name": "Temporary lore",
+                        "entries": [{
+                            "id": 1,
+                            "keys": ["temporary"],
+                            "content": "Temporary content",
+                        }],
+                    },
+                },
+            },
+        })
+
+        assert transaction.project["id"] == "rollback-import"
+        assert len(transaction.project["worldbook_ids"]) == 2
+
+        transaction.rollback()
+
+        assert server.projects.list_projects() == []
+        assert [item["id"] for item in server.worldbooks.list_worldbooks()] == [shared["id"]]
+
+
 def test_project_delete_endpoint_removes_imported_project(tmp_path: Path):
     with _server(tmp_path) as server:
         status, imported = _json_request(

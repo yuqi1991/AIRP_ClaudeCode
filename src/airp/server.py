@@ -66,6 +66,7 @@ import json
 import ipaddress
 import os
 import secrets
+import sqlite3
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -75,6 +76,11 @@ from urllib.parse import parse_qs, urlparse
 
 from airp.workspace import Workspace
 from airp.application import Application
+from airp.default_collaboration_suite import (
+    DefaultCollaborationSuiteError,
+    ProjectDeletionToken,
+    ProjectInitializationResult,
+)
 from airp.engine.agent_definitions import AgentDefinitionError
 from airp.engine.active_graph import ActiveGraphSelectionError
 from airp.host.rp.commands import SessionCommandService
@@ -87,7 +93,7 @@ from airp.engine.project_library import ProjectLibraryError
 from airp.engine.regex_collections import RegexCollectionError
 from airp.host.rp.session_runtime import RuntimeEvent, SessionTurnRuntime
 from airp.host.rp.session_manager import SessionManager, SessionManagerError
-from airp.host.rp.project_runtime import ProjectRuntimeStore
+from airp.host.rp.project_runtime import ProjectRuntimeError, ProjectRuntimeStore
 from airp.engine.studio_library import ProviderProfileError
 from airp.compat.studio_migration import bootstrap_legacy_runtime_library
 from airp.engine.worldbook_library import WorldbookLibraryError
@@ -220,6 +226,8 @@ class SessionRuntimeServer:
                 self.session_manager = context.sessions
                 self.project_runtimes.remember(preferred)
         self._studio_graph_configured = False
+        self._project_delete_locks_guard = threading.Lock()
+        self._project_delete_locks: dict[str, threading.RLock] = {}
         self._configure_runtime_worldbooks()
         self._configure_runtime_studio_graph()
         self._httpd: ThreadingHTTPServer | None = None
@@ -341,6 +349,7 @@ class SessionRuntimeServer:
         This is the load-bearing non-blocking path for SSE: the HTTP request
         handler must not wait for the full director run.
         """
+        self._prepare_runtime_for_next_task()
         return self._command_async(
             idempotency_key,
             worker_fn=lambda: self._run_and_touch(
@@ -351,6 +360,7 @@ class SessionRuntimeServer:
 
     def reroll_async(self, revision: int, idempotency_key: str) -> dict:
         """Background ``service.reroll`` so SSE can stream the new branch tip."""
+        self._prepare_runtime_for_next_task()
         return self._command_async(
             idempotency_key,
             worker_fn=lambda: self._run_and_touch(
@@ -363,6 +373,7 @@ class SessionRuntimeServer:
 
     def retry_graph_run_async(self, graph_run_id: str, idempotency_key: str) -> dict:
         """Background complete Graph retry using current saved definitions."""
+        self._prepare_runtime_for_next_task()
         return self._command_async(
             idempotency_key,
             worker_fn=lambda: self._run_and_touch(
@@ -615,19 +626,26 @@ class SessionRuntimeServer:
         if not project or self.project_runtimes is None:
             return
         project_id = project.get("id")
-        if not isinstance(project_id, str):
-            return
         try:
             active_known = self.runtime.project_id in self.project_runtimes.project_ids()
         except Exception:
             active_known = True
+        if self._runtime_generation_active():
+            if not active_known and getattr(self, "_deferred_project_id", None) is None:
+                self._deferred_project_id = project_id
+            return
+        if not isinstance(project_id, str):
+            return
         # A new Project can become the first active Project after the previous
         # one was deleted (or before a legacy runtime had a Project binding).
         # Do not steal an already-active valid Project when editing another one.
         if project_id != self.runtime.project_id and active_known:
             return
         previous_runtime = self.runtime
-        context = self.project_runtimes.adopt(project["id"], self.runtime, self.session_manager)
+        if self.session_manager is None:
+            context = self.project_runtimes.get(project_id)
+        else:
+            context = self.project_runtimes.adopt(project_id, self.runtime, self.session_manager)
         # Keep the caller-visible runtime object stable when a legacy launch
         # creates its first Project in place.  The new Project-owned storage
         # has already been materialized by ``adopt``; copying the runtime
@@ -643,6 +661,8 @@ class SessionRuntimeServer:
             return
         self.runtime = context.runtime
         self.session_manager = context.sessions
+        self._project_workspace_empty = False
+        self._deferred_project_id = None
         self.service = SessionCommandService(self.runtime)
 
     def _sync_managed_runtime(self) -> None:
@@ -655,6 +675,28 @@ class SessionRuntimeServer:
         self.service = SessionCommandService(self.runtime)
         with self._submit_lock:
             self._submit_results.clear()
+
+    def _runtime_generation_active(self) -> bool:
+        try:
+            return self.runtime.generation_active()
+        except sqlite3.OperationalError:
+            if getattr(self, "_project_workspace_empty", False):
+                return False
+            raise
+
+    def _prepare_runtime_for_next_task(self) -> None:
+        """Bind the recorded Project target before compiling the next Task."""
+        if self._runtime_generation_active():
+            return
+        if self.projects is not None and self.project_runtimes is not None:
+            deferred_id = getattr(self, "_deferred_project_id", None)
+            if deferred_id is not None:
+                project = self.projects.get_project(deferred_id)
+                self.project_runtimes.refresh(project)
+                self._bind_project_runtime_if_active(project)
+            elif getattr(self, "_project_workspace_empty", False):
+                raise ValueError("no active Project")
+        self._configure_runtime_studio_graph()
 
     def _runtime_selection(self) -> dict[str, str | None]:
         if self.active_graphs is None:
@@ -723,10 +765,10 @@ class SessionRuntimeServer:
             legacy_selection = (self._read_legacy_settings().get("runtime") or {}).get("graph_id")
             graph_ids = {item["id"] for item in graphs}
             selected = legacy_selection if legacy_selection in graph_ids else None
-            if selected is None and len(graphs) == 1:
-                selected = graphs[0]["id"]
             if selected:
                 self.active_graphs.select_if_unset(self.runtime.project_id, selected)
+        except ActiveGraphSelectionError:
+            raise
         except Exception:
             # A malformed optional legacy file must not prevent the game from
             # starting; Studio will still expose any valid existing objects.
@@ -1021,6 +1063,8 @@ class SessionRuntimeServer:
         """Attach the active Studio Graph without mutating Project content."""
         if not all((self.agent_store, self.graphs, self.projects, self.worldbooks, self.provider_profiles)):
             return
+        if self.runtime.generation_active():
+            return
         try:
             project = self.projects.get_project(self.runtime.project_id)
         except ProjectLibraryError:
@@ -1039,10 +1083,7 @@ class SessionRuntimeServer:
                 return
             project = projects[0]
             self.runtime.project_id = project["id"]
-        try:
-            selected_graph = self._runtime_selection().get("graph_id")
-        except ActiveGraphSelectionError:
-            return
+        selected_graph = self._runtime_selection().get("graph_id")
         if not selected_graph:
             if self._studio_graph_configured:
                 self.runtime.configure_execution_graph(None, None)
@@ -1161,47 +1202,199 @@ class SessionRuntimeServer:
     def _studio_project_error(exc: ProjectLibraryError) -> tuple[dict[str, Any], int]:
         return exc.to_dict(), exc.status
 
-    def _studio_project_action(self, action, *, status=200, key="project", initialize=False):
+    def _initialize_project_once(self, project: dict[str, Any]) -> list[dict[str, str]]:
+        if self.default_collaboration_suite is None:
+            return []
+        result = self.default_collaboration_suite.initialize_project(project["id"])
+        return self._project_initialization_warnings(result)
+
+    @staticmethod
+    def _project_initialization_warnings(
+        result: ProjectInitializationResult,
+    ) -> list[dict[str, str]]:
+        warning = result.warning
+        if warning is None:
+            return []
+        return [
+            {
+                "code": warning.code,
+                "boundary": warning.boundary,
+                "project_id": warning.project_id,
+                "message": warning.message,
+                "action": warning.action,
+            }
+        ]
+
+    def _studio_project_action(
+        self,
+        action,
+        *,
+        status=200,
+        key="project",
+        initialize=False,
+        rollback_on_activation_failure=False,
+    ):
         if self.projects is None:
             return {"ok": False, "error": "studio_library_unavailable"}, 501
+        project = None
+        initialized = False
         try:
             project = action()
-            if initialize and isinstance(project, dict) and self.default_collaboration_suite is not None:
-                self.default_collaboration_suite.initialize_project(project["id"])
+            warnings = []
+            if initialize and isinstance(project, dict):
+                warnings = self._initialize_project_once(project)
+                initialized = True
             if key == "project" and isinstance(project, dict) and self.project_runtimes is not None:
                 self.project_runtimes.refresh(project)
-            self._configure_runtime_studio_graph()
             self._bind_project_runtime_if_active(project if isinstance(project, dict) else None)
             self._configure_runtime_studio_graph()
-            return {"ok": True, key: project}, status
+            payload = {"ok": True, key: project}
+            if warnings:
+                payload["warnings"] = warnings
+            return payload, status
+        except ActiveGraphSelectionError as exc:
+            if rollback_on_activation_failure and isinstance(project, dict):
+                try:
+                    self._compensate_project_creation(project, initialized=initialized)
+                except Exception:
+                    return {
+                        "ok": False,
+                        "error": "project_creation_compensation_failed",
+                        "message": "Project creation compensation failed",
+                        "cause": exc.code,
+                    }, 500
+            return {"ok": False, "error": exc.code, "message": str(exc)}, 500
         except ProjectLibraryError as exc:
+            if rollback_on_activation_failure and isinstance(project, dict):
+                return self._unexpected_project_creation_failure(
+                    project, initialized=initialized
+                )
             return self._studio_project_error(exc)
+        except Exception:
+            if rollback_on_activation_failure and isinstance(project, dict):
+                return self._unexpected_project_creation_failure(project, initialized=initialized)
+            return self._runtime_configuration_failure()
 
     def _studio_project_import(self, body):
         if self.projects is None:
             return {"ok": False, "error": "studio_library_unavailable"}, 501
+        transaction = None
+        initialized = False
         try:
-            project, diagnostics = self.projects.import_card_report(body)
-            if self.default_collaboration_suite is not None:
-                self.default_collaboration_suite.initialize_project(project["id"])
+            transaction = self.projects.begin_card_import(body)
+            project, diagnostics = transaction.project, transaction.diagnostics
+            warnings = self._initialize_project_once(project)
+            initialized = True
             if self.project_runtimes is not None:
                 self.project_runtimes.refresh(project)
             self._bind_project_runtime_if_active(project)
-            return {"ok": True, "project": project, "diagnostics": diagnostics}, 201
+            self._configure_runtime_studio_graph()
+            transaction.commit()
+            payload = {"ok": True, "project": project, "diagnostics": diagnostics}
+            if warnings:
+                payload["warnings"] = warnings
+            return payload, 201
+        except ActiveGraphSelectionError as exc:
+            if transaction is not None:
+                try:
+                    self._compensate_project_creation(
+                        project, transaction, initialized=initialized
+                    )
+                except Exception:
+                    return {
+                        "ok": False,
+                        "error": "project_creation_compensation_failed",
+                        "message": "Project creation compensation failed",
+                        "cause": exc.code,
+                    }, 500
+            return {"ok": False, "error": exc.code, "message": str(exc)}, 500
         except ProjectLibraryError as exc:
+            if transaction is not None:
+                return self._unexpected_project_creation_failure(
+                    project, transaction, initialized=initialized
+                )
             return self._studio_project_error(exc)
+        except Exception:
+            if transaction is not None:
+                return self._unexpected_project_creation_failure(
+                    project, transaction, initialized=initialized
+                )
+            return self._runtime_configuration_failure()
+
+    def _unexpected_project_creation_failure(
+        self, project, import_transaction=None, *, initialized: bool
+    ) -> tuple[dict[str, Any], int]:
+        try:
+            self._compensate_project_creation(
+                project, import_transaction, initialized=initialized
+            )
+        except Exception:
+            return {
+                "ok": False,
+                "error": "project_creation_compensation_failed",
+                "message": "Project creation compensation failed",
+            }, 500
+        return self._runtime_configuration_failure()
+
+    @staticmethod
+    def _runtime_configuration_failure() -> tuple[dict[str, Any], int]:
+        return {
+            "ok": False,
+            "error": "project_runtime_configuration_failed",
+            "message": "Project runtime configuration failed",
+        }, 500
+
+    def _compensate_project_creation(
+        self, project, import_transaction=None, *, initialized: bool
+    ) -> None:
+        """Undo every Project-owned surface created before runtime configuration."""
+        if initialized:
+            result, status = self._studio_project_delete(project["id"])
+        else:
+            self.projects.delete_project(project["id"])
+            result, status = {}, 200
+        if status != 200:
+            raise ProjectLibraryError(
+                "project_creation_compensation_failed",
+                result.get("message", "Project creation compensation failed"),
+                status=500,
+            )
+        if import_transaction is not None:
+            import_transaction.rollback()
 
     def _studio_project_delete(self, project_id: str) -> tuple[dict[str, Any], int]:
+        with self._project_delete_locks_guard:
+            project_lock = self._project_delete_locks.setdefault(project_id, threading.RLock())
+        with project_lock:
+            return self._studio_project_delete_locked(project_id)
+
+    def _studio_project_delete_locked(self, project_id: str) -> tuple[dict[str, Any], int]:
         if self.projects is None:
             return {"ok": False, "error": "studio_library_unavailable"}, 501
-        if project_id == self.runtime.project_id and self.runtime.generation_active():
+        if project_id == self.runtime.project_id and self._runtime_generation_active():
             return {
                 "ok": False,
                 "error": "generation_active",
                 "message": "生成进行中，完成或取消后才能删除当前游戏",
             }, 409
+        project = None
+        selection = None
+        forgotten_lifecycle = None
+        deleting_active = project_id == self.runtime.project_id
+        switched_active = False
+        runtime_discard = None
         try:
-            deleting_active = project_id == self.runtime.project_id
+            project = self.projects.get_project(project_id)
+            selection = (
+                self.active_graphs.graph_id_for(project_id)
+                if self.active_graphs is not None
+                else None
+            )
+            if self.default_collaboration_suite is not None:
+                forgotten_lifecycle = self.default_collaboration_suite.begin_project_deletion(project_id)
+            if self.active_graphs is not None:
+                self.active_graphs.clear(project_id)
+
             fallback = next(
                 (item for item in self.projects.list_projects() if item.get("id") != project_id),
                 None,
@@ -1209,17 +1402,115 @@ class SessionRuntimeServer:
             if deleting_active and fallback is not None and self.project_runtimes is not None:
                 switched, status = self._switch_active_project(fallback["id"])
                 if status != 200:
+                    self._restore_project_delete_metadata(
+                        project_id, selection, forgotten_lifecycle
+                    )
                     return switched, status
+                switched_active = True
+
+            try:
+                if self.project_runtimes is not None:
+                    runtime_discard = self.project_runtimes.stage_discard(project_id)
+            except Exception:
+                self._restore_project_delete_metadata(
+                    project_id, selection, forgotten_lifecycle
+                )
+                if switched_active:
+                    self._switch_active_project(project_id)
+                return {
+                    "ok": False,
+                    "error": "project_runtime_delete_failed",
+                    "message": "Project runtime cleanup failed",
+                }, 500
             self.projects.delete_project(project_id)
-            if self.project_runtimes is not None:
-                self.project_runtimes.discard(project_id)
+            pending_cleanup = ()
+            if runtime_discard is not None:
+                try:
+                    pending_cleanup = self.project_runtimes.commit_discard(runtime_discard)
+                except ProjectRuntimeError as exc:
+                    try:
+                        self.projects.restore_project(project)
+                        self.project_runtimes.rollback_discard(runtime_discard)
+                        self._restore_project_delete_metadata(
+                            project_id, selection, forgotten_lifecycle
+                        )
+                        if switched_active:
+                            switched, status = self._switch_active_project(project_id)
+                            if status != 200:
+                                raise ProjectRuntimeError(
+                                    "project_runtime_commit_compensation_failed",
+                                    "Project runtime commit compensation failed",
+                                )
+                    except Exception:
+                        return {
+                            "ok": False,
+                            "error": "project_delete_compensation_failed",
+                            "message": "Project delete compensation failed",
+                            "cause": exc.code,
+                        }, 500
+                    return {
+                        "ok": False,
+                        "error": exc.code,
+                        "message": str(exc),
+                    }, 500
             if deleting_active and fallback is None:
+                self._project_workspace_empty = True
                 self.session_manager = None
                 self.service = SessionCommandService(self.runtime)
             payload = self._project_runtime_payload()
-            return {"ok": True, "deleted_id": project_id, **payload}, 200
+            result = {"ok": True, "deleted_id": project_id, **payload}
+            if pending_cleanup:
+                result["warnings"] = [{
+                    "code": "project_runtime_cleanup_pending",
+                    "message": "Project 已删除，但部分 runtime quarantine 尚待清理",
+                }]
+            if forgotten_lifecycle is not None:
+                forgotten_lifecycle.commit()
+            return result, 200
+        except ActiveGraphSelectionError as exc:
+            try:
+                self._restore_project_delete_metadata(
+                    project_id, selection, forgotten_lifecycle
+                )
+            except Exception:
+                return {
+                    "ok": False,
+                    "error": "project_delete_compensation_failed",
+                    "message": "Project delete compensation failed",
+                    "cause": exc.code,
+                }, 500
+            return {"ok": False, "error": exc.code, "message": str(exc)}, 500
+        except DefaultCollaborationSuiteError as exc:
+            return {"ok": False, "error": exc.code, "message": str(exc)}, 500
         except ProjectLibraryError as exc:
+            if project is not None:
+                if runtime_discard is not None:
+                    self.project_runtimes.rollback_discard(runtime_discard)
+                try:
+                    self._restore_project_delete_metadata(
+                        project_id, selection, forgotten_lifecycle
+                    )
+                except Exception:
+                    return {
+                        "ok": False,
+                        "error": "project_delete_compensation_failed",
+                        "message": "Project delete compensation failed",
+                        "cause": exc.code,
+                    }, 500
+                if switched_active:
+                    self._switch_active_project(project_id)
             return self._studio_project_error(exc)
+
+    def _restore_project_delete_metadata(
+        self,
+        project_id: str,
+        selection: str | None,
+        lifecycle: ProjectDeletionToken | None,
+    ) -> None:
+        if selection is not None and self.active_graphs is not None:
+            self.active_graphs.select_if_unset(project_id, selection)
+        if lifecycle is not None:
+            lifecycle.rollback()
 
     def _studio_provider_test(self, profile_id: str) -> tuple[dict[str, Any], int]:
         try:
@@ -1719,7 +2010,10 @@ class SessionRuntimeServer:
                     return
                 if path in STUDIO_PROJECT_PATHS:
                     payload, status = server_ref._studio_project_action(
-                        lambda: server_ref.projects.create_project(body), status=201, initialize=True
+                        lambda: server_ref.projects.create_project(body),
+                        status=201,
+                        initialize=True,
+                        rollback_on_activation_failure=True,
                     )
                     self._send_json(status, payload)
                     return
@@ -1744,7 +2038,10 @@ class SessionRuntimeServer:
                         parts = path[len(prefix) + 1:].split("/")
                         if len(parts) == 2 and parts[1] in {"copy", "duplicate"}:
                             payload, status = server_ref._studio_project_action(
-                                lambda: server_ref.projects.copy_project(parts[0], body), status=201, initialize=True
+                                lambda: server_ref.projects.copy_project(parts[0], body),
+                                status=201,
+                                initialize=True,
+                                rollback_on_activation_failure=True,
                             )
                             self._send_json(status, payload)
                             return

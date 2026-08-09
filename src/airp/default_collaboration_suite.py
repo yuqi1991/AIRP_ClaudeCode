@@ -8,6 +8,7 @@ import json
 import os
 import tempfile
 import threading
+from dataclasses import dataclass
 from contextlib import contextmanager
 from importlib.resources import files
 from uuid import uuid4
@@ -53,6 +54,36 @@ class DefaultCollaborationSuiteError(RuntimeError):
         self.code = code
 
 
+@dataclass(frozen=True)
+class ProjectInitializationWarning:
+    code: str
+    boundary: str
+    project_id: str
+    message: str
+    action: str
+
+
+@dataclass(frozen=True)
+class ProjectInitializationResult:
+    selected: bool
+    warning: ProjectInitializationWarning | None = None
+
+
+@dataclass
+class ProjectDeletionToken:
+    _suite: "DefaultCollaborationSuite"
+    _owner: object
+    project_id: str
+    lifecycle: str | None
+    _finalized: bool = False
+
+    def commit(self) -> None:
+        self._suite._commit_project_deletion(self)
+
+    def rollback(self) -> None:
+        self._suite._rollback_project_deletion(self)
+
+
 class DefaultCollaborationSuite:
     """Materialize the recipe through ordinary Studio Library interfaces."""
 
@@ -84,6 +115,7 @@ class DefaultCollaborationSuite:
         self._lock_path = self._metadata_root / "install.lock"
         self._initialized_projects_path = self._metadata_root / "initialized_projects.json"
         self._lock = self._lock_for_path(self._metadata_root.resolve())
+        self._project_deletion_owner = object()
 
     @classmethod
     def _lock_for_path(cls, path: Path) -> threading.RLock:
@@ -172,7 +204,11 @@ class DefaultCollaborationSuite:
                 boundary = "project_activation"
                 for project in journal["projects"]:
                     try:
-                        self._activate_frozen_project(project, resources["graph"]["id"])
+                        activation = self._activate_frozen_project(
+                            project, resources["graph"]["id"]
+                        )
+                        if activation.warning is not None:
+                            warnings.append(self._activation_warning(project["id"]))
                     except ActiveGraphSelectionError:
                         raise
                     except DefaultCollaborationSuiteError:
@@ -219,15 +255,16 @@ class DefaultCollaborationSuite:
                 result["diagnostics"] = warnings
             return result
 
-    def initialize_project(self, project_id: str) -> bool:
+    def initialize_project(self, project_id: str) -> ProjectInitializationResult:
         with self._installation_lock():
             receipt = self._read_receipt()
             if receipt is None:
-                return False
+                return ProjectInitializationResult(selected=False)
             lifecycle = self._projects.project_instance_id(project_id)
             initialized = self._read_initialized_projects()
             if initialized.get(project_id) == lifecycle:
-                return False
+                return ProjectInitializationResult(selected=False)
+            warning = None
             try:
                 self._graphs.get_graph(receipt["graph_id"])
             except GraphDefinitionError as exc:
@@ -235,14 +272,21 @@ class DefaultCollaborationSuite:
                     raise
                 selected = False
             else:
-                selected = self._active_graphs.select_if_unset(project_id, receipt["graph_id"])
+                try:
+                    claim = self._active_graphs.select_if_unset_claim(project_id, receipt["graph_id"])
+                    selected = claim is not None
+                except ActiveGraphSelectionError as exc:
+                    if exc.code != "active_graph_selection_write_failed":
+                        raise
+                    selected = False
+                    warning = self._project_initialization_warning(project_id)
             initialized[project_id] = lifecycle
             try:
                 self._write_json(self._initialized_projects_path, initialized)
             except Exception:
                 if selected:
                     try:
-                        self._active_graphs.clear(project_id)
+                        self._active_graphs.clear_claim(claim)
                     except Exception:
                         raise DefaultCollaborationSuiteError(
                             "default_collaboration_suite_compensation_failed",
@@ -252,7 +296,50 @@ class DefaultCollaborationSuite:
                     "default_collaboration_suite_project_activation_failed",
                     "默认协作套件无法记录 Project activation。",
                 ) from None
-            return selected
+            return ProjectInitializationResult(selected=selected, warning=warning)
+
+    def begin_project_deletion(self, project_id: str) -> ProjectDeletionToken:
+        """Remove one lifecycle and return its commit/rollback capability."""
+        with self._installation_lock():
+            initialized = self._read_initialized_projects()
+            lifecycle = initialized.pop(project_id, None)
+            if lifecycle is not None:
+                self._write_json(self._initialized_projects_path, initialized)
+            return ProjectDeletionToken(
+                self, self._project_deletion_owner, project_id, lifecycle
+            )
+
+    def _commit_project_deletion(self, token: ProjectDeletionToken) -> None:
+        self._validate_project_deletion(token)
+        token._finalized = True
+
+    def _rollback_project_deletion(self, token: ProjectDeletionToken) -> None:
+        """Restore a removed lifecycle only while no replacement was recorded."""
+        self._validate_project_deletion(token)
+        if token.lifecycle is None:
+            token._finalized = True
+            return
+        with self._installation_lock():
+            initialized = self._read_initialized_projects()
+            current = initialized.get(token.project_id)
+            if current is not None and current != token.lifecycle:
+                raise DefaultCollaborationSuiteError(
+                    "default_collaboration_suite_project_metadata_conflict",
+                    "默认协作套件 Project metadata 已被并发修改。",
+                )
+            if current is None:
+                initialized[token.project_id] = token.lifecycle
+                self._write_json(self._initialized_projects_path, initialized)
+            token._finalized = True
+
+    def _validate_project_deletion(self, token: ProjectDeletionToken) -> None:
+        if (
+            not isinstance(token, ProjectDeletionToken)
+            or token._suite is not self
+            or token._owner is not self._project_deletion_owner
+            or token._finalized
+        ):
+            raise ValueError("invalid or finalized Project deletion token")
 
     def _plan_install(self, recipe: dict[str, Any]) -> dict[str, Any]:
         self._assert_secret_free(recipe)
@@ -346,13 +433,15 @@ class DefaultCollaborationSuite:
         self._assert_secret_free(journal)
         return journal
 
-    def _activate_frozen_project(self, project: dict[str, Any], graph_id: str) -> bool:
+    def _activate_frozen_project(
+        self, project: dict[str, Any], graph_id: str
+    ) -> ProjectInitializationResult:
         project_id = project["id"]
         try:
             lifecycle = self._projects.project_instance_id(project_id)
         except ProjectLibraryError as exc:
             if exc.code == "project_not_found":
-                return False
+                return ProjectInitializationResult(selected=False)
             raise DefaultCollaborationSuiteError(
                 "default_collaboration_suite_project_lifecycle_invalid",
                 "默认协作套件无法安全读取 Project lifecycle；启动已阻止。",
@@ -363,25 +452,33 @@ class DefaultCollaborationSuite:
                 "默认协作套件无法安全读取 Project lifecycle；启动已阻止。",
             ) from None
         if lifecycle != project["instance_id"]:
-            return False
+            return ProjectInitializationResult(selected=False)
         initialized = self._read_initialized_projects()
         if initialized.get(project_id) == lifecycle:
-            return False
-        selected = self._active_graphs.select_if_unset(project_id, graph_id)
+            return ProjectInitializationResult(selected=False)
+        warning = None
+        try:
+            claim = self._active_graphs.select_if_unset_claim(project_id, graph_id)
+            selected = claim is not None
+        except ActiveGraphSelectionError as exc:
+            if exc.code != "active_graph_selection_write_failed":
+                raise
+            selected = False
+            warning = self._project_initialization_warning(project_id)
         initialized[project_id] = lifecycle
         try:
             self._write_json(self._initialized_projects_path, initialized)
         except Exception:
             if selected:
                 try:
-                    self._active_graphs.clear(project_id)
+                    self._active_graphs.clear_claim(claim)
                 except Exception:
                     raise DefaultCollaborationSuiteError(
                         "default_collaboration_suite_compensation_failed",
                         "默认协作套件无法撤销 Project activation；启动已阻止。",
                     ) from None
             raise
-        return selected
+        return ProjectInitializationResult(selected=selected, warning=warning)
 
     def _compensate_or_fail(self, journal: dict[str, Any]) -> None:
         try:
@@ -395,7 +492,7 @@ class DefaultCollaborationSuite:
                 previous_selection = project["previous_selection"]
                 current_selection = self._active_graphs.graph_id_for(project_id)
                 if previous_selection is None and current_selection == graph_id:
-                    self._active_graphs.clear(project_id)
+                    self._active_graphs.clear_if_equals(project_id, graph_id)
                 elif current_selection != previous_selection:
                     raise DefaultCollaborationSuiteError(
                         "default_collaboration_suite_recovery_conflict",
@@ -743,6 +840,16 @@ class DefaultCollaborationSuite:
                 }
             ],
         }
+
+    @staticmethod
+    def _project_initialization_warning(project_id: str) -> ProjectInitializationWarning:
+        return ProjectInitializationWarning(
+            code="default_collaboration_suite_project_activation_failed",
+            boundary="project_activation",
+            project_id=project_id,
+            message="默认协作套件已安装，但未能为一个 Project 自动选择 Graph。",
+            action="在 Studio 的编排选择中手动选择 Graph。",
+        )
 
     @staticmethod
     def _activation_warning(project_id: str) -> dict[str, str]:
