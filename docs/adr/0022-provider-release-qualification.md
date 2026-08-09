@@ -84,6 +84,11 @@ Token/latency/cost、失败 Trace 和重试分类；Playwright 发布矩阵覆�
 真实 20 回合 route 测试也已提供，但必须由维护者显式运行并保存证据；在此之前功能状态
 保持 `Experimental`。
 
+2026-08-10 的[DeepSeek 刻晴双回合最小闭环验收](../reports/deepseek-keqing-two-turn-qualification-2026-08-10.md)
+补充了默认协作套件经 Pi Core、真实 DeepSeek 流式调用和角色卡导入的两次连续提交证据。
+它只证明最小游玩闭环，不能替代本 ADR 的 20 回合、两次 SSE 重连和一次 Runtime 重启发布门槛；
+该路由仍是 `Experimental / 未验证`。
+
 ## Out of scope
 
 - 为每个供应商维护一套原生 SDK/protocol adapter；

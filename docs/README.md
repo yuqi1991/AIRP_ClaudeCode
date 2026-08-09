@@ -39,6 +39,10 @@
 - [Pi Agent Core 当前能力核验](research/pi-agent-core-current-evaluation.md) — 已采纳版本、运行边界与验证证据
 - [Pi Agent Execution Layer 可行性研究](research/pi-runtime-evaluation.md) — 历史技术选型研究
 
+### 验收报告
+
+- [DeepSeek 刻晴双回合最小闭环验收](reports/deepseek-keqing-two-turn-qualification-2026-08-10.md) — 默认协作套件的真实两回合证据；不替代 20 回合发布 qualification
+
 ### 开发
 
 - [Agent 协作指南](development/agent-guide.md)

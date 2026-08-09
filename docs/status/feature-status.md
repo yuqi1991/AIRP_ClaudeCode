@@ -29,7 +29,7 @@
 
 | 功能 | 当前情况 | 主要缺口 |
 |---|---|---|
-| Provider 发布 qualification / 浏览器真实长会话 | 默认 CI 已覆盖 deterministic 20 回合、两次 `Last-Event-ID` SSE 重连、Runtime 重启、失败分类和任务级 Token/latency/cost；Playwright 已覆盖 1440/1280 桌面与 390/360 移动几何门槛；DeepSeek 单回合 opt-in smoke 通过，20 回合真实 route 命令已提供 | 每个发布 route 仍需由维护者显式运行 `AIRP_RUN_REAL_QUALIFICATION=1` 并保存真实 20 回合证据；未运行前保持 Experimental |
+| Provider 发布 qualification / 浏览器真实长会话 | 默认 CI 已覆盖 deterministic 20 回合、两次 `Last-Event-ID` SSE 重连、Runtime 重启、失败分类和任务级 Token/latency/cost；Playwright 已覆盖 1440/1280 桌面与 390/360 移动几何门槛；[DeepSeek 刻晴两回合最小闭环](../reports/deepseek-keqing-two-turn-qualification-2026-08-10.md) 已经真实 Pi/默认协作套件、角色卡导入与连续提交验证 | 每个发布 route 仍需由维护者显式运行 `AIRP_RUN_REAL_QUALIFICATION=1` 并保存真实 20 回合证据；未运行前保持 Experimental |
 | 后台 NPC 与剧情规划 | 作为用户 Agent instruction/Worldbook 内容运行 | 引擎不提供内置叙事规则，质量取决于用户配置 |
 
 ## 明确不属于引擎
