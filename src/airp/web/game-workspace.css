@@ -194,6 +194,19 @@
 }
 
 .monitor-node-running .monitor-node-status { border-color: var(--airp-color-accent); color: var(--airp-color-accent); }
+.monitor-node-running .monitor-node-status::before {
+  content: "";
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-right: 4px;
+  border: 1px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  vertical-align: -1px;
+  animation: monitor-node-spin .8s linear infinite;
+}
+@keyframes monitor-node-spin { to { transform: rotate(360deg); } }
 .monitor-node-succeeded .monitor-node-status { border-color: var(--airp-color-accent-muted); color: var(--airp-color-accent-muted); }
 .monitor-node-failed .monitor-node-status { border-color: #b0624a; color: #b0624a; }
 
@@ -572,6 +585,7 @@
 }
 @media (prefers-reduced-motion: reduce) {
   [data-airp-region="studio-drawer"] { transition: none; }
+  .monitor-node-running .monitor-node-status::before { animation: none; }
 }
 
 /* Integrated game project drawer. */

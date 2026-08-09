@@ -128,6 +128,13 @@ class GraphRunObserver:
             payload = self._node_payload(node, node_run_id, state="running")
             payload.update({"delta": delta, "text": delta, "streamed_output": streamed})
             self.runtime._event(connection, "graph.node.delta", payload)
+            source_node_id = getattr(node, "source_node_id", node.node_id)
+            if source_node_id == self.plan.graph.output_node_id:
+                self.runtime._event(
+                    connection,
+                    "narrative.preview.delta",
+                    {"task_id": self.task_id, "preview": delta},
+                )
 
     def input_transformed(self, node, raw: str, result) -> None:
         self._record_regex_transform(node, "input", raw, result)
