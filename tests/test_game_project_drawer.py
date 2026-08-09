@@ -66,8 +66,10 @@ def test_game_page_wires_integrated_project_drawer_contract():
     drawer = (ROOT / "src" / "airp" / "web" / "game-drawer.js").read_text(encoding="utf-8")
     assert 'id="game-drawer-toggle"' in page
     assert '<script src="game-drawer.js"></script>' in page
-    for marker in ("data-game-search", "data-game-import", "data-game-tab", "data-game-save-card", "data-game-save-openings", "data-game-save-worldbooks", "data-game-save-graph"):
+    for marker in ("data-game-search", "data-game-import", "data-game-tab", "data-game-save-card", "data-game-save-openings", "data-game-save-worldbooks"):
         assert marker in drawer
+    assert "data-game-save-graph" not in drawer
+    assert "game-graph-select" not in drawer
     assert "/v1/session/project/switch" in drawer
 
 

@@ -494,9 +494,17 @@
     state.collections = Array.isArray(payload.collections) ? payload.collections : [];
     renderLibrary();
     var nextId = selectId || state.selectedId;
+    if (!nextId) {
+      var startup = global.AIRPStartupDiagnostics;
+      nextId = startup && typeof startup.preferredId === 'function'
+        ? await startup.preferredId('regex', state.collections, function(collection) { return collection.id; })
+        : (state.collections.length ? state.collections[0].id : null);
+    }
     if (nextId && state.collections.some(function(collection) { return collection.id === nextId; })) {
       await loadCollection(nextId);
-    } else if (!state.selectedId || !state.collections.some(function(collection) { return collection.id === state.selectedId; })) {
+    } else if (state.collections.length) {
+      await loadCollection(state.collections[0].id);
+    } else {
       resetEditor();
     }
     renderBindings();
@@ -558,6 +566,9 @@
       if ($('regex-drawer-name')) $('regex-drawer-name').focus();
       return;
     }
+    if (state.selectedId && Number.isInteger(state.collection.revision)) {
+      payload.expected_revision = state.collection.revision;
+    }
     var button = $('regex-drawer-save');
     button.disabled = true;
     try {
@@ -570,7 +581,10 @@
       await loadCollections(response.collection.id);
       showNotice('正则集合已保存。', 'success');
     } catch (error) {
-      showNotice(errorMessage(error, '无法保存此正则集合。'), 'error');
+      var conflicts = global.AIRPStudioRevisionConflict;
+      if (!(conflicts && conflicts.render($('regex-drawer-notice'), error, function (conflict) {
+        return loadCollection(conflict.object_id).then(function () { showNotice('已 Reload 最新正则集合。', 'success'); });
+      }))) showNotice(errorMessage(error, '无法保存此正则集合。'), 'error');
     } finally {
       button.disabled = false;
     }
@@ -637,14 +651,21 @@
       var response = await request(agentEndpoint + '/' + encodeURIComponent(agentId), {
         method: 'PUT',
         headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
-        body: JSON.stringify({ regex_collection_id: value })
+        body: JSON.stringify({ regex_collection_id: value, expected_revision: agent.revision })
       });
       var updated = response.agent || response;
-      agent.regex_collection_id = updated.regex_collection_id || null;
+      Object.assign(agent, updated);
       showNotice(value ? 'Agent 绑定已保存。' : 'Agent 绑定已清除。', 'success');
     } catch (error) {
       select.value = agent.regex_collection_id || '';
-      showNotice(errorMessage(error, '无法更新 Agent 绑定。'), 'error');
+      var conflicts = global.AIRPStudioRevisionConflict;
+      if (!(conflicts && conflicts.render($('regex-drawer-notice'), error, function (conflict) {
+        return request(conflict.reload_source).then(function (payload) {
+          Object.assign(agent, payload.agent || payload);
+          renderBindings();
+          showNotice('已 Reload 最新 Agent 绑定。', 'success');
+        });
+      }))) showNotice(errorMessage(error, '无法更新 Agent 绑定。'), 'error');
     } finally {
       select.disabled = false;
     }

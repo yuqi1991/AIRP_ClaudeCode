@@ -19,8 +19,6 @@
     worldbooksLoaded: false,
     worldbooksError: '',
     worldbooksRequestId: 0,
-    graphs: [],
-    selectedGraph: null,
     stateRequestId: 0,
     status: '',
     diagnostics: null
@@ -168,7 +166,7 @@
       return;
     }
     var tabs = [
-      ['card', '角色卡'], ['openings', '开场'], ['worldbooks', '世界书绑定'], ['graph', '编排选择']
+      ['card', '角色卡'], ['openings', '开场'], ['worldbooks', '世界书绑定']
     ];
     var html = '<div class="airp-game-project-head"><div><h3>' + esc(project.name || project.id) + '</h3><small>' + esc(project.id) + '</small></div>' +
       '<button class="airp-game-button danger" type="button" data-game-delete>删除游戏</button></div>' +
@@ -179,14 +177,13 @@
     html += '<div data-game-pane></div>';
     editor.innerHTML = html;
     Array.prototype.forEach.call(editor.querySelectorAll('[data-game-tab]'), function(button) {
-      button.addEventListener('click', function() { model.tab = button.getAttribute('data-game-tab'); renderEditor(); if (model.tab === 'worldbooks') loadWorldbooks(); if (model.tab === 'graph') loadGraphs(); });
+      button.addEventListener('click', function() { model.tab = button.getAttribute('data-game-tab'); renderEditor(); if (model.tab === 'worldbooks') loadWorldbooks(); });
     });
     editor.querySelector('[data-game-delete]').addEventListener('click', deleteProject);
     var pane = editor.querySelector('[data-game-pane]');
     if (model.tab === 'card') renderCardPane(pane);
     if (model.tab === 'openings') renderOpeningsPane(pane);
     if (model.tab === 'worldbooks') renderWorldbooksPane(pane);
-    if (model.tab === 'graph') renderGraphPane(pane);
   }
 
   function diagnosticMarkup() {
@@ -283,13 +280,6 @@
     pane.querySelector('[data-game-save-worldbooks]').addEventListener('click', saveWorldbooks);
   }
 
-  function renderGraphPane(pane) {
-    pane.innerHTML = '<div class="airp-game-field"><label for="game-graph-select">当前 Graph</label><select id="game-graph-select"><option value="">未选择 Graph</option>' +
-      model.graphs.map(function(graph) { return '<option value="' + esc(graph.id) + '" ' + (graph.id === model.selectedGraph ? 'selected' : '') + '>' + esc(graph.name || graph.id) + '</option>'; }).join('') +
-      '</select></div><div class="airp-game-form-actions"><button class="airp-game-button primary" type="button" data-game-save-graph>保存 Graph 选择</button></div>';
-    pane.querySelector('[data-game-save-graph]').addEventListener('click', saveGraph);
-  }
-
   function projectPayload(extra) {
     var project = model.project;
     return Object.assign({
@@ -371,17 +361,6 @@
     }).catch(function(error) { setStatus(error.message, true); });
   }
 
-  function saveGraph() {
-    var graphId = panel.querySelector('#game-graph-select').value || null;
-    return request('/v1/session/runtime/graph', {
-      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ graph_id: graphId })
-    }).then(function() {
-      model.selectedGraph = graphId;
-      setStatus('Graph 选择已保存');
-      if (typeof global.loadActiveGraphPanel === 'function') global.loadActiveGraphPanel();
-    }).catch(function(error) { setStatus(error.message, true); });
-  }
-
   function loadWorldbooks() {
     var requestId = ++model.worldbooksRequestId;
     model.worldbooksLoading = true;
@@ -404,14 +383,6 @@
       setStatus(error.message, true);
       return null;
     });
-  }
-
-  function loadGraphs() {
-    Promise.all([request('/v1/studio/graphs'), request('/v1/session/runtime/graph')]).then(function(values) {
-      model.graphs = values[0].graphs || [];
-      model.selectedGraph = values[1].selected && values[1].selected.graph_id || null;
-      if (model.tab === 'graph') renderEditor();
-    }).catch(function(error) { setStatus(error.message, true); });
   }
 
   function loadProject(projectId) {
@@ -527,7 +498,7 @@
   document.addEventListener('keydown', function(event) { if (event.key === 'Escape' && model.open) setOpen(false); });
   document.addEventListener('DOMContentLoaded', function() {
     renderShell();
-    loadState().then(function() { if (model.project) { loadWorldbooks(); loadGraphs(); } });
+    loadState().then(function() { if (model.project) loadWorldbooks(); });
   });
 
   global.AIRPGameDrawer = Object.freeze({ open: function() { setOpen(true); }, close: function() { setOpen(false); }, refresh: loadState });

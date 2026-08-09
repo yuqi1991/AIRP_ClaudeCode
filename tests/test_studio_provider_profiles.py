@@ -180,6 +180,38 @@ def test_studio_providers_view_is_served_from_runtime_and_uses_profile_seam(tmp_
     assert 'src="studio-model-drawer.js"' in page
 
 
+def test_provider_profile_copy_creates_an_ordinary_keyless_profile(tmp_path):
+    with _server(tmp_path) as server:
+        status, created = _json_request(
+            "POST",
+            f"{server.base_url}/v1/studio/providers",
+            {
+                "id": "copy-source",
+                "name": "Source Provider",
+                "base_url": "https://copy.example/v1",
+                "api_format": "chat_completions",
+                "model_ids": ["model-a"],
+                "api_key": "source-only-secret",
+            },
+        )
+        assert status == 201
+        assert created["profile"]["key_configured"] is True
+
+        status, copied = _json_request(
+            "POST",
+            f"{server.base_url}/v1/studio/providers/copy-source/copy",
+            {},
+        )
+
+        assert status == 201
+        assert copied["profile"]["id"] != "copy-source"
+        assert copied["profile"]["name"] == "Source Provider Copy"
+        assert copied["profile"]["base_url"] == "https://copy.example/v1"
+        assert copied["profile"]["model_ids"] == ["model-a"]
+        assert copied["profile"]["key_configured"] is False
+        assert "source-only-secret" not in json.dumps(copied)
+
+
 class _ModelsUpstream:
     def __init__(self):
         outer = self

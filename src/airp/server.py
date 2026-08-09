@@ -815,6 +815,16 @@ class SessionRuntimeServer:
         except ValueError as exc:
             return {"ok": False, "error": "invalid_api_key", "message": str(exc)}, 400
 
+    def _studio_provider_copy(self, profile_id: str, body: dict) -> tuple[dict[str, Any], int]:
+        if self.provider_profiles is None:
+            return {"ok": False, "error": "studio_library_unavailable"}, 501
+        try:
+            return {"ok": True, **self.provider_profiles.copy_profile(profile_id, body)}, 201
+        except ProviderProfileError as exc:
+            return self._studio_provider_error(exc)
+        except ValueError as exc:
+            return {"ok": False, "error": "invalid_provider_profile", "message": str(exc)}, 400
+
     def _studio_provider_delete(self, profile_id: str) -> tuple[dict[str, Any], int]:
         if self.provider_profiles is None:
             return {"ok": False, "error": "studio_library_unavailable"}, 501
@@ -1923,6 +1933,10 @@ class SessionRuntimeServer:
                     if path.startswith(prefix + "/"):
                         suffix = path[len(prefix) + 1:]
                         parts = suffix.split("/")
+                        if len(parts) == 2 and parts[1] in {"copy", "duplicate"}:
+                            payload, status = server_ref._studio_provider_copy(parts[0], body)
+                            self._send_json(status, payload)
+                            return
                         if len(parts) == 2 and parts[1] in {"enable", "disable"}:
                             payload, status = server_ref._studio_provider_update(
                                 parts[0], {"enabled": parts[1] == "enable"}

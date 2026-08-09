@@ -30,10 +30,18 @@ def test_game_page_exposes_stable_workspace_regions_and_slots():
 def test_game_page_loads_workspace_contract_and_visual_tokens():
     page = (WEB_ROOT / "index.html").read_text(encoding="utf-8")
     contract = (WEB_ROOT / "game-workspace-contract.js").read_text(encoding="utf-8")
+    startup = (WEB_ROOT / "startup-diagnostics.js").read_text(encoding="utf-8")
     tokens = (WEB_ROOT / "game-workspace.css").read_text(encoding="utf-8")
 
     assert '<link rel="stylesheet" href="game-workspace.css">' in page
+    assert '<script src="startup-diagnostics.js"></script>' in page
+    assert '<script src="studio-revision-conflict.js"></script>' in page
+    assert page.index('<script src="startup-diagnostics.js"></script>') < page.index('<script src="game-workspace-contract.js"></script>')
     assert '<script src="game-workspace-contract.js"></script>' in page
+    assert "AIRPStartupDiagnostics.init" in contract
+    assert "/v1/studio/startup" not in contract
+    assert "initial_resource_ids" in startup
+    assert "project_id" in startup
     assert "version: 1" in contract
     assert "studioDrawer" in contract
     assert "nodeDebug" in contract
@@ -67,6 +75,14 @@ def test_game_drawer_exposes_project_delete_control_and_api():
     assert "data-game-delete" in script
     assert "method: 'DELETE'" in script
     assert "删除游戏" in script
+
+
+def test_game_drawer_does_not_expose_a_second_active_graph_selector():
+    script = (WEB_ROOT / "game-drawer.js").read_text(encoding="utf-8")
+
+    assert "game-graph-select" not in script
+    assert "编排选择" not in script
+    assert "/v1/session/runtime/graph" not in script
 
 
 def test_workspace_contract_exports_state_and_event_boundaries():
@@ -154,7 +170,6 @@ def test_agents_orchestration_drawer_exposes_linear_editor_contract():
         "/v1/session/project",
         "/v1/studio/regex-collections",
         "/v1/studio/graphs",
-        "/v1/session/runtime/graph",
     ):
         assert api_path in script
     for behavior in (
@@ -164,10 +179,24 @@ def test_agents_orchestration_drawer_exposes_linear_editor_contract():
         "card_facts",
         "finalEnabledNodeId",
         "ensureValidOutput",
-        "studio:runtime-graph-selected",
     ):
         assert behavior in script
+    assert "/v1/session/runtime/graph" not in script
+    assert 'id="studio-graph-use"' not in page
+    assert 'id="studio-graph-runtime-state"' not in page
+    assert page.count('id="runtime-graph-select"') == 1
     assert ".studio-topology-node::after" in styles
+
+
+def test_all_studio_saves_present_revision_conflicts_and_regex_binding_is_versioned():
+    provider = (WEB_ROOT / "studio-model-drawer.js").read_text(encoding="utf-8")
+    agents = (WEB_ROOT / "studio-agents-drawer.js").read_text(encoding="utf-8")
+    regex = (WEB_ROOT / "regex-drawer.js").read_text(encoding="utf-8")
+
+    assert "AIRPStudioRevisionConflict" in provider
+    assert agents.count("AIRPStudioRevisionConflict") >= 2
+    assert regex.count("AIRPStudioRevisionConflict") >= 2
+    assert "expected_revision: agent.revision" in regex
 
 
 def test_game_page_mounts_worldbook_definition_drawer_and_api_actions():
@@ -227,6 +256,7 @@ def test_model_drawer_exposes_redacted_provider_profile_contract():
         'id="studio-provider-api-key"',
         'id="studio-provider-key-status"',
         'id="studio-provider-models"',
+        'id="studio-provider-copy"',
         'id="studio-provider-test"',
         'id="studio-provider-refresh"',
         'id="studio-provider-delete-key"',
@@ -246,6 +276,7 @@ def test_model_drawer_exposes_redacted_provider_profile_contract():
         "profilePayload",
         "testConnection",
         "refreshModels",
+        "copyProfile",
         "deleteKey",
         "model_discovery",
         "API 密钥不会回显",

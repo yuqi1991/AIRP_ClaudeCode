@@ -145,6 +145,18 @@
     emit('state:' + name, state[name]);
   }
 
+  function loadStartupDiagnostics() {
+    return global.AIRPStartupDiagnostics && typeof global.AIRPStartupDiagnostics.init === 'function'
+      ? global.AIRPStartupDiagnostics.init()
+      : Promise.resolve(null);
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', loadStartupDiagnostics);
+  } else {
+    loadStartupDiagnostics();
+  }
+
   global.AIRPWorkspace = Object.freeze({
     version: 1,
     regions: regionSelectors,

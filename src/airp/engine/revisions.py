@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import time
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 
 def revision(value: Any, default: int = 0) -> int:
@@ -63,10 +65,27 @@ def append_audit(
     return record
 
 
-def conflict_payload(object_type: str, object_id: str, expected: int, current: int) -> dict[str, Any]:
+def conflict_payload(
+    object_type: str,
+    object_id: str,
+    expected: int,
+    current: int,
+    current_object: dict[str, Any],
+) -> dict[str, Any]:
+    prefixes = {
+        "provider_profile": "/v1/studio/providers/",
+        "agent": "/v1/studio/agents/",
+        "graph": "/v1/studio/graphs/",
+        "regex_collection": "/v1/studio/regex-collections/",
+        "project": "/v1/studio/projects/",
+        "project_worldbooks": "/v1/studio/projects/",
+        "worldbook": "/v1/studio/worldbooks/",
+    }
     return {
         "object_type": object_type,
         "object_id": object_id,
         "expected_revision": expected,
         "current_revision": current,
+        "current_object": copy.deepcopy(current_object),
+        "reload_source": prefixes[object_type] + quote(object_id, safe=""),
     }

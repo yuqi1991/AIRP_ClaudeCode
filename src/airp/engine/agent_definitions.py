@@ -198,7 +198,7 @@ class AgentDefinitionStore:
             if expected is not None and expected != current.get("revision", 0):
                 raise AgentDefinitionError(
                     "revision_conflict", f"Agent Definition {agent_id!r} revision conflict", status=409,
-                    details=conflict_payload("agent", agent_id, expected, current.get("revision", 0)),
+                    details=conflict_payload("agent", agent_id, expected, current.get("revision", 0), current),
                 )
             merged = {**current, **copy.deepcopy(payload)}
             merged["agent_id"] = agent_id

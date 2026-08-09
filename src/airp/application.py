@@ -39,10 +39,23 @@ class Application:
             for diagnostic in result.get("diagnostics", [])
             if isinstance(diagnostic, dict)
         ]
+        resource_keys = {
+            "provider": "provider_profile_id",
+            "regex": "regex_collection_id",
+            "writer": "writer_agent_id",
+            "reviewer": "reviewer_agent_id",
+            "graph": "graph_id",
+        }
+        initial_resource_ids = {
+            public_name: result[source_name]
+            for public_name, source_name in resource_keys.items()
+            if isinstance(result.get(source_name), str) and result[source_name]
+        }
         self.startup = {
             "ok": True,
             "status": "degraded" if result.get("status") == "degraded" else "success",
             "diagnostics": diagnostics,
+            "initial_resource_ids": initial_resource_ids,
         }
         return self.startup
 

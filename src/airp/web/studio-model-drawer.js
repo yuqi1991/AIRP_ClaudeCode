@@ -10,6 +10,7 @@
   var state = {
     profiles: [],
     selectedId: null,
+    selectedProfile: null,
     filter: '',
     loading: false,
     loaded: false
@@ -185,6 +186,7 @@
 
   function fillProfile(profile) {
     state.selectedId = profile.id;
+    state.selectedProfile = profile;
     $('studio-provider-title').textContent = '编辑 ' + (profile.name || profile.id);
     $('studio-provider-selection').textContent = profile.id || '';
     $('studio-provider-name').value = profile.name || '';
@@ -195,6 +197,7 @@
     $('studio-provider-models').value = (profile.model_ids || []).join('\n');
     keyStatus(profile.key_configured);
     renderCatalog(profile.model_ids || []);
+    setActionDisabled('studio-provider-copy', false);
     setActionDisabled('studio-provider-test', false);
     setActionDisabled('studio-provider-refresh', false);
     setActionDisabled('studio-provider-delete-key', !profile.key_configured);
@@ -204,6 +207,7 @@
 
   function resetForm() {
     state.selectedId = null;
+    state.selectedProfile = null;
     $('studio-provider-form').reset();
     $('studio-provider-enabled').checked = true;
     $('studio-provider-title').textContent = '新建服务商配置';
@@ -214,6 +218,7 @@
     renderCatalog([]);
     setConnection('');
     setNotice('');
+    setActionDisabled('studio-provider-copy', true);
     setActionDisabled('studio-provider-test', true);
     setActionDisabled('studio-provider-refresh', true);
     setActionDisabled('studio-provider-delete-key', true);
@@ -243,9 +248,13 @@
       if (state.selectedId) {
         var current = state.profiles.find(function (profile) { return profile.id === state.selectedId; });
         if (!current) resetForm();
-      } else if (state.profiles.length) {
-        return loadProfile(state.profiles[0].id);
+        return null;
       }
+      var startup = global.AIRPStartupDiagnostics;
+      var preferred = startup && typeof startup.preferredId === 'function'
+        ? startup.preferredId('provider', state.profiles, function (profile) { return profile.id; })
+        : Promise.resolve(state.profiles.length ? state.profiles[0].id : null);
+      return preferred.then(function (profileId) { return profileId ? loadProfile(profileId) : null; });
     }).catch(function (error) {
       setNotice(errorMessage(error, '读取服务商配置失败'), true);
     }).then(function () {
@@ -261,6 +270,9 @@
       enabled: $('studio-provider-enabled').checked,
       model_ids: $('studio-provider-models').value.split(/\r?\n/).map(function (value) { return value.trim(); }).filter(Boolean)
     };
+    if (state.selectedProfile && Number.isInteger(state.selectedProfile.revision)) {
+      payload.expected_revision = state.selectedProfile.revision;
+    }
     var apiKey = $('studio-provider-api-key').value.trim();
     if (apiKey) payload.api_key = apiKey;
     return payload;
@@ -294,6 +306,10 @@
       emit('studio:provider-saved', data.profile);
     }).catch(function (error) {
       setConnection('');
+      var conflicts = global.AIRPStudioRevisionConflict;
+      if (conflicts && conflicts.render($('studio-provider-notice'), error, function (payload) {
+        return loadProfile(payload.object_id).then(function () { setNotice('已 Reload 最新服务商配置'); });
+      })) return;
       setNotice(errorMessage(error, '保存服务商失败'), true);
     });
   }
@@ -350,6 +366,26 @@
       });
   }
 
+  function copyProfile() {
+    if (!state.selectedId) return;
+    setConnection('复制服务商中…');
+    jsonFetch(endpoint + '/' + encodeURIComponent(state.selectedId) + '/copy', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      body: '{}'
+    }).then(function (data) {
+      fillProfile(data.profile);
+      return loadProfiles().then(function () { fillProfile(data.profile); });
+    }).then(function () {
+      setConnection('');
+      setNotice('服务商已复制；API 密钥未复制');
+      emit('studio:provider-copied', { id: state.selectedId });
+    }).catch(function (error) {
+      setConnection('');
+      setNotice(errorMessage(error, '复制服务商失败'), true);
+    });
+  }
+
   function deleteProfile() {
     if (!state.selectedId || !global.confirm('删除当前服务商配置？')) return;
     setConnection('删除服务商中…');
@@ -387,6 +423,7 @@
     });
     $('studio-provider-form').addEventListener('submit', saveProfile);
     $('studio-provider-test').addEventListener('click', testConnection);
+    $('studio-provider-copy').addEventListener('click', copyProfile);
     $('studio-provider-refresh').addEventListener('click', refreshModels);
     $('studio-provider-delete-key').addEventListener('click', deleteKey);
     $('studio-provider-delete').addEventListener('click', deleteProfile);

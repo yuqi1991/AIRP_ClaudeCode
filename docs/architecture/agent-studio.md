@@ -36,7 +36,7 @@ Agent Studio 集成在 AIRP 游戏界面中。游戏始终是底层主工作区�
 
 | 入口 | 管理对象 | 主要能力 |
 |---|---|---|
-| 游戏 | `AIRP Project` | 浏览和切换已导入游戏；编辑当前游戏的角色卡、开场、世界书绑定和编排选择 |
+| 游戏 | `AIRP Project` | 浏览和切换已导入游戏；编辑当前游戏的角色卡、开场和世界书绑定；活动 Graph 仅在 Monitor 选择 |
 | 世界书 | `Worldbook Definition` | 导入、新建、复制、重命名、编辑条目和导出 AIRP JSON |
 | Agents 与编排 | `Agent Definition`、`Graph Definition` | 编辑 Agent instruction、模型参数和工具权限；组织、排序和配置执行节点 |
 | Regex Collections | `Regex Collection` | 管理 Agent 可绑定的有序输入、输出替换与提取规则，并测试转换结果 |
@@ -56,7 +56,7 @@ Monitor 的存档区展示当前存档名称、Revision 和最后保存时间，
 
 游戏抽屉左侧显示所有已导入的游戏 Project，右侧以更大面积编辑当前正在游玩的游戏。编辑区包含角色卡、开场、世界书绑定和编排配置选择。
 
-左侧游戏列表提供搜索和导入入口。右侧编辑区使用 `角色卡`、`开场`、`世界书绑定`、`编排选择` 四个标签页；活动 Graph 选择按游戏独立保存为运行配置，但不写入角色卡 Project 内容。
+左侧游戏列表提供搜索和导入入口。右侧编辑区使用 `角色卡`、`开场`、`世界书绑定` 三个标签页；活动 Graph 仅通过游戏 Monitor 的 Graph 下拉选择，按游戏独立保存为运行配置，但不写入角色卡 Project 内容。
 
 点击另一游戏会将其设为当前游戏，并恢复该游戏最后使用的存档会话。如果当前游戏正在生成回复，切换前必须确认；确认后先取消生成并等待任务进入不提交半成品的终态，再执行切换，取消确认则留在当前游戏。
 
@@ -328,7 +328,7 @@ complete receipt 消费首次赠送意图。之后安装不比较、修复、覆
 
 Project 创建、角色卡导入与复制在 definition 成功持久化后各调用一次 `initialize_project()`；更新、加载、切换和普通启动不调用。首次考虑记录按 Project `instance_id` 保存，因此用户 clear/改选后不会被重选；删除 Project 会与 Active Graph、Project runtime 和该记录一起清理，同 ID 重建获得新的首次初始化。初始化补偿使用 selection claim token，避免同值 ABA 写入被误清。删除默认 Graph 会清除引用它的活动选择，receipt 仍保持消费状态，后续 Project 保持未选择且不会重建默认对象。
 
-`Application.initialize()` 把可补偿的普通安装失败归一为 `success` 或 `degraded` startup report，Server 通过只读 `GET /v1/studio/startup` 暴露固定白名单诊断。诊断不包含底层异常文本、Authorization、API key 或 Secret。损坏 metadata、未知恢复冲突、Active Graph 不安全状态与补偿失败继续抛出 typed fatal error，并在 Server bind 前阻止启动。
+`Application.initialize()` 把可补偿的普通安装失败归一为 `success` 或 `degraded` startup report，Server 通过只读 `GET /v1/studio/startup` 暴露固定白名单诊断和 receipt 的普通 `initial_resource_ids`，供四个 Studio 抽屉首次打开时定位实际安装对象；对象已删除时回退普通列表选择。诊断不包含底层异常文本、Authorization、API key 或 Secret。损坏 metadata、未知恢复冲突、Active Graph 不安全状态与补偿失败继续抛出 typed fatal error，并在 Server bind 前阻止启动。
 
 #29 正式修订 #24 的两 action 接口约束：Default Collaboration Suite 的公共 lifecycle actions 为 `install_once()`、`initialize_project()` 与 `begin_project_deletion()` 三个；第三个 action 在 DELETE 前移除 initialization ledger，返回的 `ProjectDeletionToken` 封装 commit/rollback，Server 不直接操作 lifecycle 值。Project-owned card/SQLite/WAL/SHM 先由 `ProjectRuntimeStore.stage_discard()` rename 到同文件系统 quarantine；definition 删除完成即形成逻辑提交，物理清理为可重试的 best-effort finalize，且 cleanup 只消费已 commit token 明确登记的垃圾，失败只保留 quarantine 并返回安全 warning，不复活 Project。角色卡导入由 `ProjectImportTransaction` 持有本次创建的 Project 与 embedded Worldbook 副作用，activation/configuration 失败通过 token rollback，不删除预存或共享 Worldbook。create/copy/import 持久化后的任意 `Exception` 都统一复用完整 Project lifecycle compensation，并映射为不含底层异常文本的稳定 HTTP 错误。
 

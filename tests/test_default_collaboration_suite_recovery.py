@@ -315,7 +315,7 @@ def test_install_keeps_the_suite_when_one_project_selection_cannot_be_written(
             "boundary": "project_activation",
             "project_id": "story",
             "message": "默认协作套件已安装，但未能为一个 Project 自动选择 Graph。",
-            "action": "在 Studio 的编排选择中手动选择 Graph。",
+            "action": "在游戏 Monitor 的 Graph 下拉中手动选择 Graph。",
         }
     ]
     assert application.active_graphs.graph_id_for("story") is None

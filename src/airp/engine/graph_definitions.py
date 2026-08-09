@@ -139,7 +139,7 @@ class GraphDefinitionStore:
             if expected is not None and expected != current.get("revision", 0):
                 raise GraphDefinitionError(
                     "revision_conflict", f"Graph Definition {graph_id!r} revision conflict", status=409,
-                    details=conflict_payload("graph", graph_id, expected, current.get("revision", 0)),
+                    details=conflict_payload("graph", graph_id, expected, current.get("revision", 0), current),
                 )
             merged = {**current, **copy.deepcopy(payload), "id": graph_id, "graph_id": graph_id}
             graph = self._normalize(merged, graph_id=graph_id)

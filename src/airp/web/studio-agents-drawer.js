@@ -22,7 +22,6 @@
     graphDraft: null,
     selectedNodeIndex: -1,
     selectedLoopId: null,
-    runtimeGraphId: null,
     referencesLoaded: false
   };
 
@@ -294,9 +293,13 @@
       if (state.selectedAgentId) {
         var current = state.agents.find(function (item) { return item.agent_id === state.selectedAgentId; });
         if (current && !state.selectedAgent) fillAgent(current);
-      } else if (state.agents.length) {
-        return selectAgent(state.agents[0].agent_id);
+        return null;
       }
+      var startup = global.AIRPStartupDiagnostics;
+      var preferred = startup && typeof startup.preferredId === 'function'
+        ? startup.preferredId('writer', state.agents, function (agent) { return agent.agent_id; })
+        : Promise.resolve(state.agents.length ? state.agents[0].agent_id : null);
+      return preferred.then(function (agentId) { return agentId ? selectAgent(agentId) : null; });
     }).catch(function (error) {
       setStatus(error.message || '读取 Agents 失败', true);
     });
@@ -314,6 +317,7 @@
     if (temperature !== undefined) generation.temperature = temperature;
     if (maxTokens !== undefined) generation.max_output_tokens = maxTokens;
     return {
+      expected_revision: state.selectedAgent && state.selectedAgent.revision,
       name: $('studio-agent-name').value.trim(),
       instruction: $('studio-agent-instruction').value,
       provider_profile_id: $('studio-agent-provider').value || null,
@@ -345,6 +349,10 @@
       setStatus('Agent 已保存');
       emit('studio:agent-saved', state.selectedAgent);
     }).catch(function (error) {
+      var conflicts = global.AIRPStudioRevisionConflict;
+      if (conflicts && conflicts.render($('studio-drawer-status'), error, function (payload) {
+        return selectAgent(payload.object_id).then(function () { setStatus('已 Reload 最新 Agent'); });
+      })) return;
       setStatus(error.message || '保存 Agent 失败', true);
     });
   }
@@ -496,7 +504,7 @@
       title.textContent = graph.name || id;
       var meta = document.createElement('span');
       meta.className = 'studio-object-item-meta';
-      meta.textContent = (graph.nodes || []).length + ' 个节点' + (id === state.runtimeGraphId ? ' · 运行中' : '');
+      meta.textContent = (graph.nodes || []).length + ' 个节点';
       row.append(title, meta);
       row.addEventListener('click', function () { selectGraph(id); });
       list.appendChild(row);
@@ -514,7 +522,6 @@
     $('studio-graph-selection').textContent = '新建编排图';
     $('studio-graph-title').textContent = '接力链';
     $('studio-graph-mode').value = 'handoff';
-    setButtonDisabled('studio-graph-use', true);
     setButtonDisabled('studio-graph-copy', true);
     setButtonDisabled('studio-graph-delete', true);
     renderTopology();
@@ -555,7 +562,6 @@
     $('studio-graph-mode').value = state.graphDraft.mode;
     $('studio-graph-selection').textContent = state.graphDraft.name || state.graphDraft.id || '未选择 Graph';
     $('studio-graph-title').textContent = state.graphDraft.name || '接力链';
-    setButtonDisabled('studio-graph-use', false);
     setButtonDisabled('studio-graph-copy', false);
     setButtonDisabled('studio-graph-delete', false);
     renderGraphList();
@@ -879,21 +885,14 @@
       if (state.selectedGraphId) {
         var current = state.graphs.find(function (item) { return (item.id || item.graph_id) === state.selectedGraphId; });
         if (current && !state.graphDraft) return selectGraph(state.selectedGraphId);
-      } else if (state.graphs.length) {
-        return selectGraph(state.graphs[0].id || state.graphs[0].graph_id);
+        return null;
       }
+      var startup = global.AIRPStartupDiagnostics;
+      var preferred = startup && typeof startup.preferredId === 'function'
+        ? startup.preferredId('graph', state.graphs, function (graph) { return graph.id || graph.graph_id; })
+        : Promise.resolve(state.graphs.length ? (state.graphs[0].id || state.graphs[0].graph_id) : null);
+      return preferred.then(function (graphId) { return graphId ? selectGraph(graphId) : null; });
     }).catch(function (error) { setStatus(error.message || '读取编排图列表失败', true); });
-  }
-
-  function loadRuntimeGraph() {
-    return jsonFetch('/v1/session/runtime/graph').then(function (data) {
-      state.runtimeGraphId = data.selected && data.selected.graph_id || null;
-      $('studio-graph-runtime-state').textContent = state.runtimeGraphId ? '运行时：' + state.runtimeGraphId : '运行时未选择编排图';
-      renderGraphList();
-      emit('studio:runtime-graph-loaded', data);
-    }).catch(function () {
-      $('studio-graph-runtime-state').textContent = '运行时选择不可用';
-    });
   }
 
   function addGraphNode() {
@@ -939,6 +938,7 @@
     }
     state.graphDraft.nodes.forEach(function (node, index) { node.order = index; });
     return {
+      expected_revision: state.graphDraft.revision,
       id: state.selectedGraphId ? state.selectedGraphId : ($('studio-graph-id').value.trim() || undefined),
       name: state.graphDraft.name.trim(),
       mode: state.graphDraft.mode,
@@ -965,23 +965,13 @@
     }).then(function () {
       setStatus('编排图已保存');
       emit('studio:graph-saved', state.graphDraft);
-    }).catch(function (error) { setStatus(error.message || '保存编排图失败', true); });
-  }
-
-  function useGraph() {
-    if (!state.selectedGraphId) return;
-    setStatus('更新运行时选择…');
-    jsonFetch('/v1/session/runtime/graph', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-      body: JSON.stringify({ graph_id: state.selectedGraphId })
-    }).then(function (data) {
-      state.runtimeGraphId = state.selectedGraphId;
-      $('studio-graph-runtime-state').textContent = '运行时：' + state.runtimeGraphId;
-      renderGraphList();
-      setStatus('运行时选择已保存');
-      emit('studio:runtime-graph-selected', data);
-    }).catch(function (error) { setStatus(error.message || '更新运行时选择失败', true); });
+    }).catch(function (error) {
+      var conflicts = global.AIRPStudioRevisionConflict;
+      if (conflicts && conflicts.render($('studio-drawer-status'), error, function (payload) {
+        return selectGraph(payload.object_id).then(function () { setStatus('已 Reload 最新编排图'); });
+      })) return;
+      setStatus(error.message || '保存编排图失败', true);
+    });
   }
 
   function copyGraph() {
@@ -1040,7 +1030,6 @@
     $('studio-graph-new').addEventListener('click', resetGraph);
     $('studio-graph-add-node').addEventListener('click', addGraphNode);
     $('studio-graph-form').addEventListener('submit', saveGraph);
-    $('studio-graph-use').addEventListener('click', useGraph);
     $('studio-graph-copy').addEventListener('click', copyGraph);
     $('studio-graph-delete').addEventListener('click', deleteGraph);
     $('studio-node-remove').addEventListener('click', removeGraphNode);
@@ -1065,6 +1054,5 @@
   resetAgent();
   resetGraph();
   editorView('instruction');
-  loadRuntimeGraph();
   global.AIRPStudioAgentsDrawer = Object.freeze({ open: openDrawer, close: closeDrawer, state: state });
 })(window, document);

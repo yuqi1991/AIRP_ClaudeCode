@@ -117,7 +117,7 @@ class WorldbookLibrary:
             if expected is not None and expected != current.get("revision", 0):
                 raise WorldbookLibraryError(
                     "revision_conflict", f"Worldbook {worldbook_id!r} revision conflict", status=409,
-                    details=conflict_payload("worldbook", worldbook_id, expected, current.get("revision", 0)),
+                    details=conflict_payload("worldbook", worldbook_id, expected, current.get("revision", 0), current),
                 )
             merged = {**current, **payload, "id": worldbook_id}
             worldbook, renamed = self._normalize_for_write(
@@ -236,7 +236,7 @@ class WorldbookLibrary:
             if expected is not None and expected != current.get("revision", 0):
                 raise WorldbookLibraryError(
                     "revision_conflict", f"Project binding {project_id!r} revision conflict", status=409,
-                    details=conflict_payload("project_worldbooks", project_id, expected, current.get("revision", 0)),
+                    details=conflict_payload("project_worldbooks", project_id, expected, current.get("revision", 0), current),
                 )
             worldbook_ids: list[str] = []
             for worldbook_id in raw_ids:

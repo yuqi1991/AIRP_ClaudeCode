@@ -62,8 +62,274 @@ async function studioPost(page, path, body) {
   }, { endpoint: path, payload: body });
 }
 
+async function studioPut(page, path, body) {
+  return page.evaluate(async ({ endpoint, payload }) => {
+    const response = await fetch(endpoint, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.message || data.error || endpoint);
+    return data;
+  }, { endpoint: path, payload: body });
+}
+
 test.describe('desktop 1440x900 release baseline', () => {
   test.use({ viewport: { width: 1440, height: 900 } });
+
+  test('materialized default suite loads into every Studio editor on first open', async ({ page }) => {
+    await openWorkspace(page);
+
+    await page.locator('#studio-model-toggle').click();
+    await expect(page.locator('#studio-provider-name')).toHaveValue('DeepSeek');
+    await expect(page.locator('#studio-provider-key-status')).toContainText('未配置');
+
+    await page.locator('#studio-agents-toggle').click();
+    await expect(page.locator('#studio-agent-name')).not.toHaveValue('');
+    await page.locator('#studio-agent-list').getByRole('button', { name: /正文创作者/ }).click();
+    await expect(page.locator('#studio-agent-name')).toHaveValue('正文创作者');
+    await expect(page.locator('#studio-agent-model')).toHaveValue('deepseek-v4-flash');
+
+    await page.locator('#studio-model-toggle').click();
+    const originalProviderId = await page.locator('#studio-provider-selection').textContent();
+    const copiedProvider = page.waitForResponse((response) => response.request().method() === 'POST' && /\/v1\/studio\/providers\/[^/]+\/copy$/.test(response.url()));
+    await page.locator('#studio-provider-copy').click();
+    expect((await copiedProvider).status()).toBe(201);
+    await expect(page.locator('#studio-provider-selection')).not.toHaveText(originalProviderId);
+    await expect(page.locator('#studio-provider-key-status')).toContainText('未配置');
+
+    await page.locator('#studio-agents-toggle').click();
+    await page.locator('#studio-drawer-mode-toggle').click();
+    await expect(page.locator('#studio-graph-name')).toHaveValue('默认双轮创作审查');
+    await expect(page.locator('#studio-graph-topology .studio-topology-node')).toHaveCount(3);
+
+    await page.locator('#studio-regex-toggle').click();
+    await expect(page.locator('#regex-drawer-name')).toHaveValue('默认正文提取');
+    await expect(page.locator('#regex-drawer-rules .regex-rule-card')).toHaveCount(1);
+  });
+
+  test('startup diagnostics render every safe project warning and Graph selection only lives in Monitor', async ({ page }) => {
+    await page.route('**/v1/studio/startup', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          ok: true,
+          status: 'degraded',
+          diagnostics: [
+            {
+              code: 'first_warning', boundary: 'project_activation', project_id: 'project-one',
+              message: '第一个安全诊断。', action: '执行第一个动作。',
+            }, {
+              code: 'second_warning', boundary: 'project_activation', project_id: 'project-two',
+              message: '第二个安全诊断。', action: '执行第二个动作。',
+            },
+          ],
+          secret: 'must-not-render',
+        }),
+      });
+    });
+
+    await openWorkspace(page);
+    await expect(page.locator('#studio-startup-diagnostics')).toBeVisible();
+    await expect(page.locator('.studio-startup-diagnostic')).toHaveCount(2);
+    await expect(page.locator('#studio-startup-diagnostics')).toContainText('project-one');
+    await expect(page.locator('#studio-startup-diagnostics')).toContainText('project-two');
+    await expect(page.locator('body')).not.toContainText('must-not-render');
+    await expect(page.locator('#runtime-graph-select')).toHaveCount(1);
+    await expect(page.locator('#studio-graph-use')).toHaveCount(0);
+    await expect(page.locator('#studio-graph-runtime-state')).toHaveCount(0);
+    await page.locator('#game-drawer-toggle').click();
+    await expect(page.getByRole('tab', { name: '编排选择' })).toHaveCount(0);
+    await expect(page.locator('#game-graph-select')).toHaveCount(0);
+  });
+
+  test('ordinary Studio saves carry the loaded Library revision', async ({ page }) => {
+    await openWorkspace(page);
+
+    await page.locator('#studio-model-toggle').click();
+    await expect(page.locator('#studio-provider-name')).toHaveValue('DeepSeek');
+    const providerRequest = page.waitForRequest((request) => request.method() === 'PUT' && /\/v1\/studio\/providers\/[^/]+$/.test(request.url()));
+    await page.locator('#studio-provider-form button[type="submit"]').click();
+    expect((await providerRequest).postDataJSON().expected_revision).toEqual(expect.any(Number));
+
+    await page.locator('#studio-agents-toggle').click();
+    await page.locator('#studio-agent-list').getByRole('button', { name: /正文创作者/ }).click();
+    const agentRequest = page.waitForRequest((request) => request.method() === 'PUT' && /\/v1\/studio\/agents\/[^/]+$/.test(request.url()));
+    await page.locator('#studio-agent-form button[type="submit"]').click();
+    expect((await agentRequest).postDataJSON().expected_revision).toEqual(expect.any(Number));
+
+    await page.locator('#studio-drawer-mode-toggle').click();
+    await expect(page.locator('#studio-graph-name')).toHaveValue('默认双轮创作审查');
+    const graphRequest = page.waitForRequest((request) => request.method() === 'PUT' && /\/v1\/studio\/graphs\/[^/]+$/.test(request.url()));
+    await page.locator('#studio-graph-form button[type="submit"]').click();
+    expect((await graphRequest).postDataJSON().expected_revision).toEqual(expect.any(Number));
+
+    await page.locator('#studio-regex-toggle').click();
+    await expect(page.locator('#regex-drawer-name')).toHaveValue('默认正文提取');
+    const regexRequest = page.waitForRequest((request) => request.method() === 'PUT' && /\/v1\/studio\/regex-collections\/[^/]+$/.test(request.url()));
+    await page.locator('#regex-drawer-save').click();
+    expect((await regexRequest).postDataJSON().expected_revision).toEqual(expect.any(Number));
+  });
+
+  test('startup receipt IDs select collision resources and missing hints fall back', async ({ page }) => {
+    await openWorkspace(page);
+    const suffix = Date.now().toString(36);
+    const provider = await studioPost(page, '/v1/studio/providers', {
+      id: 'hint-provider-' + suffix, name: 'Hint Provider ' + suffix,
+      base_url: 'http://127.0.0.1:9', api_format: 'chat_completions',
+    });
+    const regex = await studioPost(page, '/v1/studio/regex-collections', {
+      id: 'hint-regex-' + suffix, name: 'Hint Regex ' + suffix, rules: [],
+    });
+    const writer = await studioPost(page, '/v1/studio/agents', {
+      agent_id: 'hint-writer-' + suffix, name: 'Hint Writer ' + suffix, instruction: 'hint writer',
+      provider_profile_id: provider.profile.id, regex_collection_id: regex.collection.id,
+    });
+    const reviewer = await studioPost(page, '/v1/studio/agents', {
+      agent_id: 'hint-reviewer-' + suffix, name: 'Hint Reviewer ' + suffix, instruction: 'hint reviewer',
+    });
+    const graph = await studioPost(page, '/v1/studio/graphs', {
+      id: 'hint-graph-' + suffix, name: 'Hint Graph ' + suffix,
+      nodes: [{ node_id: 'writer', agent_id: writer.agent.agent_id }], output_node_id: 'writer',
+    });
+    await page.route('**/v1/studio/startup', async (route) => route.fulfill({
+      status: 200, contentType: 'application/json', body: JSON.stringify({
+        ok: true, status: 'success', diagnostics: [], initial_resource_ids: {
+          provider: provider.profile.id, regex: regex.collection.id,
+          writer: writer.agent.agent_id, reviewer: reviewer.agent.agent_id, graph: graph.graph.id,
+        },
+      }),
+    }));
+
+    await openWorkspace(page);
+    await page.locator('#studio-model-toggle').click();
+    await expect.poll(() => page.evaluate(() => window.AIRPStudioModelDrawer.state.selectedId)).toBe(provider.profile.id);
+    await page.locator('#studio-agents-toggle').click();
+    await expect.poll(() => page.evaluate(() => window.AIRPStudioAgentsDrawer.state.selectedAgentId)).toBe(writer.agent.agent_id);
+    await page.locator('#studio-drawer-mode-toggle').click();
+    await expect.poll(() => page.evaluate(() => window.AIRPStudioAgentsDrawer.state.selectedGraphId)).toBe(graph.graph.id);
+    await page.locator('#studio-regex-toggle').click();
+    await expect.poll(() => page.evaluate(() => window.AIRPRegexDrawer.state.selectedId)).toBe(regex.collection.id);
+
+    await page.evaluate(async (id) => fetch('/v1/studio/graphs/' + encodeURIComponent(id), { method: 'DELETE' }), graph.graph.id);
+    await openWorkspace(page);
+    await page.locator('#studio-agents-toggle').click();
+    await page.locator('#studio-drawer-mode-toggle').click();
+    await expect.poll(() => page.evaluate(() => window.AIRPStudioAgentsDrawer.state.selectedGraphId)).not.toBe(graph.graph.id);
+    await expect.poll(() => page.evaluate(() => window.AIRPStudioAgentsDrawer.state.selectedGraphId)).not.toBeNull();
+  });
+
+  test('stale Agent save presents current revision and Reloads the latest object', async ({ page }) => {
+    await openWorkspace(page);
+    const suffix = Date.now().toString(36);
+    const created = await studioPost(page, '/v1/studio/agents', {
+      agent_id: 'conflict-agent-' + suffix,
+      name: 'Conflict Agent ' + suffix,
+      instruction: 'loaded instruction',
+    });
+
+    await page.locator('#studio-agents-toggle').click();
+    await page.getByRole('button', { name: 'Conflict Agent ' + suffix }).click();
+    const latest = await studioPut(page, '/v1/studio/agents/' + created.agent.agent_id, {
+      expected_revision: created.agent.revision,
+      instruction: 'latest instruction',
+    });
+    await page.locator('#studio-agent-instruction').fill('stale draft');
+    await page.locator('#studio-agent-form button[type=submit]').click();
+
+    await expect(page.locator('#studio-drawer-status')).toContainText('当前 revision ' + latest.agent.revision);
+    await page.locator('#studio-drawer-status .studio-conflict-reload').click();
+    await expect(page.locator('#studio-agent-instruction')).toHaveValue('latest instruction');
+    await expect(page.locator('#studio-drawer-status')).toContainText('Reload');
+  });
+
+  test('default collaboration fields, handoffs, binding, and Regex previews are fully visible', async ({ page }) => {
+    await openWorkspace(page);
+    await page.locator('#studio-agents-toggle').click();
+
+    await page.locator('#studio-agent-list').getByRole('button', { name: /正文创作者/ }).click();
+    await expect(page.locator('#studio-agent-provider')).toHaveValue('default-deepseek');
+    await expect(page.locator('#studio-agent-model')).toHaveValue('deepseek-v4-flash');
+    await expect(page.locator('#studio-agent-temperature')).toHaveValue('0.8');
+    await expect(page.locator('#studio-agent-max-tokens')).toHaveValue('8000');
+    await expect(page.locator('#studio-agent-tools')).toHaveValue('load_worldbook_entry, get_recent_memory');
+    await expect(page.locator('#studio-agent-instruction')).toHaveValue(/正文创作者/);
+    await expect(page.locator('#studio-agent-regex')).toHaveValue('default-content');
+    await expect(page.locator('#studio-agent-advanced')).toBeEditable();
+
+    await page.locator('#studio-agent-list').getByRole('button', { name: /内容审查者/ }).click();
+    await expect(page.locator('#studio-agent-temperature')).toHaveValue('0.2');
+    await expect(page.locator('#studio-agent-max-tokens')).toHaveValue('8000');
+    await expect(page.locator('#studio-agent-instruction')).toHaveValue(/内容审查者/);
+    await expect(page.locator('#studio-agent-regex')).toHaveValue('');
+
+    await page.locator('#studio-drawer-mode-toggle').click();
+    await expect(page.locator('#studio-graph-topology .studio-topology-node')).toHaveCount(3);
+    await expect(page.locator('#studio-loop-list')).toContainText('writer → reviewer · 2 次');
+    await expect(page.locator('#studio-graph-output')).toHaveValue('final-writer');
+    await page.locator('#studio-graph-topology .studio-topology-node').nth(0).click();
+    await expect(page.locator('#studio-node-handoff')).toHaveValue(/第 \{\{node\.loop_iteration\}\} 轮候选正文/);
+    await page.locator('#studio-graph-topology .studio-topology-node').nth(1).click();
+    await expect(page.locator('#studio-node-handoff')).toHaveValue(/第一轮审查意见/);
+    await page.locator('#studio-loop-list .studio-loop-item').click();
+    await expect(page.locator('#studio-loop-exit-handoff')).toHaveValue(/第二轮也是最后一轮审查意见/);
+
+    await page.locator('#studio-regex-toggle').click();
+    await expect(page.locator('.regex-rule-pattern')).toHaveValue(/<content>/);
+    await expect(page.locator('select[data-agent-id="default-writer"]')).toHaveValue('default-content');
+
+    await page.locator('#regex-drawer-test-input').fill('<content>可见正文</content>');
+    await page.locator('#regex-drawer-test').click();
+    await expect(page.locator('#regex-drawer-test-output')).toHaveText('可见正文');
+
+    await page.locator('#regex-drawer-test-input').fill('没有标签');
+    await page.locator('#regex-drawer-test').click();
+    await expect(page.locator('#regex-drawer-test-output')).toHaveText('');
+  });
+
+  test('active Graph selector reflects initial choice, change, clear, and deletion', async ({ page }) => {
+    await openWorkspace(page);
+    const suffix = Date.now().toString(36);
+    const projectId = `selector-project-${suffix}`;
+    await studioPost(page, '/v1/studio/projects', { id: projectId, name: 'Selector lifecycle project' });
+    await studioPost(page, '/v1/session/project/switch', { project_id: projectId });
+    await page.evaluate(() => window.loadActiveGraphPanel());
+    await expect(page.locator('#runtime-graph-select')).toHaveValue('default-two-round-review');
+
+    const graphId = `selector-graph-${suffix}`;
+    await studioPost(page, '/v1/studio/graphs', {
+      id: graphId,
+      name: 'Selector lifecycle graph',
+      mode: 'handoff',
+      nodes: [{ node_id: 'writer', agent_id: 'default-writer', enabled: true }],
+      loops: [],
+      output_node_id: 'writer',
+    });
+    await page.evaluate(() => window.loadActiveGraphPanel());
+
+    async function applySelection(selectedGraphId) {
+      await page.locator('#runtime-graph-select').selectOption(selectedGraphId || '');
+      const saved = page.waitForResponse((response) => response.request().method() === 'PUT' && response.url().endsWith('/v1/session/runtime/graph'));
+      await page.getByRole('button', { name: '应用选择' }).click();
+      expect((await saved).status()).toBe(200);
+      await page.waitForFunction((expected) => ((window.AIRPWorkspace.state.activeGraph || {}).selected || {}).graph_id === expected, selectedGraphId || null);
+      await expect(page.locator('#runtime-graph-select')).toHaveValue(selectedGraphId || '');
+    }
+
+    await applySelection(graphId);
+    await applySelection(null);
+
+    await applySelection(graphId);
+    await page.evaluate(async (id) => {
+      const response = await fetch('/v1/studio/graphs/' + encodeURIComponent(id), { method: 'DELETE' });
+      if (!response.ok) throw new Error(await response.text());
+      await window.loadActiveGraphPanel();
+    }, graphId);
+    await expect(page.locator('#runtime-graph-select')).toHaveValue('');
+    await expect(page.locator(`#runtime-graph-select option[value="${graphId}"]`)).toHaveCount(0);
+  });
 
   test('five mutually-exclusive top drawers preserve the Monitor boundary', async ({ page }) => {
     await openWorkspace(page);

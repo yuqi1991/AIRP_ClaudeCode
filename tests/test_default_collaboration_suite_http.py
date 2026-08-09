@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import threading
 from pathlib import Path
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
@@ -11,6 +12,7 @@ from urllib.request import Request, urlopen
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
+from airp.engine.graph_runtime import AgentArtifact, NodeResult  # noqa: E402
 from airp.engine.active_graph import ActiveGraphSelectionError  # noqa: E402
 from airp.engine.project_library import ProjectLibraryError  # noqa: E402
 from airp.host.rp.session_runtime import SessionTurnRuntime  # noqa: E402
@@ -54,7 +56,18 @@ def test_server_exposes_the_complete_keyless_suite_through_ordinary_studio_crud(
     ) as server:
         status, startup = _json_request("GET", f"{server.base_url}/v1/studio/startup")
         assert status == 200
-        assert startup == {"ok": True, "status": "success", "diagnostics": []}
+        assert startup == {
+            "ok": True,
+            "status": "success",
+            "diagnostics": [],
+            "initial_resource_ids": {
+                "provider": "default-deepseek",
+                "regex": "default-content",
+                "writer": "default-writer",
+                "reviewer": "default-reviewer",
+                "graph": "default-two-round-review",
+            },
+        }
         endpoints = {
             "providers": ("profiles", "default-deepseek", "profile"),
             "agents": ("agents", "default-writer", "agent"),
@@ -92,6 +105,16 @@ def test_server_exposes_the_complete_keyless_suite_through_ordinary_studio_crud(
         status, reloaded = _json_request("GET", writer_url)
         assert status == 200
         assert reloaded["agent"]["instruction"] == updated["agent"]["instruction"]
+
+        status, conflict = _json_request(
+            "PUT", writer_url,
+            {"expected_revision": fetched["agent"]["revision"], "instruction": "stale"},
+        )
+        assert status == 409
+        assert conflict["error"] == "revision_conflict"
+        assert conflict["current_revision"] == updated["agent"]["revision"]
+        assert conflict["current_object"] == updated["agent"]
+        assert conflict["reload_source"] == "/v1/studio/agents/default-writer"
 
 
 def test_recreated_project_id_gets_a_fresh_default_graph_activation(tmp_path):
@@ -211,7 +234,7 @@ def test_project_creation_reports_a_warning_when_default_graph_cannot_be_written
                 "boundary": "project_activation",
                 "project_id": "warning-project",
                 "message": "默认协作套件已安装，但未能为一个 Project 自动选择 Graph。",
-                "action": "在 Studio 的编排选择中手动选择 Graph。",
+                "action": "在游戏 Monitor 的 Graph 下拉中手动选择 Graph。",
             }
         ]
         status, loaded = _json_request(
@@ -318,6 +341,105 @@ def test_project_creation_during_generation_preserves_the_running_plan_until_nex
         assert server.runtime.execution_graph_id == "default-two-round-review"
         assert server.runtime.execution_plan_compiler is not None
         assert server.runtime.graph_runtime is not None
+
+
+def test_agent_save_during_a_running_task_only_changes_the_next_task_plan(
+    tmp_path, monkeypatch
+):
+    styles = tmp_path / "styles"
+    styles.mkdir()
+    card = tmp_path / "card"
+    card.mkdir()
+    (card / ".card_data.json").write_text('{"name":"Frozen config"}', encoding="utf-8")
+    (card / ".initvar.json").write_text("{}", encoding="utf-8")
+    (card / "chat_log.json").write_text("[]", encoding="utf-8")
+    runtime = SessionTurnRuntime(
+        database_path=tmp_path / "runtime.sqlite3",
+        card_folder=card,
+        projection_root=styles,
+    )
+
+    class BlockingRunner:
+        def __init__(self):
+            self.started = threading.Event()
+            self.release = threading.Event()
+            self.instructions = []
+
+        def next_task(self):
+            self.started.clear()
+            self.release.clear()
+
+        def run(self, node, input_artifact):
+            self.instructions.append(node.agent.instruction)
+            if not self.started.is_set():
+                self.started.set()
+                if not self.release.wait(5):
+                    raise TimeoutError("test runner release timed out")
+            return NodeResult.succeeded(AgentArtifact.text("<content>candidate</content>"))
+
+    with SessionRuntimeServer(
+        runtime,
+        static_root=styles,
+        workspace=tmp_path / "workspace",
+    ) as server:
+        status, created = _json_request(
+            "POST",
+            f"{server.base_url}/v1/studio/projects",
+            {"id": "frozen-project", "name": "Frozen project"},
+        )
+        assert status == 201
+        status, _ = _json_request(
+            "POST",
+            f"{server.base_url}/v1/session/project/switch",
+            {"project_id": created["project"]["id"]},
+        )
+        assert status == 200
+
+        writer_url = f"{server.base_url}/v1/studio/agents/default-writer"
+        status, loaded = _json_request("GET", writer_url)
+        assert status == 200
+        old_revision = loaded["agent"]["revision"]
+        old_instruction = loaded["agent"]["instruction"]
+
+        runner = BlockingRunner()
+        server.runtime.graph_runtime.node_runner = runner
+        monkeypatch.setattr(server, "_configure_runtime_studio_graph", lambda: None)
+
+        server.submit_async("first", "frozen-config-first")
+        assert runner.started.wait(5)
+        status, first_snapshot = _json_request("GET", f"{server.base_url}/v1/session/snapshot")
+        assert status == 200
+        first_plan = first_snapshot["graph_runs"]["current"]["plan"]
+        first_agents = {item["id"]: item for item in first_plan["provenance"]["agents"]}
+        assert first_agents["default-writer"]["revision"] == old_revision
+
+        status, saved = _json_request(
+            "PUT",
+            writer_url,
+            {
+                "expected_revision": old_revision,
+                "instruction": "Instruction saved while the prior Task is running",
+            },
+        )
+        assert status == 200
+        new_revision = saved["agent"]["revision"]
+        assert new_revision > old_revision
+        assert runner.instructions[0] == old_instruction
+
+        runner.release.set()
+        server._submit_threads[-1].join(timeout=5)
+        assert not server._submit_threads[-1].is_alive()
+
+        runner.next_task()
+        server.submit_async("second", "frozen-config-second")
+        assert runner.started.wait(5)
+        status, second_snapshot = _json_request("GET", f"{server.base_url}/v1/session/snapshot")
+        assert status == 200
+        second_plan = second_snapshot["graph_runs"]["current"]["plan"]
+        second_agents = {item["id"]: item for item in second_plan["provenance"]["agents"]}
+        assert second_agents["default-writer"]["revision"] == new_revision
+        assert runner.instructions[-1] == saved["agent"]["instruction"]
+        runner.release.set()
 
 
 def test_imported_first_project_is_ready_for_the_next_task(tmp_path):

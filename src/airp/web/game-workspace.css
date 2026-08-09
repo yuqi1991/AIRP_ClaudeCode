@@ -37,6 +37,36 @@
   display: contents;
 }
 
+.studio-startup-diagnostics {
+  position: fixed;
+  z-index: 1200;
+  top: calc(var(--airp-drawer-top) + 8px);
+  left: 50%;
+  display: flex;
+  width: min(680px, calc(100vw - 24px));
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 11px 12px 11px 14px;
+  border: 1px solid var(--airp-color-accent);
+  border-left-width: 3px;
+  border-radius: var(--airp-radius-control);
+  background: var(--airp-color-surface);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, .32);
+  color: var(--airp-color-text);
+  transform: translateX(-50%);
+}
+
+.studio-startup-diagnostics[hidden] { display: none; }
+.studio-startup-diagnostics[data-status="fatal"] { border-color: #b0624a; }
+.studio-startup-diagnostics strong { display: block; font-size: .78rem; }
+.studio-startup-diagnostics p { margin: 4px 0 0; color: var(--airp-color-muted); font-size: .72rem; line-height: 1.45; }
+.studio-startup-diagnostic { display: grid; gap: 2px; }
+.studio-startup-diagnostic + .studio-startup-diagnostic { margin-top: 8px; }
+.studio-startup-diagnostic small { color: var(--airp-color-muted); }
+.studio-conflict-reload { margin-left: 8px; border: 1px solid var(--airp-color-border); background: transparent; color: inherit; padding: 3px 8px; cursor: pointer; }
+.studio-startup-diagnostics .studio-icon-button { flex: 0 0 30px; }
+
 /* Monitor graph --------------------------------------------------------- */
 #agent-trace.monitor-topology {
   position: relative;

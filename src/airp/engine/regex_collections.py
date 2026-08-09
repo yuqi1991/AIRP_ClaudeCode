@@ -146,7 +146,7 @@ class RegexCollectionLibrary:
             if expected is not None and expected != current.get("revision", 0):
                 raise RegexCollectionError(
                     "revision_conflict", f"Regex Collection {collection_id!r} revision conflict", status=409,
-                    details=conflict_payload("regex_collection", collection_id, expected, current.get("revision", 0)),
+                    details=conflict_payload("regex_collection", collection_id, expected, current.get("revision", 0), current),
                 )
             merged = {**current, **copy.deepcopy(payload), "id": collection_id}
             collection = self._normalize_for_write(merged, collection_id=collection_id)

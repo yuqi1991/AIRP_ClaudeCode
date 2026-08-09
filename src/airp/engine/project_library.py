@@ -162,7 +162,7 @@ class ProjectLibrary:
             if expected is not None and expected != current.get("revision", 0):
                 raise ProjectLibraryError(
                     "revision_conflict", f"Project {project_id!r} revision conflict", status=409,
-                    details=conflict_payload("project", project_id, expected, current.get("revision", 0)),
+                    details=conflict_payload("project", project_id, expected, current.get("revision", 0), current),
                 )
             merged = {**current, **copy.deepcopy(payload), "id": project_id}
             merged["project_id"] = project_id

@@ -143,7 +143,7 @@ class ProviderProfileStore:
             if expected is not None and expected != current.get("revision", 0):
                 raise ProviderProfileError(
                     "revision_conflict", f"Provider Profile {profile_id!r} revision conflict", status=409,
-                    details=conflict_payload("provider_profile", profile_id, expected, current.get("revision", 0)),
+                    details=conflict_payload("provider_profile", profile_id, expected, current.get("revision", 0), current),
                 )
             merged = {**current, **payload}
             if "api_format" not in payload and "protocol" in payload:

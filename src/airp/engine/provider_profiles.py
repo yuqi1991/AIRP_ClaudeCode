@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import uuid
 from typing import Any, Callable
 
 from airp.engine.provider import OpenAICompatibleProviderAdapter, ProviderError
@@ -51,6 +52,22 @@ class ProviderProfileService:
 
     def update_profile(self, profile_id: str, payload: dict) -> dict[str, Any]:
         return self._save(payload, lambda clean: self._profiles.update_profile(profile_id, clean))
+
+    def copy_profile(self, profile_id: str, payload: dict | None = None) -> dict[str, Any]:
+        original = self._profiles.get_profile(profile_id)
+        overrides = dict(payload or {})
+        copied = {
+            "id": overrides.pop("new_id", None) or f"provider-{uuid.uuid4().hex[:12]}",
+            "name": overrides.pop("name", None) or f"{original['name']} Copy",
+            "base_url": original["base_url"],
+            "api_format": original["api_format"],
+            "enabled": original.get("enabled", True),
+            "model_ids": list(original.get("model_ids") or []),
+        }
+        copied.update(overrides)
+        for key in ("revision", "expected_revision", "created_at", "updated_at", "key_configured"):
+            copied.pop(key, None)
+        return self._save(copied, self._profiles.create_profile)
 
     def delete_profile(self, profile_id: str) -> None:
         self._profiles.delete_profile(profile_id)

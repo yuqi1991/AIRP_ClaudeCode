@@ -1004,6 +1004,11 @@ html, body { color-scheme: dark; }
   <button id="sidebar-toggle" title="打开工具面板" aria-label="打开工具面板" aria-expanded="false" onclick="toggleSidebar()">☰</button>
 </div>
 
+<section id="studio-startup-diagnostics" class="studio-startup-diagnostics" role="alert" aria-live="polite" hidden>
+  <div><strong>Studio 启动诊断</strong><p id="studio-startup-diagnostics-message"></p></div>
+  <button id="studio-startup-diagnostics-close" class="studio-icon-button" type="button" aria-label="关闭启动诊断" title="关闭">×</button>
+</section>
+
 <!-- The integrated Studio drawer keeps the game context mounted underneath. -->
 <div id="studio-drawer-host" data-airp-region="studio-drawer" hidden aria-hidden="true">
   <section id="studio-drawer-panel" data-airp-slot="studio-drawer-panel" aria-labelledby="studio-drawer-title">
@@ -1140,7 +1145,7 @@ html, body { color-scheme: dark; }
             <label class="studio-field" for="studio-provider-models"><span>模型目录</span><textarea id="studio-provider-models" rows="5" placeholder="每行一个模型 ID"></textarea></label>
             <p class="studio-field-hint">保存时可手动维护模型 ID；“刷新模型”会从服务商重新发现并保存目录。API 密钥不会回显。</p>
             <div class="studio-provider-catalog" id="studio-provider-catalog" aria-live="polite"></div>
-            <div class="studio-form-actions"><button class="studio-button studio-button-primary" type="submit">保存服务商</button><button class="studio-button studio-button-muted" id="studio-provider-test" type="button" disabled>测试连接</button><button class="studio-button studio-button-muted" id="studio-provider-refresh" type="button" disabled>刷新模型</button><button class="studio-button studio-button-muted" id="studio-provider-delete-key" type="button" disabled>删除密钥</button><button class="studio-button studio-button-danger" id="studio-provider-delete" type="button" disabled>删除服务商</button></div>
+            <div class="studio-form-actions"><button class="studio-button studio-button-primary" type="submit">保存服务商</button><button class="studio-button studio-button-muted" id="studio-provider-copy" type="button" disabled>复制</button><button class="studio-button studio-button-muted" id="studio-provider-test" type="button" disabled>测试连接</button><button class="studio-button studio-button-muted" id="studio-provider-refresh" type="button" disabled>刷新模型</button><button class="studio-button studio-button-muted" id="studio-provider-delete-key" type="button" disabled>删除密钥</button><button class="studio-button studio-button-danger" id="studio-provider-delete" type="button" disabled>删除服务商</button></div>
           </form>
           <div class="studio-provider-notice" id="studio-provider-notice" role="status" aria-live="polite"></div>
         </section>
@@ -1159,7 +1164,7 @@ html, body { color-scheme: dark; }
         </aside>
         <section class="studio-drawer-column studio-topology-column" aria-label="接力链">
           <div class="studio-column-head">
-            <div><h3 id="studio-graph-title">接力链</h3><span id="studio-graph-runtime-state" class="studio-muted">运行时使用已保存配置</span></div>
+            <div><h3 id="studio-graph-title">接力链</h3><span class="studio-muted">保存后从下一 Task 生效</span></div>
             <button class="studio-text-button" id="studio-graph-add-node" type="button">添加节点</button>
           </div>
           <div class="studio-runtime-note"><span class="studio-runtime-dot"></span><span>串行接力 · 上游产物经正则处理后交给下一节点</span></div>
@@ -1194,7 +1199,7 @@ html, body { color-scheme: dark; }
               <label class="studio-field" for="studio-graph-output"><span>输出节点</span><select id="studio-graph-output"><option value="">选择输出节点</option></select></label>
               <p class="studio-field-hint">输出节点必须是最后一个启用节点，运行时只提交该节点的产物。</p>
             </fieldset>
-            <div class="studio-form-actions"><button class="studio-button studio-button-primary" type="submit">保存编排图</button><button class="studio-button studio-button-muted" id="studio-graph-use" type="button" disabled>设为运行编排</button><button class="studio-button studio-button-muted" id="studio-graph-copy" type="button" disabled>复制</button><button class="studio-button studio-button-danger" id="studio-graph-delete" type="button" disabled>删除</button></div>
+            <div class="studio-form-actions"><button class="studio-button studio-button-primary" type="submit">保存编排图</button><button class="studio-button studio-button-muted" id="studio-graph-copy" type="button" disabled>复制</button><button class="studio-button studio-button-danger" id="studio-graph-delete" type="button" disabled>删除</button></div>
           </form>
         </aside>
       </div>
@@ -1342,6 +1347,8 @@ html, body { color-scheme: dark; }
 </div>
 
 <script src="_st_shims.js?v=2"></script>
+<script src="startup-diagnostics.js"></script>
+<script src="studio-revision-conflict.js"></script>
 <script src="game-workspace-contract.js"></script>
 <script src="game-drawer.js"></script>
 <script src="studio-agents-drawer.js"></script>
