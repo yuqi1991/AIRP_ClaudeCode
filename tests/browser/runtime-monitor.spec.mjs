@@ -174,6 +174,10 @@ test.describe('real Pi browser runtime', () => {
         await expect(page.locator('#node-debug-summary')).toBeHidden();
         await expect(page.locator('#node-debug-model-calls')).toBeHidden();
         await expect(page.locator('#node-debug-tool-calls')).toBeHidden();
+        await expect(page.locator('#node-detail-body')).toContainText('节点输入');
+        await expect(page.locator('#node-detail-body')).toContainText('Agent 第 1 轮');
+        await expect(page.locator('#node-detail-body')).toContainText('本轮输入提示');
+        await expect(page.locator('#node-detail-body')).toContainText('本轮输出');
         await expect(page.locator('#node-detail-body')).toContainText('draft loop 1');
         await expect(page.locator('#node-detail-body')).not.toContainText(/node_run_id|tokens|deepseek-v4-flash|tool_snapshot/);
         await page.getByLabel('仅文本').uncheck();

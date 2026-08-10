@@ -278,7 +278,67 @@
 .node-debug-panel.is-text-only .node-debug-section[aria-labelledby="node-debug-model-title"],
 .node-debug-panel.is-text-only .node-debug-section[aria-labelledby="node-debug-tool-title"] { display: none; }
 
-.node-debug-panel.is-text-only #node-detail-body { max-height: none; min-height: 320px; color: var(--airp-color-text); font-family: var(--airp-font-ui); font-size: .78rem; line-height: 1.65; }
+.node-debug-panel.is-text-only #node-detail-body { max-height: none; min-height: 320px; color: var(--airp-color-text); font-family: var(--airp-font-ui); font-size: .78rem; line-height: 1.65; white-space: normal; }
+
+.node-text-trace {
+  display: grid;
+  gap: 14px;
+  margin-top: 10px;
+}
+
+.node-text-block,
+.node-text-round {
+  border: 1px solid var(--airp-color-border);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.node-text-block > h4,
+.node-text-round > h4 {
+  margin: 0;
+  padding: 7px 10px;
+  color: var(--airp-color-muted);
+  background: var(--airp-color-bg);
+  font-size: .66rem;
+  font-weight: 700;
+  letter-spacing: 0;
+}
+
+.node-text-block > pre {
+  max-height: 300px;
+  overflow: auto;
+  margin: 0;
+  padding: 10px;
+  color: var(--airp-color-text);
+  background: color-mix(in srgb, var(--airp-color-bg) 88%, white);
+  font: .75rem/1.65 var(--airp-font-ui);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.node-text-input { border-left: 3px solid var(--airp-color-accent); }
+.node-text-prompt { border-left: 3px solid #738a66; }
+.node-text-agent-output { border-left: 3px solid #b1774a; }
+.node-text-regex { border-left: 3px solid #6d7da8; }
+.node-text-final { border-left: 3px solid #49786d; }
+.node-text-handoff { border-left: 3px solid #8b6d9d; }
+
+.node-text-round {
+  display: grid;
+  gap: 8px;
+  padding: 0 8px 8px;
+  background: color-mix(in srgb, var(--airp-color-bg) 92%, var(--airp-color-accent));
+}
+
+.node-text-round:nth-of-type(even) {
+  background: color-mix(in srgb, var(--airp-color-bg) 94%, #b1774a);
+}
+
+.node-text-round > h4 {
+  margin: 0 -8px;
+  color: var(--airp-color-text);
+  background: transparent;
+}
 
 .node-debug-summary {
   display: grid;
