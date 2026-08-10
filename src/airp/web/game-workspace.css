@@ -340,6 +340,31 @@
   background: transparent;
 }
 
+.node-text-debug {
+  border: 1px solid var(--airp-color-border);
+  background: var(--airp-color-bg);
+}
+
+.node-text-debug summary {
+  padding: 8px 10px;
+  color: var(--airp-color-muted);
+  cursor: pointer;
+  font-size: .7rem;
+  font-weight: 650;
+}
+
+.node-text-debug pre {
+  max-height: 300px;
+  overflow: auto;
+  margin: 0;
+  padding: 10px;
+  border-top: 1px solid var(--airp-color-border);
+  background: var(--airp-color-bg);
+  font: .7rem/1.45 "SFMono-Regular", Consolas, monospace;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .node-debug-summary {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));

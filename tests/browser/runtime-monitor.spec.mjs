@@ -164,6 +164,9 @@ test.describe('real Pi browser runtime', () => {
       await expect(dialog).toBeVisible();
       await expect(page.locator('#node-debug-input')).not.toBeEmpty();
       for (const field of ['streamed_output', 'final_output', 'tool_snapshot', 'error']) await expect(page.locator('#node-detail-body')).toContainText(field);
+      await expect(page.locator('#node-detail-body')).toContainText('节点输入');
+      await expect(page.locator('#node-detail-body')).toContainText('Agent 第 1 轮');
+      await expect(page.locator('#node-detail-body')).toContainText('本轮输出');
       await expect(dialog.getByText(/调用 #/)).toHaveCount(index === 0 ? 2 : 1);
       await expect(page.locator('#node-debug-model-calls')).toContainText(index === 4 ? '<content>## Harbor answer' : rawOutputs[index]);
       if (index < 4) await expect(page.locator('#node-detail-body')).toContainText('handoff_artifact');

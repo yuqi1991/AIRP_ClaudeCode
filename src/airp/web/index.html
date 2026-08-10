@@ -2442,12 +2442,6 @@ function artifactText(value) {
   return '';
 }
 
-function appendTextTrace(parts, title, value) {
-  const text = artifactText(value);
-  if (!text) return;
-  parts.push(title + '\n' + text);
-}
-
 function appendTextTraceBlock(target, title, value, kind) {
   const text = artifactText(value);
   if (!text) return;
@@ -2463,7 +2457,7 @@ function appendTextTraceBlock(target, title, value, kind) {
   target.appendChild(block);
 }
 
-function renderTextOnlyNodeTrace(target, detail, modelCalls) {
+function renderNodeTextTrace(target, detail, modelCalls, includeDebug) {
   target.innerHTML = '';
   target.classList.add('node-text-trace');
   appendTextTraceBlock(target, '节点输入', detail.input_artifact || detail.input, 'input');
@@ -2491,33 +2485,29 @@ function renderTextOnlyNodeTrace(target, detail, modelCalls) {
   });
   appendTextTraceBlock(target, detail.node_id === 'final-writer' ? '最终输出' : '节点输出', detail.final_output || detail.output || '', 'final');
   appendTextTraceBlock(target, '交接给下一节点', detail.handoff_artifact, 'handoff');
+  if (includeDebug) {
+    const debug = document.createElement('details');
+    debug.className = 'node-text-debug';
+    const summary = document.createElement('summary');
+    summary.textContent = '运行字段与配置';
+    const content = document.createElement('pre');
+    content.textContent = debugValue({
+      node_run_id: detail.node_run_id,
+      state: detail.state || detail.status || 'idle',
+      streamed_output: detail.streamed_output || '',
+      final_output: detail.final_output || '',
+      effective_config: detail.effective_config || {},
+      prompt_provenance: detail.prompt_provenance || [],
+      tool_snapshot: detail.tool_snapshot || {},
+      handoff_artifact: detail.handoff_artifact || null,
+      error: detail.error || null,
+      debug_replay: nodeDetailState.debugReplay || null
+    }, '—');
+    debug.appendChild(summary);
+    debug.appendChild(content);
+    target.appendChild(debug);
+  }
   if (!target.childElementCount) target.textContent = '等待文本内容…';
-}
-
-function textOnlyNodeTrace(detail, modelCalls) {
-  const parts = [];
-  appendTextTrace(parts, '输入', detail.input_artifact || detail.input);
-  modelCalls.forEach(function(call, index) {
-    const messages = (call.request && call.request.messages) || call.messages || [];
-    const input = messages.map(function(message) {
-      const content = artifactText(message && message.content);
-      return content ? (message.role ? message.role + ':\n' : '') + content : '';
-    }).filter(Boolean).join('\n\n');
-    if (input) parts.push('模型输入 ' + (index + 1) + '\n' + input);
-    const output = call.final_output || call.streamed_output || call.output || '';
-    if (output) parts.push('模型文本 ' + (index + 1) + '\n' + output);
-  });
-  const config = detail.effective_config || {};
-  ['input', 'output'].forEach(function(target) {
-    const transform = config['regex_' + target + '_transform'];
-    if (!transform) return;
-    const text = transform.transformed || transform.text || '';
-    if (text) parts.push('正则' + (target === 'input' ? '输入' : '输出') + '结果\n' + text);
-  });
-  const finalOutput = detail.final_output || detail.output || '';
-  if (finalOutput) parts.push('节点产物\n' + finalOutput);
-  appendTextTrace(parts, '交接文本', detail.handoff_artifact);
-  return parts.length ? parts.join('\n\n') : '等待文本内容…';
 }
 
 function setNodeDebugTextOnly(enabled) {
@@ -2567,23 +2557,10 @@ function renderNodeDetail(detail) {
     });
   }
 
-  const stream = detail.streamed_output || detail.final_output || detail.output || '';
   if (nodeDebugTextOnly) {
-    renderTextOnlyNodeTrace(body, detail, modelCalls);
+    renderNodeTextTrace(body, detail, modelCalls, false);
   } else if (detail.node_run_id) {
-    body.classList.remove('node-text-trace');
-    body.textContent = debugValue({
-      node_run_id: detail.node_run_id,
-      state: detail.state || detail.status || 'idle',
-      streamed_output: detail.streamed_output || '',
-      final_output: detail.final_output || '',
-      effective_config: detail.effective_config || {},
-      prompt_provenance: detail.prompt_provenance || [],
-      tool_snapshot: detail.tool_snapshot || {},
-      handoff_artifact: detail.handoff_artifact || null,
-      error: detail.error || null,
-      debug_replay: nodeDetailState.debugReplay || null
-    }, stream || '等待实时追踪…');
+    renderNodeTextTrace(body, detail, modelCalls, true);
   } else {
     body.classList.remove('node-text-trace');
     body.textContent = debugValue({
