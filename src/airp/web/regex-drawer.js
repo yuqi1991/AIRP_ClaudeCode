@@ -12,13 +12,11 @@
   if (!host) return;
 
   var endpoint = '/v1/studio/regex-collections';
-  var agentEndpoint = '/v1/studio/agents';
   var state = {
     collections: [],
     selectedId: null,
     collection: null,
     libraryQuery: '',
-    agents: [],
     testResult: null,
     ready: false,
     loading: false
@@ -49,11 +47,6 @@
             '<div class="regex-test-result-grid"><div><h3>结果</h3><pre class="regex-test-output" id="regex-drawer-test-output" aria-live="polite"></pre></div><div><h3>诊断</h3><div class="regex-diagnostics" id="regex-drawer-diagnostics" aria-live="polite"></div></div></div>',
           '</section>',
         '</main>',
-        '<aside class="regex-drawer-column regex-binding-column" aria-label="Agent 正则集合绑定">',
-          '<div class="regex-drawer-column-heading"><h2>Agent 绑定</h2><span class="regex-drawer-hint">每个 Agent 最多 1 个</span></div>',
-          '<p class="regex-drawer-hint regex-binding-explanation">每个 Agent 最多选择一个正则集合。更改会通过 Agent API 立即保存。</p>',
-          '<div class="regex-binding-list" id="regex-drawer-agent-bindings" aria-live="polite"></div>',
-        '</aside>',
       '</div>',
       '<footer class="regex-drawer-footer">',
         '<div class="regex-drawer-notice" id="regex-drawer-notice" role="status" aria-live="polite"></div>',
@@ -432,61 +425,11 @@
     });
   }
 
-  function renderBindings() {
-    var target = $('regex-drawer-agent-bindings');
-    if (!target) return;
-    var collections = state.collections.slice();
-    var rows = state.agents.map(function(agent) {
-      var row = document.createElement('div');
-      row.className = 'regex-binding-row';
-      var identity = document.createElement('div');
-      identity.className = 'regex-binding-identity';
-      var name = document.createElement('strong');
-      name.textContent = agent.name || agent.agent_id || agent.id;
-      var id = document.createElement('small');
-      id.textContent = agent.agent_id || agent.id || '';
-      identity.append(name, id);
-      var select = document.createElement('select');
-      select.className = 'regex-drawer-select';
-      select.dataset.agentId = agent.agent_id || agent.id || '';
-      select.setAttribute('aria-label', (agent.name || agent.agent_id || 'Agent') + ' 的正则集合');
-      var none = document.createElement('option');
-      none.value = '';
-      none.textContent = '不绑定集合';
-      select.appendChild(none);
-      collections.forEach(function(collection) {
-        var option = document.createElement('option');
-        option.value = collection.id;
-        option.textContent = collection.name;
-        select.appendChild(option);
-      });
-      var current = agent.regex_collection_id || '';
-      if (current && !collections.some(function(collection) { return collection.id === current; })) {
-        var missing = document.createElement('option');
-        missing.value = current;
-        missing.textContent = current + '（已丢失）';
-        select.appendChild(missing);
-      }
-      select.value = current;
-      select.addEventListener('change', function() { updateAgentBinding(agent, select); });
-      row.append(identity, select);
-      return row;
-    });
-    if (!rows.length) {
-      var empty = document.createElement('div');
-      empty.className = 'regex-drawer-empty';
-      empty.textContent = '没有找到 Agent 定义。';
-      rows.push(empty);
-    }
-    target.replaceChildren.apply(target, rows);
-  }
-
   function renderAll() {
     renderLibrary();
     renderEditorActions();
     renderRules();
     renderTestResult();
-    renderBindings();
   }
 
   async function loadCollections(selectId) {
@@ -507,13 +450,6 @@
     } else {
       resetEditor();
     }
-    renderBindings();
-  }
-
-  async function loadAgents() {
-    var payload = await request(agentEndpoint);
-    state.agents = Array.isArray(payload.agents) ? payload.agents : [];
-    renderBindings();
   }
 
   async function loadCollection(id) {
@@ -531,7 +467,7 @@
     if (state.loading) return;
     state.loading = true;
     try {
-      await Promise.all([loadCollections(), loadAgents()]);
+      await loadCollections();
       state.ready = true;
     } catch (error) {
       showNotice(errorMessage(error, '无法加载正则集合。'), 'error');
@@ -639,35 +575,6 @@
       showNotice(errorMessage(error, '正则测试失败。'), 'error');
     } finally {
       button.disabled = false;
-    }
-  }
-
-  async function updateAgentBinding(agent, select) {
-    var agentId = agent.agent_id || agent.id;
-    if (!agentId) return;
-    var value = select.value || null;
-    select.disabled = true;
-    try {
-      var response = await request(agentEndpoint + '/' + encodeURIComponent(agentId), {
-        method: 'PUT',
-        headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
-        body: JSON.stringify({ regex_collection_id: value, expected_revision: agent.revision })
-      });
-      var updated = response.agent || response;
-      Object.assign(agent, updated);
-      showNotice(value ? 'Agent 绑定已保存。' : 'Agent 绑定已清除。', 'success');
-    } catch (error) {
-      select.value = agent.regex_collection_id || '';
-      var conflicts = global.AIRPStudioRevisionConflict;
-      if (!(conflicts && conflicts.render($('regex-drawer-notice'), error, function (conflict) {
-        return request(conflict.reload_source).then(function (payload) {
-          Object.assign(agent, payload.agent || payload);
-          renderBindings();
-          showNotice('已 Reload 最新 Agent 绑定。', 'success');
-        });
-      }))) showNotice(errorMessage(error, '无法更新 Agent 绑定。'), 'error');
-    } finally {
-      select.disabled = false;
     }
   }
 

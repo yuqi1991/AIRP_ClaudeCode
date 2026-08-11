@@ -188,15 +188,16 @@ def test_agents_orchestration_drawer_exposes_linear_editor_contract():
     assert ".studio-topology-node::after" in styles
 
 
-def test_all_studio_saves_present_revision_conflicts_and_regex_binding_is_versioned():
+def test_all_studio_saves_present_revision_conflicts_and_regex_binding_stays_in_agent_editor():
     provider = (WEB_ROOT / "studio-model-drawer.js").read_text(encoding="utf-8")
     agents = (WEB_ROOT / "studio-agents-drawer.js").read_text(encoding="utf-8")
     regex = (WEB_ROOT / "regex-drawer.js").read_text(encoding="utf-8")
 
     assert "AIRPStudioRevisionConflict" in provider
     assert agents.count("AIRPStudioRevisionConflict") >= 2
-    assert regex.count("AIRPStudioRevisionConflict") >= 2
-    assert "expected_revision: agent.revision" in regex
+    assert regex.count("AIRPStudioRevisionConflict") == 1
+    assert "regex-drawer-agent-bindings" not in regex
+    assert "expected_revision: agent.revision" not in regex
 
 
 def test_game_page_mounts_worldbook_definition_drawer_and_api_actions():

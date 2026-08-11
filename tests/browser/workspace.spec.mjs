@@ -278,7 +278,7 @@ test.describe('desktop 1440x900 release baseline', () => {
 
     await page.locator('#studio-regex-toggle').click();
     await expect(page.locator('.regex-rule-pattern')).toHaveValue(/<content>/);
-    await expect(page.locator('select[data-agent-id="default-writer"]')).toHaveValue('default-content');
+    await expect(page.locator('#regex-drawer-agent-bindings')).toHaveCount(0);
 
     await page.locator('#regex-drawer-test-input').fill('<content>可见正文</content>');
     await page.locator('#regex-drawer-test').click();
@@ -499,7 +499,6 @@ test.describe('mobile 390x844 release baseline', () => {
       const animated = document.querySelector('.monitor-node-running');
       const drawerStyle = getComputedStyle(document.querySelector('[data-airp-region="studio-drawer"]'));
       const editor = document.querySelector('.regex-editor-column').getBoundingClientRect();
-      const binding = document.querySelector('.regex-binding-column').getBoundingClientRect();
       const navButtonsVisible = [...document.querySelectorAll('#workspace-navigation button')].every((button) => {
         const box = button.getBoundingClientRect();
         return box.left >= 0 && box.right <= innerWidth && box.top >= 0 && box.bottom <= topbar.bottom;
@@ -512,7 +511,7 @@ test.describe('mobile 390x844 release baseline', () => {
         runningAnimation: animated ? getComputedStyle(animated).animationName : 'none',
         drawerTransitionDuration: drawerStyle.transitionDuration,
         navButtonsVisible,
-        regexColumnsDoNotOverlap: binding.top >= editor.bottom - 1,
+        regexEditorFitsDrawer: editor.left >= drawer.left && editor.right <= drawer.right,
       };
     });
     expect(geometry.pageWidth).toBeLessThanOrEqual(geometry.viewportWidth);
@@ -523,7 +522,7 @@ test.describe('mobile 390x844 release baseline', () => {
     expect(geometry.runningAnimation).toBe('none');
     expect(geometry.drawerTransitionDuration.split(',').every((duration) => duration.trim() === '0s')).toBe(true);
     expect(geometry.navButtonsVisible).toBe(true);
-    expect(geometry.regexColumnsDoNotOverlap).toBe(true);
+    expect(geometry.regexEditorFitsDrawer).toBe(true);
 
     await expect(page).toHaveScreenshot('workspace-mobile.png', {
       animations: 'disabled',

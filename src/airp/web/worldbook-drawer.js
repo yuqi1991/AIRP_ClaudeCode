@@ -167,7 +167,10 @@
 
   function errorMessage(error, fallback) {
     if (error && error.payload && Array.isArray(error.payload.references) && error.payload.references.length) {
-      var references = error.payload.references.map(function(item) { return item.name || item.id; }).join('、');
+      var references = error.payload.references.map(function(item) {
+        var name = item.name || item.id || '未命名游戏';
+        return item.id && item.id !== name ? name + ' (' + item.id + ')' : name;
+      }).join('、');
       if (error.payload.error === 'worldbook_in_use') return '无法删除：此世界书仍被以下游戏引用：' + references + '。请先解除绑定。';
       return (error.message || fallback) + '；仍被以下对象引用：' + references + '。';
     }

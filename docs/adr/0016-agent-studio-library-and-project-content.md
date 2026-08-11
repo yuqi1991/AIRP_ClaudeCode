@@ -10,4 +10,6 @@ Worldbook Definition 是无版本历史的简单 skill-mode 文件对象，一�
 
 导入带有 `character_book` 的 SillyTavern 角色卡时，Project 导入边界同时创建对应的 Worldbook Definition，并立即写入该 Project 的 Worldbook Bindings；若 Project 创建失败，刚创建的世界书随事务回滚。删除游戏会删除 Project Definition；若删除的是当前游戏且仍有其他游戏，Runtime 自动切换到剩余游戏。
 
+重复导入同一角色卡表示创建相互独立的游戏，因此每次导入的内嵌世界书也是独立的普通 Worldbook Definition；系统不按正文哈希自动复用，否则任一游戏中的编辑会意外影响另一游戏。Studio 在删除保护提示中同时显示引用 Project 的名称和稳定 ID，使同名游戏仍可明确区分和解除绑定。
+
 全局复用会让一次世界书编辑影响多个 Project，因此 Studio 必须显示引用关系并在删除被引用对象时阻止操作。该取舍避免 Session 覆盖、绑定层条目覆盖和世界书版本系统，同时保持通用资料与文风设定的跨角色复用。

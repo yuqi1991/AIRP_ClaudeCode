@@ -162,7 +162,7 @@
 
 .regex-drawer-body {
   display: grid;
-  grid-template-columns: minmax(185px, .64fr) minmax(430px, 1.7fr) minmax(220px, .76fr);
+  grid-template-columns: minmax(185px, .64fr) minmax(430px, 1.7fr);
   min-height: 0;
   flex: 1;
 }
@@ -200,13 +200,11 @@
   font-weight: 700;
 }
 
-.regex-library-column,
-.regex-binding-column {
+.regex-library-column {
   background: var(--bg);
 }
 
 .regex-library-list,
-.regex-binding-list,
 .regex-rule-list {
   display: grid;
   align-content: start;
@@ -425,40 +423,6 @@
   color: #b0624a;
 }
 
-.regex-binding-explanation {
-  margin: 9px 0 3px;
-  line-height: 1.45;
-}
-
-.regex-binding-row {
-  display: grid;
-  gap: 6px;
-  padding: 8px 0;
-  border-bottom: 1px solid var(--border);
-}
-
-.regex-binding-identity {
-  display: grid;
-  gap: 2px;
-  min-width: 0;
-}
-
-.regex-binding-identity strong {
-  overflow: hidden;
-  color: var(--text);
-  font-size: .72rem;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.regex-binding-identity small {
-  overflow: hidden;
-  color: var(--muted);
-  font-size: .62rem;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .regex-drawer-footer {
   display: flex;
   align-items: center;
@@ -487,17 +451,6 @@
     grid-template-columns: minmax(175px, .62fr) minmax(390px, 1.65fr);
   }
 
-  .regex-binding-column {
-    grid-column: 1 / -1;
-    max-height: 210px;
-    border-top: 1px solid var(--border);
-    border-left: 0 !important;
-  }
-
-  .regex-binding-list {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    column-gap: 15px;
-  }
 }
 
 @media (max-width: 680px) {
@@ -523,8 +476,7 @@
     overflow: visible;
   }
 
-  .regex-editor-column,
-  .regex-binding-column {
+  .regex-editor-column {
     max-height: none;
   }
 
@@ -545,10 +497,6 @@
 
   .regex-rule-fields .regex-rule-replacement {
     grid-column: auto;
-  }
-
-  .regex-binding-list {
-    grid-template-columns: 1fr;
   }
 
   .regex-drawer-footer .regex-drawer-actions {

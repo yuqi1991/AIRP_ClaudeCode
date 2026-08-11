@@ -50,6 +50,8 @@ AIRP 是面向玩家的本地独立角色扮演引擎：玩家可导入和游玩
 | **角色卡** | 用户导入的 PNG/JSON/TXT 素材，包含角色、开场、世界书、变量或前端资产。 |
 | **游戏** | 一个可选择并游玩的 AIRP Project；拥有角色卡内容、开场、变量与素材，并选择世界书和编排配置。选择游戏会将其设为当前游戏，并恢复该游戏最后使用的存档会话。避免用“角色卡”指代整个游戏。 |
 | **存档会话** | 一个游戏内独立延续的剧情记录或分支；同一游戏可以拥有多个存档会话，并记住最后使用的会话。避免简称为“游戏”。 |
+| **存档记忆** | 随一个存档会话的正式故事 lineage 演化、由用户自由命名的记忆条目组成的长线剧情记忆；rollback 回到目标 revision 对应的记忆，reroll 从最后一个正式 revision 重新派生候选更新。它不在同一游戏的不同存档会话之间共享，也不等同于 Project 设定或 Worldbook。引擎不内置人物关系、时间线或伏笔等内容类别。 |
+| **记忆条目** | 存档记忆中可独立读取和暂存更新的用户定义条目；稳定身份与 revision 用于合并、追溯和冲突诊断，title、tags 与正文语义由用户或 Agent 决定。 |
 | **卡片目录** | 一张卡运行时的持久目录；包含 `chat_log.json`、变量基线与 `memory/`。 |
 | **世界书条目** | 卡片内按主题组织的设定正文；导入后正文存于 `memory/reference.md`。 |
 | **catalog** | 世界书条目的轻量清单；每条提供标题和 usage，供叙事 agent 决定是否加载。 |
@@ -66,11 +68,18 @@ AIRP 是面向玩家的本地独立角色扮演引擎：玩家可导入和游玩
 | **临时 Agent 会话** | 一个 Agent 在单次协作运行内保有的完整个人记忆，包含自身推理、工具结果和上游 handoff 输入；不对其他 Agent 直接可见，并在最终交付、取消或进程退出时丢弃。 |
 | **交付 Agent** | 协作配置指定、唯一其终止输出会作为候选正文提交的 Agent Definition；输出先经过用户绑定的 Regex Collection 转换，规则未匹配时沿用原样输出。默认可与入口 Agent 相同，但职责与格式约束由用户配置。其他 Agent 只能产生协作消息或草稿，不能推进存档会话 revision。 |
 | **协作预算** | 限制一次协作运行的模型调用、工具调用、接力次数、token 和时长的任务级上限；运行严格串行，同一时刻只允许一个 Agent 调用模型或工具。预算耗尽时不得提交故事正文。 |
+| **任务上下文快照** | 一个回合 Task 创建时冻结的实际上下文内容；宏、执行计划和只读历史查询都受其 base revision 与来源范围约束。冻结是该快照的不变量，不另设 `Frozen Context` 领域对象。 |
+| **上下文清单** | 与任务上下文快照配套的审计事实，记录实际来源、版本、hash、预算和选择结果；它不保存未被选择的隐藏 transcript。 |
+| **上下文选择器** | Prompt 参数宏或工具查询中用于从任务上下文快照选择内容的表达式；它不是独立持久对象，也不能越过 Task 的 base revision。 |
 | **runtime/harness** | 调度 agent、工具、上下文和用户输入的执行环境。当前为 Claude Code；目标是独立实现。 |
 | **Agent Framework** | 调度用户定义的 Agent 团队、模型调用、工具、Artifact、Graph Run 和 Trace 的通用框架；不规定故事内容或模型输出格式。 |
 | **默认协作套件** | AIRP 首次提供、供用户参考和直接修改的一组普通 Studio Library 配置。它与用户创建的配置拥有相同地位，不触发隐藏行为、fallback 或恢复机制；用户修改或删除后，系统不得覆盖或复活它。 |
 | **Artifact** | Agent 节点产生的可传递结果；它是 Graph Run 的交接事实，不代表特定故事内容或文本协议。 |
-| **RP Turn Adapter** | 将 Agent Framework 的 Artifact 按用户选择的角色扮演协议解释为回合、变量变化和前端投影的可选适配层。 |
+| **交付 Artifact** | 唯一交付节点的终止输出经过该 Agent 的 Regex Collection 转换后形成的候选交付内容；它可以为空，属于临时协作运行，尚不是正式故事事实。 |
+| **回合 Effect** | Agent 在一个回合 Task 内提出、由 Runtime 暂存的存档修改；Memory Effect 修改记忆条目，State Effect 修改存档状态。其最小事实是 Effect 类型、目标身份、operation 与候选值、Task base revision、Task 内单调 sequence；`staged` 是生命周期状态，不是另一种业务类型。只有随 Turn Commit 接受的 Effect 才成为正式事实。 |
+| **Effect Buffer** | 一个回合 Task 拥有、由 Session Runtime 管理的有序暂存回合 Effect 集合；同一目标以后一次成功写入覆盖前一次，Turn Commit 只接受每个目标最终生效的 Effect。取消或失败时 Buffer 整体丢弃，但可留下脱敏 Trace。Agent 只能通过获授权工具提出 Effect，Graph Runtime 不拥有该集合。 |
+| **Effect Overlay** | 在 Task 的 base snapshot 上顺序叠加 Effect Buffer 得到的工作视图；它供同一协作运行内获授权的工具显式读取，不修改任务上下文快照，也不自动进入 Prompt 宏或 Handoff Prompt。 |
+| **Turn Commit** | Runtime 将交付 Artifact、每个目标最终接受的回合 Effect以及新 revision 对应的 Memory/State Snapshot 原子写入存档会话后形成的唯一权威回合事实；它记录 parent revision 并推进新的正式 revision。Effect 解释变化，Snapshot 表示该 revision 的完整结果，rollback 不重新调用模型或解释历史 Effect。 |
 | **Regex Collection** | 全局可复用的有序内容处理规则集合，用于对 Agent 的输入或输出进行替换、提取等操作；每个 Agent 可绑定零或一个 Collection。它不是角色卡导入产生的酒馆兼容正则脚本；避免称为“正则集”。 |
 | **Studio 抽屉** | 从游戏顶栏向下展开、用于编辑 Studio 模块的临时工作区；所有模块共用一个宿主且互斥显示，以保留当前游玩上下文。避免称为“Studio 页面”或“独立 Studio”。 |
 | **Monitor** | 游戏界面中持续观察当前存档状态和 Agent Graph 执行状态的右侧区域；它提供实时节点与调试入口，但不编辑 Studio 配置。调试浮窗可切换为仅文本视图，隐藏运行元数据。避免称为“设置侧栏”。 |

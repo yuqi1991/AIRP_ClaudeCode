@@ -320,23 +320,23 @@ body {
 .btn-submit:hover { background: #b28f4e; }
 .btn-secondary { background: var(--border); color: var(--text); }
 .btn-secondary:hover { background: #142945; }
-.btn-reroll {
-  font-size: 0.85em; padding: 1px 6px; border: 1px solid var(--border);
-  border-radius: 4px; background: var(--bg); cursor: pointer;
-  color: var(--muted); margin-left: 6px; vertical-align: middle;
-  transition: background 0.15s, color 0.15s;
-}
-.btn-reroll:hover { background: var(--accent); color: #fff; border-color: var(--accent); }
-.btn-turn-del {
+.turn-actions {
   position: absolute; top: 4px; right: 8px;
+  display: flex; gap: 6px;
+  opacity: 0; transition: opacity 0.15s;
+}
+.turn-wrap:hover .turn-actions,
+.turn-actions:focus-within { opacity: 1; }
+.btn-turn-reroll,
+.btn-turn-del {
   font-size: 0.7em; padding: 2px 7px; border: 1px solid transparent;
   border-radius: 3px; background: transparent; cursor: pointer;
-  color: var(--muted); opacity: 0; transition: opacity 0.15s, background 0.15s;
+  color: var(--muted); transition: background 0.15s, color 0.15s;
 }
-.turn-wrap:hover .btn-turn-del { opacity: 1; }
 .turn-wrap { position: relative; }
+.btn-turn-reroll:hover { background: var(--accent); color: #fff; border-color: var(--accent); }
 .btn-turn-del:hover { background: #b0624a; color: #fff; border-color: #b0624a; }
-.btn-turn-del.confirming { background: #b0624a; color: #fff; opacity: 1; }
+.btn-turn-del.confirming { background: #b0624a; color: #fff; }
 #input-panel .meta-row {
   display: flex; gap: 12px; align-items: center; margin-top: 6px;
   font-size: 0.75em; color: var(--muted);
@@ -419,7 +419,7 @@ body {
 [data-theme="dark"] .chip-hot { color: #061326; }
 [data-theme="dark"] .toggle-slider:before { background: #f4ead8; }
 [data-theme="dark"] input[type="range"] { accent-color: var(--accent); }
-[data-theme="dark"] .btn-reroll:hover { color: #061326; }
+[data-theme="dark"] .btn-turn-reroll:hover { color: #061326; }
 [data-theme="dark"] .btn-turn-del:hover,
 [data-theme="dark"] .btn-turn-del.confirming { color: #fff; }
 [data-theme="dark"] #toast { color: #061326; }
@@ -1600,11 +1600,11 @@ function render() {
   const actionsDiv = document.getElementById('sb-actions');
   if (turnOpts && turnOpts.length > 0) {
     actionsCard.style.display = '';
-    if (actionsH4) actionsH4.innerHTML = '🎯 下一步行动' + (S.generatedCount > 0 ? ' <button class="btn-reroll" onclick="doReroll()" title="重roll最后一轮">🔄</button>' : '');
+    if (actionsH4) actionsH4.textContent = '🎯 下一步行动';
     renderOptions(actionsDiv, turnOpts);
   } else if (S.actions && S.actions.length > 0) {
     actionsCard.style.display = '';
-    if (actionsH4) actionsH4.innerHTML = '📂 可选项' + (S.generatedCount > 0 ? ' <button class="btn-reroll" onclick="doReroll()" title="重roll最后一轮">🔄</button>' : '');
+    if (actionsH4) actionsH4.textContent = '📂 可选项';
     renderOptions(actionsDiv, S.actions);
   } else {
     actionsCard.style.display = 'none';
@@ -1664,13 +1664,31 @@ function updateOpeningsCard(S) {
 function injectTurnButtons() {
   const doc = document.getElementById('doc');
   const turns = doc.querySelectorAll('.turn-wrap');
+  const currentSession = sessionState.sessions.find(function(item) {
+    return item.id === sessionState.active_session_id;
+  });
+  const canReroll = Number((currentSession && currentSession.active_revision) || 0) > 0;
   turns.forEach(function(turn, i) {
-    // Remove existing btn if any
-    const old = turn.querySelector('.btn-turn-del');
+    const old = turn.querySelector('.turn-actions');
     if (old) old.remove();
-    // Don't add delete on first opening turn (index 0) if we want to keep the opener
+    const actions = document.createElement('div');
+    actions.className = 'turn-actions';
+    actions.setAttribute('aria-label', '回合操作');
+    if (i === turns.length - 1 && canReroll) {
+      const reroll = document.createElement('button');
+      reroll.className = 'btn-turn-reroll';
+      reroll.type = 'button';
+      reroll.textContent = '重新生成';
+      reroll.title = '使用相同玩家输入重新生成最后一轮';
+      reroll.addEventListener('click', function(e) {
+        e.stopPropagation();
+        doReroll();
+      });
+      actions.appendChild(reroll);
+    }
     const btn = document.createElement('button');
     btn.className = 'btn-turn-del';
+    btn.type = 'button';
     btn.textContent = '↩ 回退到此';
     btn.title = '删除此轮及之后所有内容';
     btn.addEventListener('click', function(e) {
@@ -1686,8 +1704,9 @@ function injectTurnButtons() {
         }, 3000);
       }
     });
+    actions.appendChild(btn);
     const aiDiv = turn.querySelector('.turn-ai');
-    if (aiDiv) aiDiv.appendChild(btn);
+    if (aiDiv) aiDiv.appendChild(actions);
   });
 }
 
@@ -2567,7 +2586,7 @@ function renderNodeDetail(detail) {
       label: detail.label || detail.node_id || '节点运行',
       state: detail.state || detail.status || 'idle',
       prompt: detail.prompt || null,
-      output: stream,
+      output: detail.output || detail.streamed_output || '',
       manifests: detail.manifests || [],
       model_calls: modelCalls
     }, '等待实时追踪…');
@@ -2730,7 +2749,7 @@ function setRuntimeTaskStatus(task) {
 
 function updateRuntimeControls() {
   const busy = runtimeTask && RUNTIME_ACTIVE_STATUSES.has(runtimeTask.status);
-  document.querySelectorAll('.btn-submit, .btn-reroll').forEach(function(btn) {
+  document.querySelectorAll('.btn-submit, .btn-turn-reroll').forEach(function(btn) {
     btn.disabled = !!busy;
   });
   document.querySelectorAll('#session-select, .session-tool').forEach(function(control) {
@@ -3073,8 +3092,8 @@ $(function() {
 });
 
 async function doReroll() {
-  const btn = document.querySelector('.btn-reroll');
-  if (btn) { btn.disabled = true; btn.textContent = '⏳'; }
+  const btn = document.querySelector('.btn-turn-reroll');
+  if (btn) { btn.disabled = true; btn.textContent = '生成中…'; }
   try {
     const currentSession = sessionState.sessions.find(function(item) {
       return item.id === sessionState.active_session_id;
@@ -3112,7 +3131,7 @@ async function doReroll() {
     showError('无法连接服务器');
   }
   if (!runtimeTask || !RUNTIME_ACTIVE_STATUSES.has(runtimeTask.status)) {
-    if (btn) { btn.disabled = false; btn.textContent = '🔄'; }
+    if (btn) { btn.disabled = false; btn.textContent = '重新生成'; }
   }
 }
 

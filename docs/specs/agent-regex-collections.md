@@ -224,6 +224,8 @@ The view contains:
 
 The Agent editor gains a `Regex Collection` selector with `None` as the default. Its prompt preview shows the transformed preview input and the exact frozen rules that would apply.
 
+The Regex Collections view does not duplicate this binding selector. It owns Collection CRUD and test diagnostics; the Agent editor is the sole UI owner of `regex_collection_id`.
+
 The Project editor removes:
 
 - `Turn Adapter`;

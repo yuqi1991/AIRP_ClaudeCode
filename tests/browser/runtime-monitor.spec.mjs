@@ -222,6 +222,8 @@ test.describe('real Pi browser runtime', () => {
     await closeNodeDetail(page);
     await page.locator('#graph-retry-button').click();
     await expect(page.locator('#doc .turn-ai:not(#streaming-preview)')).toHaveCount(2, { timeout: 20_000 });
+    await expect(page.locator('#doc .turn-ai:not(#streaming-preview) .btn-turn-reroll')).toHaveCount(1);
+    await expect(page.locator('#doc .turn-ai:not(#streaming-preview)').last().locator('.btn-turn-reroll')).toHaveText('重新生成');
     await expect(page.locator('#session-meta')).toContainText(/Revision 2/i, { timeout: 20_000 });
     await expect(page.getByRole('button', { name: /· 已完成$/ })).toHaveCount(5);
     await expect.poll(async () => {

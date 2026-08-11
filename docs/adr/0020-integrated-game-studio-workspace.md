@@ -9,6 +9,7 @@ AIRP 将 Studio 从独立页面改为游戏界面内的顶部工作抽屉，并�
 - 导入带有 `character_book` 的 SillyTavern 角色卡时，Project 与 Worldbook 在同一导入边界完成创建和绑定；创建失败会回滚已创建的 Worldbook。
 - Worldbook 绑定页区分加载中、空列表和错误重试状态；Project 列表刷新使用请求序号避免旧响应覆盖删除或切换后的状态。
 - 默认 Provider、Agent、Graph 与 Regex Collection 首次打开即加载为完整可编辑表单；游戏 Monitor 是唯一可操作的活动 Graph 选择入口，Studio 不再提供重复的 Runtime Config。
+- 最新正式回复在对话区直接提供“重新生成”和“回退到此”两个回合操作；reroll 不依赖侧栏选项是否存在。Regex Collection 抽屉只编辑和测试规则，Agent 到 Collection 的绑定只在 Agent 编辑器维护。
 - Studio 启动诊断只显示服务端提供的安全消息与动作，不回显 key；Provider、Agent、Graph 与 Regex 保存均携带 `expected_revision`，运行中保存从下一 Task 生效。
 - 当前 Graph Runtime 仍是线性顺序执行；Monitor 的垂直节点视图表达现有运行语义，不承诺任意分支/并行 DAG。
 

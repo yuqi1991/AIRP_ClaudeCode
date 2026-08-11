@@ -77,6 +77,9 @@ def test_game_worldbook_drawer_reads_edits_and_binds_existing_api(tmp_path: Path
             browser.evaluate("window.confirm = () => true")
             browser.click("#worldbook-drawer-delete")
             browser.wait_for("document.getElementById('worldbook-drawer-notice').textContent.includes('请先解除绑定')")
+            assert browser.evaluate(
+                "document.getElementById('worldbook-drawer-notice').textContent.includes('drawer-project')"
+            )
 
         status, binding = _json_request(
             "GET",

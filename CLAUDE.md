@@ -39,3 +39,7 @@ git diff --check
 ```
 
 真实 Provider 测试默认跳过，明确设置 secret 后再运行 `tests/test_real_deepseek_e2e.py`。修改配置模型或导入格式时，优先增加失败用例，再修实现。
+
+## 开发要求
+- 沟通用语应精确简洁, 不要滥用概念原语
+- 不要过度测试，不要重复开发

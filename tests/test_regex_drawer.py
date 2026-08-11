@@ -38,13 +38,14 @@ def test_game_page_mounts_regex_collection_drawer_and_api_controls():
         "regex-drawer-diagnostics",
         "regex-drawer-copy",
         "regex-drawer-delete",
-        "regex-drawer-agent-bindings",
     ):
         assert control in script
+    assert "regex-drawer-agent-bindings" not in script
     for target in ("input", "output", "both"):
         assert "'" + target + "'" in script
-    for api in ("/v1/studio/regex-collections", "/v1/studio/agents", "/copy", "/test"):
+    for api in ("/v1/studio/regex-collections", "/copy", "/test"):
         assert api in script
+    assert "/v1/studio/agents" not in script
     assert "regex-drawer-body" in styles
     assert "regex-rule-card" in styles
     assert "regex-diagnostic" in styles
@@ -54,7 +55,7 @@ def test_game_page_mounts_regex_collection_drawer_and_api_controls():
     shutil.which("google-chrome") is None or _connect is None,
     reason="requires google-chrome and websockets",
 )
-def test_regex_drawer_reads_rules_tests_collection_and_agent_binding(tmp_path: Path):
+def test_regex_drawer_tests_collection_and_agent_editor_owns_binding(tmp_path: Path):
     styles = tmp_path / "styles"
     shutil.copytree(WEB_ROOT, styles)
     card = tmp_path / "drawer-card"
@@ -134,18 +135,29 @@ def test_regex_drawer_reads_rules_tests_collection_and_agent_binding(tmp_path: P
             browser.wait_for("document.getElementById('regex-drawer-test-output').textContent === 'Hello'")
             assert browser.evaluate("document.getElementById('regex-drawer-diagnostics').textContent.includes('Strip markup')")
 
-            browser.wait_for(
-                "document.querySelector('#regex-drawer-agent-bindings select[data-agent-id=drawer-agent]')"
+            assert browser.evaluate("!document.getElementById('regex-drawer-agent-bindings')")
+            browser.click("#studio-agents-toggle")
+            browser.wait_for("!document.getElementById('studio-agents-view').hidden")
+            assert browser.evaluate(
+                """(() => {
+                    const button = Array.from(document.querySelectorAll('#studio-agent-list button'))
+                        .find((candidate) => candidate.textContent.includes('Drawer Agent'));
+                    if (!button) return false;
+                    button.click();
+                    return true;
+                })()"""
             )
+            browser.wait_for("document.getElementById('studio-agent-regex').value === ''")
             browser.evaluate(
                 f"""(() => {{
-                    const select = document.querySelector('#regex-drawer-agent-bindings select[data-agent-id=drawer-agent]');
+                    const select = document.getElementById('studio-agent-regex');
                     select.value = {collection_id!r};
                     select.dispatchEvent(new Event('change', {{bubbles: true}}));
                     return true;
                 }})()"""
             )
-            browser.wait_for("document.getElementById('regex-drawer-notice').textContent.includes('绑定已保存')")
+            browser.click("#studio-agent-form button[type=submit]")
+            browser.wait_for("document.getElementById('studio-drawer-status').textContent.includes('Agent 已保存')")
 
         status, payload = _json_request("GET", f"{server.base_url}/v1/studio/agents/drawer-agent")
         assert status == 200
