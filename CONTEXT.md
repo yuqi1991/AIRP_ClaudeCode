@@ -33,10 +33,10 @@ AIRP 是面向玩家的本地独立角色扮演引擎：玩家可导入和游玩
 | 下一代首先建设可控 harness/runtime | 已确认 | `docs/status/roadmap.md` |
 | 独立 Runtime/Harness 拥有从 submit 到唯一 commit、投影和事件的完整回合生命周期 | 已确认 | ADR-0021；Provider/长会话可靠性仍待验收 |
 | Provider 采用 OpenAI-compatible 能力契约；真实 Provider 需 opt-in qualification，默认 CI 无外部密钥 | 已确认 | ADR-0022；20 回合 soak、SSE 重连和重启是发布门槛 |
-| Project 拥有私有运行态；Workspace 可存多 Project/Session，但进程只维护一个 active projection | 已确认 | ADR-0023；Project 删除清理仍待实现 |
-| 角色卡与内嵌世界书导入使用 versioned `airp.import-diagnostics` 报告，区分 success/degraded/failed 与逐字段 provenance | 已确认 | ADR-0024；生产 emitter 和 UI 展示仍待实现 |
+| Project 拥有私有运行态；Workspace 可存多 Project/Session，但进程只维护一个 active projection | 已实现 | ADR-0023；删除清理、回滚与单进程语义已验证 |
+| 角色卡与内嵌世界书导入使用 versioned `airp.import-diagnostics` 报告，区分 success/degraded/failed 与逐字段 provenance | 已实现 | ADR-0024；生产 emitter 与游戏抽屉展示已验证 |
 | Session 状态写入通过获授权工具修改 Task Working Snapshot；原生 JSON operations 与可选 MVU 兼容输入统一经过冻结 schema/wildcard 严格校验；角色卡脚本默认不执行，Runtime 默认回环绑定并要求受控 Origin/授权 | 已确认 | ADR-0025；Wayfinder #40/#41 |
-| 设定编辑使用 Project/Library revision，故事提交使用 Session revision；Task 冻结配置快照，未保存表单切换直接丢弃 | 已确认 | ADR-0026；revision conflict、audit 和延迟 rebind 仍待实现 |
+| 设定编辑使用 Project/Library revision，故事提交使用 Session revision；Task 冻结配置快照，未保存表单切换直接丢弃 | 已实现 | ADR-0026；revision conflict、audit 与延迟 rebind 已验证 |
 | 多 Agent 不内置叙事导演、写手、质检等一等职责；职责、交付条件与接力规范由用户 Prompt 配置 | 已确认 | `docs/adr/0027-ephemeral-multi-agent-collaboration.md` |
 | agent 可在角色资料明显不足时自主检索外部资料，并记录来源/摘要 | 已确认 | `docs/product/principles.md` |
 | 代码变更必须同步更新相应 wiki、状态表和 ADR | 已确认 | `docs/development/agent-guide.md` |

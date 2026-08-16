@@ -2,6 +2,13 @@
 
 > 这是方向与依赖关系，不是承诺日期。实现前应转成规格和可验证 ticket。
 
+## 当前下一项
+
+已确认的下一项 runtime cutover 是[Task Working Snapshot 与 Agent 工具](../specs/task-working-snapshot-and-agent-tools.md)：
+最终正文保持 opaque，Agent 通过公开工具修改单一 Task Working Snapshot，成功时连同正文原子
+提交 Memory/State Snapshot。它取代正常路径从正文解析 MVU 的行为；不等同于新增 Graph 角色、
+质量门禁或默认套件特权机制。
+
 ## Phase 0 — 稳定当前原型
 
 - 维护 engine 深模块边界；

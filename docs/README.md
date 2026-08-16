@@ -33,6 +33,7 @@
 ### 规格
 
 - [Pi Agent Core 独立回合 Runtime 规格](specs/pi-agent-core-runtime.md) — 早期边界规格；当前静态接力实现以 ADR-0027 为准
+- [Task Working Snapshot 与 Agent 工具](specs/task-working-snapshot-and-agent-tools.md) — 已确认的目标提交模型；正文 opaque、上下文参数宏与公开读写工具
 
 ### 研究
 
